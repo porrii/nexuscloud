@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
 import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
+import ShareDialog from '../components/ShareDialog'
 import VersionHistoryDialog from '../components/VersionHistoryDialog'
 
 interface UploadProgress {
@@ -43,6 +44,7 @@ export default function FilesPage() {
   const [newFolderName, setNewFolderName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const [historyFile, setHistoryFile] = useState<FileEntry | null>(null)
+  const [shareTarget, setShareTarget] = useState<{ id: string; name: string; isDirectory: boolean } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const navigateTo = useCallback(
@@ -249,6 +251,12 @@ export default function FilesPage() {
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(d.created_at)}</td>
                   <td className="px-4 py-2 text-right">
                     <button
+                      onClick={() => setShareTarget({ id: d.id, name: d.name, isDirectory: true })}
+                      className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Compartir
+                    </button>
+                    <button
                       onClick={() => setPendingDelete({ kind: 'directory', entry: d })}
                       className="invisible rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 group-hover:visible dark:text-red-400 dark:hover:bg-red-950"
                     >
@@ -275,6 +283,12 @@ export default function FilesPage() {
                     >
                       Descargar
                     </a>
+                    <button
+                      onClick={() => setShareTarget({ id: f.id, name: f.name, isDirectory: false })}
+                      className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Compartir
+                    </button>
                     <button
                       onClick={() => setHistoryFile(f)}
                       className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
@@ -309,6 +323,8 @@ export default function FilesPage() {
       {historyFile && (
         <VersionHistoryDialog file={historyFile} onClose={() => setHistoryFile(null)} onRestored={() => void load()} />
       )}
+
+      {shareTarget && <ShareDialog resource={shareTarget} onClose={() => setShareTarget(null)} />}
     </div>
   )
 }

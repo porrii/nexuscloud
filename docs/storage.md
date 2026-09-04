@@ -59,10 +59,23 @@ Activado por defecto (`versioning.enabled: true`, `versioning.maxVersionsPerFile
 - Borrar un archivo para siempre (`?permanent=true`, o purga por retención de la papelera) purga también todo su historial de versiones: no tiene sentido conservarlo sin el archivo al que pertenece.
 - Fuera de esta pasada: retención por antigüedad y por espacio total ocupado (§15 los menciona; solo se implementó el límite por número de versiones).
 
+## Compartición (§37)
+
+Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada por defecto (`sharing.enabled: true`) para usuario/grupo -- no añaden ninguna superficie sin autenticar. Los enlaces públicos, la única superficie de Sharing que no exige sesión, están **desactivados por defecto** (`sharing.publicLinksEnabled: false`, secure-by-default §3/§47, mismo precedente que `web.enabled`).
+
+- **Recurso compartido**: un archivo o una carpeta (nunca ambos), nunca el contenido físico -- ver [ADR-008](architecture/decisions/ADR-008-sharing.md).
+- **Compartir una carpeta da acceso a todo su contenido**, incluidas subcarpetas sin share propio: descargar un archivo, o navegar una carpeta, comprueba primero un share directo y, si no lo hay, recorre las carpetas ancestro buscando uno que lo cubra.
+- **Permisos**: `can_download`/`can_upload`. Las opciones de permiso solo se exponen para enlaces (§37 las lista bajo "Enlaces"); un share de usuario o grupo siempre es de solo descarga.
+- **Enlaces**: token opaco de 256 bits (`idgen.Token()`, mismo generador que sesiones/invitaciones), se muestra en claro una única vez al crearlo; solo se persiste su SHA-256. Opcionalmente: contraseña (Argon2id, mismo formato que `users.password_hash`), fecha de expiración, límite de descargas (incrementado de forma atómica, a prueba de carreras concurrentes), límite de tamaño de subida, nombre personalizado (cosmético, nunca sustituye al token como secreto) y revocación (soft, vía `revoked_at`).
+- **Contraseña de enlace**: siempre por cabecera `X-Share-Password`, nunca en la URL -- un enlace sin contraseña funciona como `<a href>` directo; uno con contraseña pasa por la web, que la pide y reintenta con la cabecera.
+- `GET /api/v1/public/shares/{token}` (probe de metadata) no revela nombre/tamaño de un enlace con contraseña hasta que la cabecera correcta llega -- solo indica si hace falta contraseña.
+- **Rate limit propio** (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) sobre todas las rutas `/api/v1/public/*`: es la otra superficie, además de login, expuesta a fuerza bruta.
+- Fuera de esta pasada: permiso de subida dirigido a un usuario/grupo concreto (solo los enlaces lo soportan); notificaciones por email; §38 (Subida Anónima) sigue totalmente separado y sin implementar.
+
 ## Qué falta (fases posteriores)
 
 - **Snapshots** (§17): delegado al filesystem/SO subyacente (ZFS/Btrfs/Storage Spaces) cuando llegue.
 - **Backups** (§18): Backup Manager independiente, Fase 5.
-- **Compartición y enlaces públicos** (§37): Fase 2.
+- **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.
 - **Miniaturas/previsualización/búsqueda de contenido** (§33-35): Fase 2.
 - **Range requests / descargas reanudables** (§41): el endpoint de descarga transmite el contenido completo; soporte de `Range` queda pendiente sin que suponga un cambio de contrato de API cuando se añada.

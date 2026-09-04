@@ -34,7 +34,7 @@ web/                  → interfaz web (React+TS+Vite); web/embed.go la embebe e
 
 ## Modelo de datos
 
-`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files`/`directories` (solo metadatos; el contenido vive en el filesystem; `directories` desde la migración 0002, ver [ADR-002](architecture/decisions/ADR-002-storage.md); ambas con `deleted_at` desde la migración 0003 para la papelera, §16 — ver `docs/storage.md#papelera`), `file_versions` (historial de versiones, migración 0004, §15 — ver `docs/storage.md#versionado-15` y [ADR-007](architecture/decisions/ADR-007-versioning.md)), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
+`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files`/`directories` (solo metadatos; el contenido vive en el filesystem; `directories` desde la migración 0002, ver [ADR-002](architecture/decisions/ADR-002-storage.md); ambas con `deleted_at` desde la migración 0003 para la papelera, §16 — ver `docs/storage.md#papelera`), `file_versions` (historial de versiones, migración 0004, §15 — ver `docs/storage.md#versionado-15` y [ADR-007](architecture/decisions/ADR-007-versioning.md)), `shares` (comparticiones usuario/grupo/enlace, migración 0005, §37 — ver `docs/storage.md#compartición-37` y [ADR-008](architecture/decisions/ADR-008-sharing.md)), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
 
 ## Superficie de API
 
@@ -42,13 +42,12 @@ Ver [docs/api.md](api.md) para la referencia completa. Resumen: `/health`, `/rea
 
 ## Fases
 
-El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **La Fase 1 está completa**; de la Fase 2, la interfaz web y el explorador de archivos ya están implementados y verificados — sharing, papelera y versionado siguen pendientes:
+El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **Las Fases 1 y 2 están completas**:
 
 | Fase | Contenido | Estado |
 |---|---|---|
 | 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa |
-| 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15` |
-| 2 | Sharing | Pendiente |
+| 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado + Sharing | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15`, `docs/storage.md#compartición-37` |
 | 3 | Cliente Desktop (Windows/Linux) | Pendiente — Flutter, Clean Architecture (ver ADR-005) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
 | 5 | Backup Manager, Snapshots, gestión de discos/RAID | Pendiente |
@@ -57,7 +56,7 @@ El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **L
 
 ### Explorador de archivos web: alcance real
 
-El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arrastrar y soltar), descarga, creación y borrado de carpetas vacías, y gestión de sesiones — todo respaldado por endpoints reales del backend. Section §143 (dashboard de usuario) menciona además "Compartido conmigo", "Compartido por mí", "Favoritos", "Recientes" y "Papelera": **deliberadamente no se construyó ninguna pantalla para estas**, porque el backend todavía no las soporta — una UI para una funcionalidad inexistente sería peor que no tenerla.
+El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arrastrar y soltar), descarga, creación y borrado de carpetas vacías, historial de versiones, compartición (usuario/grupo/enlace) y gestión de sesiones — todo respaldado por endpoints reales del backend. §143 (dashboard de usuario) menciona además "Favoritos" y "Recientes": **deliberadamente no se construyó ninguna pantalla para estas**, porque el backend todavía no las soporta — una UI para una funcionalidad inexistente sería peor que no tenerla. "Compartido conmigo"/"Compartido por mí"/"Papelera", también mencionadas en §143, sí están implementadas (`web/src/pages/SharedPage.tsx`, `TrashPage.tsx`).
 
 ### Gaps conocidos dentro de la propia Fase 1
 

@@ -57,6 +57,67 @@ export interface FileVersion {
   created_at: string
 }
 
+export interface Group {
+  id: string
+  name: string
+}
+
+// Share refleja shareResponse (internal/api/v1/dto.go): token solo viene
+// relleno en la respuesta de creación de un enlace, una única vez (§78).
+export interface Share {
+  id: string
+  resource_type: 'file' | 'directory'
+  resource_id: string
+  resource_name?: string
+  share_type: 'user' | 'group' | 'link'
+  target_user_id?: string
+  target_username?: string
+  target_group_id?: string
+  target_group_name?: string
+  label?: string
+  can_download: boolean
+  can_upload: boolean
+  has_password: boolean
+  expires_at?: string
+  max_downloads?: number
+  download_count: number
+  max_upload_size_bytes?: number
+  created_at: string
+  token?: string
+}
+
+export interface CreateShareInput {
+  resource_type: 'file' | 'directory'
+  resource_id: string
+  share_type: 'user' | 'group' | 'link'
+  target_username?: string
+  target_group_id?: string
+  label?: string
+  can_download?: boolean
+  can_upload?: boolean
+  password?: string
+  expires_at?: string
+  max_downloads?: number
+  max_upload_size_bytes?: number
+}
+
+// PublicShareInfo refleja publicShareInfoResponse: si el enlace tiene
+// contraseña y no se envió una correcta, name/size_bytes/etc. vienen vacíos
+// -- ver internal/api/v1/public_share_handlers.go.
+export interface PublicShareInfo {
+  requires_password: boolean
+  password_incorrect?: boolean
+  revoked?: boolean
+  expired?: boolean
+  exhausted?: boolean
+  resource_type?: 'file' | 'directory'
+  name?: string
+  size_bytes?: number
+  can_download?: boolean
+  can_upload?: boolean
+  label?: string
+}
+
 export class ApiClientError extends Error {
   status: number
   code: string
@@ -164,4 +225,52 @@ export const api = {
   downloadVersionUrl: (fileId: string, versionNum: number) => `/api/v1/files/${fileId}/versions/${versionNum}`,
   restoreVersion: (fileId: string, versionNum: number) =>
     request<FileEntry>(`/api/v1/files/${fileId}/versions/${versionNum}/restore`, { method: 'POST' }),
+
+  listGroups: () => request<Group[]>('/api/v1/groups'),
+
+  createShare: (input: CreateShareInput) => request<Share>('/api/v1/shares', { method: 'POST', body: JSON.stringify(input) }),
+  listShares: (direction: 'by-me' | 'with-me') => request<Share[]>(`/api/v1/shares?direction=${direction}`),
+  revokeShare: (id: string) => request<void>(`/api/v1/shares/${id}`, { method: 'DELETE' }),
+  listSharedDirectory: (id: string) => request<ListResult>(`/api/v1/shared-directories/${id}`),
+
+  // Enlaces públicos (§37): sin sesión, autorizados por el token de la URL
+  // y una contraseña opcional que va SIEMPRE en la cabecera X-Share-Password
+  // -- nunca en la query string, para no dejarla en logs/historial/Referer.
+  publicShareInfo: (token: string, password?: string) =>
+    request<PublicShareInfo>(`/api/v1/public/shares/${token}`, {
+      headers: password ? { 'X-Share-Password': password } : undefined,
+    }),
+  publicShareBrowse: (token: string, path: string, password?: string) =>
+    request<ListResult>(`/api/v1/public/shares/${token}/browse?path=${encodeURIComponent(path)}`, {
+      headers: password ? { 'X-Share-Password': password } : undefined,
+    }),
+  /**
+   * Descarga vía fetch + Blob en vez de un <a href> plano: un enlace con
+   * contraseña no puede llevar cabeceras personalizadas, así que la SPA hace
+   * la petición ella misma y dispara el guardado en el navegador.
+   */
+  downloadPublicShare: async (token: string, path: string, filename: string, password?: string): Promise<void> => {
+    const url = `/api/v1/public/shares/${token}/download${path ? `?path=${encodeURIComponent(path)}` : ''}`
+    const res = await fetch(url, { headers: password ? { 'X-Share-Password': password } : undefined })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
+      throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al descargar')
+    }
+    const blob = await res.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = blobUrl
+    a.download = filename
+    a.click()
+    URL.revokeObjectURL(blobUrl)
+  },
+  uploadToPublicShare: async (token: string, path: string, name: string, content: Blob, password?: string): Promise<FileEntry> => {
+    const url = `/api/v1/public/shares/${token}/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`
+    const res = await fetch(url, { method: 'POST', headers: password ? { 'X-Share-Password': password } : undefined, body: content })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
+      throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al subir el archivo')
+    }
+    return (await res.json()) as FileEntry
+  },
 }

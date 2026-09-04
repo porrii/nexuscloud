@@ -10,13 +10,25 @@ Análisis por actor (§166), reflejando el estado real de la Fase 1 — qué est
 
 **Pendiente**: protección DoS de capa de red (queda fuera del alcance de la aplicación — es responsabilidad del reverse proxy/firewall, ver `docs/deployment.md`); CAPTCHA o backoff progresivo más allá del rate limit fijo actual.
 
+## Enlaces públicos de compartición (§37)
+
+Los enlaces públicos son la única superficie de la API que acepta peticiones sin sesión además de `/auth/login` y `/invitations/redeem` — merecen su propio análisis en vez de mezclarse con "atacante externo no autenticado", porque también los usa gente legítima a la que el propietario quiso dar acceso.
+
+**Puede intentar**: adivinar el token de un enlace por fuerza bruta; adivinar la contraseña de un enlace protegido; enumerar metadata (nombre/tamaño) de un enlace con contraseña sin conocerla; superar `max_downloads` con descargas concurrentes contra el último hueco disponible; escapar de la carpeta compartida hacia otras carpetas del mismo propietario vía `path=../../otra`; abusar de un enlace con permiso de subida para llenar el disco del servidor.
+
+**Mitigado hoy**: **desactivados por defecto** (`sharing.publicLinksEnabled: false`) — la superficie ni siquiera existe hasta que el administrador la activa explícitamente (secure-by-default, §3/§47). El token tiene 256 bits de entropía (`idgen.Token()`, mismo generador que sesiones), tan inviable de adivinar por fuerza bruta como una sesión robada. La contraseña (opcional, Argon2id) se transmite por cabecera `X-Share-Password`, nunca en la URL, y un rate limiter dedicado (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) cubre todo `/api/v1/public/*` — mismo motivo que `loginLimiter` para `/auth/login`. El probe de metadata (`GET /api/v1/public/shares/{token}`) no revela nombre/tamaño de un enlace con contraseña hasta que la cabecera correcta llega. `max_downloads` se aplica con un `UPDATE...WHERE...AND(...)` atómico (no leer-luego-escribir), verificado con un test de concurrencia real: dos descargas simultáneas contra el último hueco disponible nunca dejan pasar a ambas. Navegar/descargar dentro de una carpeta compartida recalcula la ruta lógica a partir de la raíz del share en cada petición y rechaza cualquier resultado que no quede exactamente dentro de ella o de una subcarpeta suya (protección contra escape, además del `SafeJoin` físico que ya aplica `LocalFilesystemProvider`).
+
+**Pendiente**: `max_upload_size_bytes` limita cada subida individual a través de un enlace, pero no hay un límite acumulado de espacio total ocupado por todas las subidas de un mismo enlace a lo largo del tiempo — un enlace de subida activo durante mucho tiempo sin `max_downloads`/expiración podría, en conjunto, ocupar una cantidad de disco no acotada de antemano (mitigable hoy fijando `expires_at` al crear el enlace). §38 (Subida Anónima) es un modelo de autorización distinto y separado, todavía sin implementar.
+
 ## Usuario autenticado malicioso
 
 **Puede intentar**: acceder a archivos de otro usuario adivinando/enumerando IDs (IDOR), escalar a rol de administrador, abusar de invitaciones.
 
 **Mitigado hoy**: IDs de archivo/sesión/invitación son UUID v4 aleatorios, no enumerables; `FileService.Download`/`Delete` comprueban `OwnerID` explícitamente; `RevokeSession` exige coincidencia de `user_id` en la propia query; `RequireAdmin` comprueba el rol en base de datos en cada petición, no un claim del cliente; las invitaciones tienen límite de usos y expiración, y se pueden revocar.
 
-**Pendiente**: no hay todavía límites de cuota aplicados en la ruta de subida (el campo `quota_bytes` existe en el modelo de datos pero no se aplica activamente — Fase 2); no hay sharing todavía, así que el modelo de "otro usuario" se limita a intentos de acceso directo, no a abuso de permisos compartidos.
+**Sharing (§37)**: compartir un archivo o carpeta con otro usuario/grupo añade una segunda vía de acceso legítimo además de la propiedad — `FileService.Download`/`ListSharedDirectory` comprueban un share activo (directo o sobre una carpeta ancestro) antes de conceder acceso, nunca antes de comprobar propiedad. Revocar (`DELETE /api/v1/shares/{id}`) exige ser quien lo creó (§198) y es efectivo de inmediato (soft-update `revoked_at`, comprobado en cada acceso). Un usuario con permiso de solo-descarga no puede escalar a modificar/eliminar el recurso: esas operaciones siguen exigiendo propiedad, no están en el conjunto de permisos que un share concede (ver `docs/storage.md#compartición-37`).
+
+**Pendiente**: no hay todavía límites de cuota aplicados en la ruta de subida (el campo `quota_bytes` existe en el modelo de datos pero no se aplica activamente — Fase 2).
 
 ## Sesión/cuenta comprometida (credential theft)
 

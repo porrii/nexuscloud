@@ -443,6 +443,182 @@ paths:
                     type: array
                     items: { $ref: "#/components/schemas/File" }
 
+  /groups:
+    get:
+      summary: Listar grupos (para elegir destino al compartir, §37)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Group" }
+
+  /shares:
+    post:
+      summary: Crear una compartición usuario/grupo/enlace (§37)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateShareRequest" }
+      responses:
+        "201":
+          description: Creada; token solo presente si share_type=link
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Share" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "Compartición o enlaces públicos desactivados en esta instancia" }
+    get:
+      summary: Listar comparticiones ("compartido por mí" o "compartido conmigo", §143)
+      parameters:
+        - name: direction
+          in: query
+          schema: { type: string, enum: [by-me, with-me], default: by-me }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Share" }
+
+  /shares/{id}:
+    delete:
+      summary: Revocar una compartición (soft, propietario únicamente)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Revocada }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /shared-directories/{id}:
+    get:
+      summary: Navegar una carpeta a la que se accede vía share (directo o de un ancestro), no por propiedad
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /public/shares/{token}:
+    get:
+      summary: Metadata de un enlace público (§37)
+      description: >
+        Sin sesión. Si el enlace tiene contraseña y no llega X-Share-Password
+        correcta, la respuesta solo indica requires_password -- nunca
+        nombre/tamaño del recurso.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - $ref: "#/components/parameters/sharePasswordHeader"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PublicShareInfo" }
+        "403": { description: "Enlaces públicos desactivados en esta instancia" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /public/shares/{token}/download:
+    get:
+      summary: Descargar vía enlace público (streaming)
+      description: Incrementa el contador de descargas de forma atómica (§37 "límite de descargas").
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - $ref: "#/components/parameters/sharePasswordHeader"
+        - name: path
+          in: query
+          description: Ruta relativa a la raíz compartida (solo para un enlace de carpeta)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Contenido del archivo
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "401": { description: "Contraseña requerida o incorrecta" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "410": { description: "Enlace revocado, expirado o agotado" }
+
+  /public/shares/{token}/browse:
+    get:
+      summary: Listar el contenido de un enlace de carpeta (o una subcarpeta suya)
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - $ref: "#/components/parameters/sharePasswordHeader"
+        - name: path
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "401": { description: "Contraseña requerida o incorrecta" }
+        "410": { description: "Enlace revocado, expirado o agotado" }
+
+  /public/shares/{token}/upload:
+    post:
+      summary: Subir a un enlace de carpeta con permiso de subida (§37 "Subida")
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - $ref: "#/components/parameters/sharePasswordHeader"
+        - name: path
+          in: query
+          description: Subcarpeta destino relativa a la raíz compartida
+          schema: { type: string }
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Subido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "401": { description: "Contraseña requerida o incorrecta" }
+        "403": { description: "El enlace no permite subida" }
+        "410": { description: "Enlace revocado, expirado o agotado" }
+        "413": { description: "El archivo supera el límite de tamaño del enlace" }
+
   /audit:
     get:
       summary: Listar eventos de auditoría (admin)
@@ -477,6 +653,20 @@ components:
       in: path
       required: true
       schema: { type: string, format: uuid }
+    tokenParam:
+      name: token
+      in: path
+      required: true
+      schema: { type: string }
+      description: Token en claro del enlace público (256 bits, base64url)
+    sharePasswordHeader:
+      name: X-Share-Password
+      in: header
+      required: false
+      schema: { type: string }
+      description: >
+        Contraseña del enlace, si tiene. Nunca en la query string (evita
+        que quede en logs/historial/Referer).
 
   responses:
     Error:
@@ -559,6 +749,67 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
+
+    Group:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+
+    CreateShareRequest:
+      type: object
+      required: [resource_type, resource_id, share_type]
+      properties:
+        resource_type: { type: string, enum: [file, directory] }
+        resource_id: { type: string, format: uuid }
+        share_type: { type: string, enum: [user, group, link] }
+        target_username: { type: string, description: "Obligatorio si share_type=user" }
+        target_group_id: { type: string, format: uuid, description: "Obligatorio si share_type=group" }
+        label: { type: string, description: "Nombre personalizado del enlace (§37), cosmético" }
+        can_download: { type: boolean, default: true }
+        can_upload: { type: boolean, default: false, description: "Solo tiene efecto con share_type=link; exige resource_type=directory" }
+        password: { type: string, format: password, description: "Solo enlaces" }
+        expires_at: { type: string, format: date-time }
+        max_downloads: { type: integer, minimum: 1 }
+        max_upload_size_bytes: { type: integer, format: int64, minimum: 1 }
+
+    Share:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        resource_type: { type: string, enum: [file, directory] }
+        resource_id: { type: string, format: uuid }
+        resource_name: { type: string }
+        share_type: { type: string, enum: [user, group, link] }
+        target_user_id: { type: string, format: uuid }
+        target_username: { type: string }
+        target_group_id: { type: string, format: uuid }
+        target_group_name: { type: string }
+        label: { type: string }
+        can_download: { type: boolean }
+        can_upload: { type: boolean }
+        has_password: { type: boolean }
+        expires_at: { type: string, format: date-time, nullable: true }
+        max_downloads: { type: integer, nullable: true }
+        download_count: { type: integer }
+        max_upload_size_bytes: { type: integer, format: int64, nullable: true }
+        created_at: { type: string, format: date-time }
+        token: { type: string, description: "Solo presente en la respuesta de creación de un enlace, una única vez (§78)" }
+
+    PublicShareInfo:
+      type: object
+      properties:
+        requires_password: { type: boolean }
+        password_incorrect: { type: boolean }
+        revoked: { type: boolean }
+        expired: { type: boolean }
+        exhausted: { type: boolean }
+        resource_type: { type: string, enum: [file, directory] }
+        name: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        can_download: { type: boolean }
+        can_upload: { type: boolean }
+        label: { type: string }
 
     AuditEvent:
       type: object

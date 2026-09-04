@@ -51,6 +51,15 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | DELETE | `/api/v1/directories/{id}` | sesión, propietario | Mueve a la papelera una carpeta **vacía** (409 si contiene algo activo); `?permanent=true` borra para siempre |
 | POST | `/api/v1/directories/{id}/restore` | sesión, propietario | Saca una carpeta de la papelera (recrea su marcador físico) |
 | GET | `/api/v1/trash` | sesión | `{directories: [...], files: [...]}` con todo lo eliminado del usuario (vista plana) |
+| GET | `/api/v1/groups` | sesión | Lista de grupos (para elegir destino al compartir, §37) |
+| POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace |
+| GET | `/api/v1/shares?direction=by-me\|with-me` | sesión | "Compartido por mí" (por defecto) o "compartido conmigo" |
+| DELETE | `/api/v1/shares/{id}` | sesión, propietario | Revoca una compartición (soft, `revoked_at`) |
+| GET | `/api/v1/shared-directories/{id}` | sesión | Navega una carpeta a la que se accede vía share, no por propiedad |
+| GET | `/api/v1/public/shares/{token}` | — | Metadata de un enlace público; con contraseña, exige `X-Share-Password` para revelar nombre/tamaño |
+| GET | `/api/v1/public/shares/{token}/download?path=` | — | Descarga vía enlace (streaming); incrementa el contador de descargas de forma atómica |
+| GET | `/api/v1/public/shares/{token}/browse?path=` | — | Lista el contenido de un enlace de carpeta (o una subcarpeta suya) |
+| POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
 
 Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propio handler/repositorio, no solo la autenticación — acceder a un archivo ajeno por ID adivinado devuelve `403`, nunca el contenido (§198 IDOR).

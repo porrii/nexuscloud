@@ -5,6 +5,8 @@ import AppShell from './components/AppShell'
 import AccountPage from './pages/AccountPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
+import PublicSharePage from './pages/PublicSharePage'
+import SharedPage from './pages/SharedPage'
 import TrashPage from './pages/TrashPage'
 
 export default function App() {
@@ -13,6 +15,8 @@ export default function App() {
       <AuthProvider>
         <Routes>
           <Route path="/login" element={<LoginPage />} />
+          {/* Enlaces públicos (§37): sin sesión, fuera del shell autenticado -- ver docs/storage.md#compartición-37. */}
+          <Route path="/s/:token" element={<PublicSharePage />} />
           <Route
             element={
               <RequireAuth>
@@ -21,6 +25,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<FilesPage />} />
+            <Route path="/shared" element={<SharedPage />} />
             <Route path="/trash" element={<TrashPage />} />
             <Route path="/account" element={<AccountPage />} />
           </Route>
