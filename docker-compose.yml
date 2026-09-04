@@ -1,0 +1,47 @@
+services:
+  nexuscloud:
+    build: .
+    image: nexuscloud:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      NEXUSCLOUD_HOST: "0.0.0.0"
+      NEXUSCLOUD_PORT: "8080"
+      NEXUSCLOUD_DB_DRIVER: "sqlite"
+      # Para usar PostgreSQL en vez de SQLite (§8), comenta la línea
+      # anterior y descomenta estas dos junto con el servicio "postgres":
+      # NEXUSCLOUD_DB_DRIVER: "postgres"
+      # NEXUSCLOUD_DB_DSN: "postgres://nexuscloud:changeme@postgres:5432/nexuscloud?sslmode=disable"
+    volumes:
+      - nexuscloud-data:/data
+    # No usar privileged ni montar "/" del host (§104).
+
+  # Opcional (§8): PostgreSQL para instalaciones mayores que un uso
+  # personal/familiar. SQLite (por defecto, arriba) ya cubre ese caso.
+  # postgres:
+  #   image: postgres:16-alpine
+  #   restart: unless-stopped
+  #   environment:
+  #     POSTGRES_USER: nexuscloud
+  #     POSTGRES_PASSWORD: changeme
+  #     POSTGRES_DB: nexuscloud
+  #   volumes:
+  #     - nexuscloud-postgres:/var/lib/postgresql/data
+
+  # Opcional (§50): reverse proxy con TLS para exponer NexusCloud a
+  # Internet. NexusCloud no gestiona certificados por sí mismo; ver
+  # docs/reverse-proxy.md antes de abrir el puerto 443 al exterior.
+  # caddy:
+  #   image: caddy:2-alpine
+  #   restart: unless-stopped
+  #   ports:
+  #     - "443:443"
+  #   volumes:
+  #     - ./Caddyfile:/etc/caddy/Caddyfile
+  #     - caddy-data:/data
+
+volumes:
+  nexuscloud-data:
+  # nexuscloud-postgres:
+  # caddy-data:

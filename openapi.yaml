@@ -1,0 +1,430 @@
+openapi: 3.0.3
+info:
+  title: NexusCloud API
+  version: "1.0"
+  description: >
+    API REST de NexusCloud (Fase 1). Ver docs/api.md para ejemplos y
+    docs/security.md para el modelo de autenticación/autorización.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: /api/v1
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      summary: Iniciar sesión
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password }
+                totp_code: { type: string, description: "Obligatorio si el usuario tiene 2FA activado" }
+      responses:
+        "200":
+          description: Login correcto
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token: { type: string, description: "Token en claro, se muestra una única vez" }
+                  user: { $ref: "#/components/schemas/User" }
+                  session: { $ref: "#/components/schemas/Session" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/Error" }
+
+  /auth/logout:
+    post:
+      summary: Cerrar la sesión actual
+      responses:
+        "204": { description: Sesión revocada }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /auth/sessions:
+    get:
+      summary: Listar las sesiones activas del usuario autenticado
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Session" }
+
+  /auth/sessions/{id}:
+    delete:
+      summary: Revocar una sesión propia
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Sesión revocada }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /auth/totp/enroll:
+    post:
+      summary: Generar un secreto TOTP para activar 2FA
+      responses:
+        "200":
+          description: Secreto generado (no persistido hasta /totp/verify)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_url: { type: string }
+
+  /auth/totp/verify:
+    post:
+      summary: Confirmar el código TOTP y activar 2FA
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [secret, code]
+              properties:
+                secret: { type: string }
+                code: { type: string }
+      responses:
+        "204": { description: 2FA activado }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /users/me:
+    get:
+      summary: Usuario autenticado
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+
+  /users:
+    get:
+      summary: Listar usuarios (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/User" }
+        "403": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Crear un usuario directamente (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+                display_name: { type: string }
+                email: { type: string }
+                role: { type: string, enum: [super_admin, administrator, user, read_only] }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /users/{id}:
+    patch:
+      summary: Actualizar un usuario (admin)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: { type: string }
+                email: { type: string }
+                status: { type: string, enum: [active, disabled] }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+    delete:
+      summary: Eliminar un usuario (admin, no a sí mismo)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Eliminado }
+
+  /invitations:
+    get:
+      summary: Listar invitaciones (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Invitation" }
+    post:
+      summary: Crear una invitación (admin)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { type: string }
+                max_uses: { type: integer, minimum: 1, default: 1 }
+                ttl_hours: { type: integer, minimum: 1, default: 168 }
+      responses:
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation: { $ref: "#/components/schemas/Invitation" }
+                  token: { type: string, description: "Se muestra una única vez" }
+
+  /invitations/{id}:
+    delete:
+      summary: Revocar una invitación (admin)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Revocada }
+
+  /invitations/redeem:
+    post:
+      summary: Canjear una invitación y crear una cuenta (único auto-alta permitido, §21)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, username, password]
+              properties:
+                token: { type: string }
+                username: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+                display_name: { type: string }
+                email: { type: string }
+      responses:
+        "201":
+          description: Cuenta creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/User" }
+        "404": { $ref: "#/components/responses/Error" }
+        "410": { description: "Invitación expirada, agotada o revocada" }
+
+  /files:
+    get:
+      summary: Listar archivos en una ruta lógica
+      parameters:
+        - name: path
+          in: query
+          schema: { type: string, default: "/" }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/File" }
+    post:
+      summary: Subir un archivo (cuerpo crudo, streaming)
+      parameters:
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+        - name: path
+          in: query
+          schema: { type: string, default: "/" }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Subido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /files/{id}:
+    get:
+      summary: Descargar un archivo (streaming; sin soporte Range todavía)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "200":
+          description: Contenido del archivo
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Eliminar un archivo (contenido + metadatos)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Eliminado }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /directories:
+    post:
+      summary: Crear una carpeta
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                parent_path: { type: string, default: "/" }
+                name: { type: string }
+      responses:
+        "201": { description: Creada }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /audit:
+    get:
+      summary: Listar eventos de auditoría (admin)
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEvent" }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: >
+        Token devuelto por /auth/login. También aceptado como cookie
+        HttpOnly "nexuscloud_session" (mismo valor).
+
+  parameters:
+    idParam:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        username: { type: string }
+        display_name: { type: string }
+        email: { type: string }
+        status: { type: string, enum: [active, disabled] }
+        has_totp: { type: boolean }
+        created_at: { type: string, format: date-time }
+        last_login_at: { type: string, format: date-time, nullable: true }
+
+    Session:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        device: { type: string }
+        ip: { type: string }
+        created_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time }
+
+    Invitation:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        role_id: { type: string }
+        max_uses: { type: integer }
+        use_count: { type: integer }
+        expires_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        used_at: { type: string, format: date-time, nullable: true }
+        revoked: { type: boolean }
+
+    File:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        parent_path: { type: string }
+        name: { type: string }
+        size_bytes: { type: integer, format: int64 }
+        sha256: { type: string }
+        mime_type: { type: string }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    AuditEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        actor_user_id: { type: string, nullable: true }
+        event_type: { type: string }
+        target_type: { type: string }
+        target_id: { type: string }
+        ip: { type: string }
+        metadata: { type: object, additionalProperties: true }

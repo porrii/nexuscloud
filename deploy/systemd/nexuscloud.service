@@ -1,0 +1,25 @@
+[Unit]
+Description=NexusCloud - self-hosted storage platform
+Documentation=https://github.com/porrii/nexuscloud
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nexuscloud
+Group=nexuscloud
+ExecStart=/usr/local/bin/nexuscloud start --config /etc/nexuscloud/config.yaml
+Restart=on-failure
+RestartSec=5
+
+# Mínimo privilegio (§103) + hardening estándar de systemd. Ajusta
+# ReadWritePaths si storage.dataDir en config.yaml apunta a otro sitio.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/nexuscloud
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
