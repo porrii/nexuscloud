@@ -15,7 +15,12 @@ func testConfig(t *testing.T) *config.Config {
 	return cfg
 }
 
-func TestMigrateAppliesInitialSchema(t *testing.T) {
+// currentSchemaVersion es la versión de esquema más alta esperada tras
+// aplicar todas las migraciones embebidas. Actualízala al añadir una nueva
+// migración (§8: cada una suma, nunca se reescribe una ya aplicada).
+const currentSchemaVersion = 2
+
+func TestMigrateAppliesFullSchema(t *testing.T) {
 	cfg := testConfig(t)
 	conn, err := Open(cfg)
 	if err != nil {
@@ -34,8 +39,8 @@ func TestMigrateAppliesInitialSchema(t *testing.T) {
 	if dirty {
 		t.Error("el esquema no debería quedar dirty tras una migración limpia")
 	}
-	if version != 1 {
-		t.Errorf("version = %d, esperado 1", version)
+	if version != currentSchemaVersion {
+		t.Errorf("version = %d, esperado %d", version, currentSchemaVersion)
 	}
 
 	var count int
@@ -44,6 +49,15 @@ func TestMigrateAppliesInitialSchema(t *testing.T) {
 	}
 	if count != 4 {
 		t.Errorf("roles sembrados = %d, esperado 4 (super_admin/administrator/user/read_only)", count)
+	}
+
+	// directories (0002) debe existir y estar vacía tras un esquema recién
+	// migrado.
+	if err := conn.QueryRow("SELECT COUNT(*) FROM directories").Scan(&count); err != nil {
+		t.Fatalf("consultando directories: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("directories = %d filas, esperado 0 en un esquema recién migrado", count)
 	}
 }
 

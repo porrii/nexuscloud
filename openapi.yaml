@@ -245,7 +245,7 @@ paths:
 
   /files:
     get:
-      summary: Listar archivos en una ruta lógica
+      summary: Listar carpetas y archivos en una ruta lógica
       parameters:
         - name: path
           in: query
@@ -256,8 +256,14 @@ paths:
           content:
             application/json:
               schema:
-                type: array
-                items: { $ref: "#/components/schemas/File" }
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
     post:
       summary: Subir un archivo (cuerpo crudo, streaming)
       parameters:
@@ -304,7 +310,7 @@ paths:
 
   /directories:
     post:
-      summary: Crear una carpeta
+      summary: Crear una carpeta (idempotente)
       requestBody:
         required: true
         content:
@@ -316,8 +322,23 @@ paths:
                 parent_path: { type: string, default: "/" }
                 name: { type: string }
       responses:
-        "201": { description: Creada }
+        "201":
+          description: Creada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Directory" }
         "400": { $ref: "#/components/responses/Error" }
+
+  /directories/{id}:
+    delete:
+      summary: Eliminar una carpeta vacía
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Eliminada }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "La carpeta no está vacía" }
 
   /audit:
     get:
@@ -404,6 +425,14 @@ components:
         created_at: { type: string, format: date-time }
         used_at: { type: string, format: date-time, nullable: true }
         revoked: { type: boolean }
+
+    Directory:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        parent_path: { type: string }
+        name: { type: string }
+        created_at: { type: string, format: date-time }
 
     File:
       type: object

@@ -52,6 +52,17 @@ func toSessionResponse(s *auth.Session) sessionResponse {
 	}
 }
 
+type directoryResponse struct {
+	ID         string    `json:"id"`
+	ParentPath string    `json:"parent_path"`
+	Name       string    `json:"name"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func toDirectoryResponse(d *storage.Directory) directoryResponse {
+	return directoryResponse{ID: d.ID, ParentPath: d.ParentPath, Name: d.Name, CreatedAt: d.CreatedAt}
+}
+
 type fileResponse struct {
 	ID         string    `json:"id"`
 	ParentPath string    `json:"parent_path"`

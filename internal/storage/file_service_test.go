@@ -18,10 +18,11 @@ import (
 // FK contra users(id) (integridad, §14), así que los tests deben crear
 // usuarios reales en vez de usar strings arbitrarios como "user-1".
 type testEnv struct {
-	svc      *FileService
-	files    FileRepository
-	provider *LocalFilesystemProvider
-	userSvc  *users.Service
+	svc         *FileService
+	files       FileRepository
+	directories DirectoryRepository
+	provider    *LocalFilesystemProvider
+	userSvc     *users.Service
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -50,12 +51,14 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("NewLocalFilesystemProvider falló: %v", err)
 	}
 	files := NewSQLFileRepository(conn)
+	directories := NewSQLDirectoryRepository(conn)
 
 	return &testEnv{
-		svc:      NewFileService(files, pools, provider),
-		files:    files,
-		provider: provider,
-		userSvc:  users.NewService(users.NewSQLRepository(conn)),
+		svc:         NewFileService(files, directories, pools, provider),
+		files:       files,
+		directories: directories,
+		provider:    provider,
+		userSvc:     users.NewService(users.NewSQLRepository(conn)),
 	}
 }
 
@@ -260,7 +263,97 @@ func TestListReturnsOnlyFilesInThatParentPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List falló: %v", err)
 	}
-	if len(got) != 1 || got[0].Name != "a.jpg" {
-		t.Errorf("List(/Fotos) = %+v, esperado solo a.jpg", got)
+	if len(got.Files) != 1 || got.Files[0].Name != "a.jpg" {
+		t.Errorf("List(/Fotos).Files = %+v, esperado solo a.jpg", got.Files)
+	}
+}
+
+func TestMkdirCreatesAListableDirectory(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if dir.Name != "Proyectos" {
+		t.Errorf("Name = %q, esperado Proyectos", dir.Name)
+	}
+
+	got, err := env.svc.List(ctx, owner, "/")
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(got.Directories) != 1 || got.Directories[0].Name != "Proyectos" {
+		t.Errorf("List(/).Directories = %+v, esperado solo Proyectos", got.Directories)
+	}
+}
+
+func TestMkdirIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	owner := env.user(t, "user-1")
+
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); err != nil {
+		t.Fatalf("primer Mkdir falló: %v", err)
+	}
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); err != nil {
+		t.Errorf("crear una carpeta ya existente no debería fallar: %v", err)
+	}
+}
+
+func TestDeleteDirectoryRejectsNonEmpty(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Proyectos", Name: "notas.txt", Content: bytes.NewReader([]byte("x"))}); err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); !errors.Is(err, ErrDirectoryNotEmpty) {
+		t.Errorf("err = %v, esperado ErrDirectoryNotEmpty", err)
+	}
+}
+
+func TestDeleteDirectoryRemovesEmptyDirectory(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Vacia")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory falló: %v", err)
+	}
+
+	got, err := env.svc.List(ctx, owner, "/")
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(got.Directories) != 0 {
+		t.Errorf("la carpeta debería haber desaparecido del listado: %+v", got.Directories)
+	}
+}
+
+func TestDeleteDirectoryRejectsNonOwner(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	victima := env.user(t, "victima")
+	atacante := env.user(t, "atacante")
+
+	dir, err := env.svc.Mkdir(ctx, victima, "/", "Privada")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, atacante, dir.ID); !errors.Is(err, ErrForbidden) {
+		t.Errorf("err = %v, esperado ErrForbidden (§198 IDOR)", err)
 	}
 }

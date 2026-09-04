@@ -39,11 +39,12 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/invitations` | admin | Lista invitaciones |
 | DELETE | `/api/v1/invitations/{id}` | admin | Revoca una invitación |
 | POST | `/api/v1/invitations/redeem` | — | `{token, username, password, display_name?, email?}` → crea cuenta (único auto-alta permitido, §21) |
-| GET | `/api/v1/files?path=/Documentos` | sesión | Lista archivos en esa ruta lógica |
+| GET | `/api/v1/files?path=/Documentos` | sesión | `{directories: [...], files: [...]}` en esa ruta lógica |
 | POST | `/api/v1/files?name=...&path=...` | sesión | Sube contenido (cuerpo crudo, streaming) |
 | GET | `/api/v1/files/{id}` | sesión, propietario | Descarga (streaming, sin soporte `Range` todavía) |
 | DELETE | `/api/v1/files/{id}` | sesión, propietario | Elimina contenido + metadatos |
-| POST | `/api/v1/directories` | sesión | `{parent_path, name}` → crea carpeta |
+| POST | `/api/v1/directories` | sesión | `{parent_path, name}` → crea carpeta (idempotente) |
+| DELETE | `/api/v1/directories/{id}` | sesión, propietario | Elimina una carpeta **vacía** (409 si contiene algo) |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
 
 Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propio handler/repositorio, no solo la autenticación — acceder a un archivo ajeno por ID adivinado devuelve `403`, nunca el contenido (§198 IDOR).

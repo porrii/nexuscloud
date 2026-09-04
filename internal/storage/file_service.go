@@ -26,13 +26,14 @@ var invalidNameChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 // autorización (propiedad) y la ruta lógica antes de delegar en Provider.
 // Ningún otro paquete debe tocar Provider directamente (§195-196).
 type FileService struct {
-	files    FileRepository
-	pools    PoolRepository
-	provider Provider
+	files       FileRepository
+	directories DirectoryRepository
+	pools       PoolRepository
+	provider    Provider
 }
 
-func NewFileService(files FileRepository, pools PoolRepository, provider Provider) *FileService {
-	return &FileService{files: files, pools: pools, provider: provider}
+func NewFileService(files FileRepository, directories DirectoryRepository, pools PoolRepository, provider Provider) *FileService {
+	return &FileService{files: files, directories: directories, pools: pools, provider: provider}
 }
 
 func validateName(name string) error {
@@ -140,14 +141,88 @@ func (s *FileService) Delete(ctx context.Context, requesterID, fileID string) er
 	return s.files.DeleteFile(ctx, fileID)
 }
 
-func (s *FileService) List(ctx context.Context, ownerID, parentPath string) ([]*FileMeta, error) {
-	return s.files.ListFiles(ctx, ownerID, normalizeParentPath(parentPath))
+// ListResult combina subcarpetas y archivos de una misma ruta lógica, tal
+// como los mostraría un explorador de archivos real.
+type ListResult struct {
+	Directories []*Directory
+	Files       []*FileMeta
 }
 
-func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name string) error {
+func (s *FileService) List(ctx context.Context, ownerID, parentPath string) (*ListResult, error) {
+	parent := normalizeParentPath(parentPath)
+
+	dirs, err := s.directories.ListDirectories(ctx, ownerID, parent)
+	if err != nil {
+		return nil, fmt.Errorf("listando carpetas: %w", err)
+	}
+	files, err := s.files.ListFiles(ctx, ownerID, parent)
+	if err != nil {
+		return nil, fmt.Errorf("listando archivos: %w", err)
+	}
+	return &ListResult{Directories: dirs, Files: files}, nil
+}
+
+// Mkdir crea la carpeta física y su registro de metadata (§13). Es
+// idempotente: crear una carpeta ya existente no es un error, igual que
+// os.MkdirAll.
+func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name string) (*Directory, error) {
 	if err := validateName(name); err != nil {
+		return nil, err
+	}
+	parent := normalizeParentPath(parentPath)
+	rel := physicalPath(ownerID, parent, name)
+	if err := s.provider.MkdirAll(ctx, rel); err != nil {
+		return nil, fmt.Errorf("creando carpeta física: %w", err)
+	}
+
+	pool, err := s.pools.DefaultPool(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo storage pool por defecto: %w", err)
+	}
+	dir := &Directory{
+		ID:         idgen.New(),
+		PoolID:     pool.ID,
+		OwnerID:    ownerID,
+		ParentPath: parent,
+		Name:       name,
+		CreatedAt:  time.Now().UTC(),
+	}
+	if err := s.directories.CreateDirectory(ctx, dir); err != nil {
+		return nil, err
+	}
+	return dir, nil
+}
+
+// DeleteDirectory solo permite borrar carpetas vacías (sin archivos ni
+// subcarpetas dentro) -- semántica equivalente a rmdir, no a "rm -rf" --
+// para no perder datos por accidente sin una confirmación explícita de
+// cada elemento (§184-185). Exige propiedad igual que Download/Delete
+// (§198 IDOR).
+func (s *FileService) DeleteDirectory(ctx context.Context, requesterID, dirID string) error {
+	target, err := s.directories.GetDirectoryByID(ctx, dirID)
+	if err != nil {
 		return err
 	}
-	rel := physicalPath(ownerID, normalizeParentPath(parentPath), name)
-	return s.provider.MkdirAll(ctx, rel)
+	if target.OwnerID != requesterID {
+		return ErrForbidden
+	}
+
+	childPath := path.Join(target.ParentPath, target.Name)
+	subdirs, err := s.directories.ListDirectories(ctx, requesterID, childPath)
+	if err != nil {
+		return fmt.Errorf("comprobando contenido de la carpeta: %w", err)
+	}
+	files, err := s.files.ListFiles(ctx, requesterID, childPath)
+	if err != nil {
+		return fmt.Errorf("comprobando contenido de la carpeta: %w", err)
+	}
+	if len(subdirs) > 0 || len(files) > 0 {
+		return ErrDirectoryNotEmpty
+	}
+
+	rel := physicalPath(requesterID, target.ParentPath, target.Name)
+	if err := s.provider.Delete(ctx, rel); err != nil {
+		return fmt.Errorf("eliminando carpeta física: %w", err)
+	}
+	return s.directories.DeleteDirectory(ctx, target.ID)
 }
