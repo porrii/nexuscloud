@@ -39,6 +39,9 @@ func Validate(cfg *Config) error {
 	if cfg.Security.RateLimit.APIPerMinute < 1 {
 		return fmt.Errorf("security.rateLimit.apiPerMinute debe ser >= 1")
 	}
+	if cfg.Security.RateLimit.PublicLinkPerMinute < 1 {
+		return fmt.Errorf("security.rateLimit.publicLinkPerMinute debe ser >= 1")
+	}
 
 	for _, o := range cfg.Security.CORSAllowedOrigins {
 		if o == "*" {

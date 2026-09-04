@@ -35,9 +35,10 @@ type Server struct {
 	Handler http.Handler
 	DB      *sql.DB
 
-	loginLimiter *security.RateLimiter
-	apiLimiter   *security.RateLimiter
-	stopPurge    chan struct{}
+	loginLimiter  *security.RateLimiter
+	apiLimiter    *security.RateLimiter
+	publicLimiter *security.RateLimiter
+	stopPurge     chan struct{}
 }
 
 // Build realiza todo el arranque en frío: abrir BD, migrar, construir
@@ -66,6 +67,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	fileRepo := storage.NewSQLFileRepository(conn)
 	directoryRepo := storage.NewSQLDirectoryRepository(conn)
 	versionRepo := storage.NewSQLVersionRepository(conn)
+	shareRepo := storage.NewSQLShareRepository(conn)
 	auditRepo := audit.NewSQLRepository(conn)
 
 	pool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, cfg.DefaultStorageDir())
@@ -83,8 +85,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	userSvc := users.NewService(userRepo)
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
-	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, poolRepo, provider,
-		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile)
+	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, provider, hasher,
+		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
+		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 
 	h := &apiv1.Handlers{
@@ -105,6 +108,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute
 	loginLimiter := security.NewRateLimiter(cfg.Security.RateLimit.LoginPerMinute, loginBurst)
 	apiLimiter := security.NewRateLimiter(cfg.Security.RateLimit.APIPerMinute, cfg.Security.RateLimit.APIPerMinute)
+	// publicLimiter protege los enlaces públicos de fuerza bruta sobre su
+	// contraseña (§37), igual motivo que loginLimiter para /auth/login: es
+	// la única superficie de la API que acepta peticiones sin sesión además
+	// de login/invitations.
+	publicLimiterBurst := cfg.Security.RateLimit.PublicLinkPerMinute
+	publicLimiter := security.NewRateLimiter(cfg.Security.RateLimit.PublicLinkPerMinute, publicLimiterBurst)
 
 	root := chi.NewRouter()
 	root.Use(security.Headers)
@@ -119,7 +128,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// no haya assets que servir (Fase 2): evita retrofitting del patrón de
 	// activación/desactivación más adelante (§3, §47).
 	if cfg.API.Enabled {
-		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter))
+		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter, publicLimiter))
 	}
 	if cfg.Web.Enabled {
 		webHandler, err := newWebUIHandler()
@@ -135,7 +144,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		startTrashPurgeLoop(fileSvc, cfg.Trash, logger, stopPurge)
 	}
 
-	return &Server{Handler: root, DB: sqlDB, loginLimiter: loginLimiter, apiLimiter: apiLimiter, stopPurge: stopPurge}, nil
+	return &Server{
+		Handler: root, DB: sqlDB,
+		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
+		stopPurge: stopPurge,
+	}, nil
 }
 
 // startTrashPurgeLoop lanza la limpieza automática de la papelera por
@@ -178,6 +191,7 @@ func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, l
 func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
+	s.publicLimiter.Stop()
 	if s.stopPurge != nil {
 		close(s.stopPurge)
 	}

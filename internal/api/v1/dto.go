@@ -96,3 +96,74 @@ func toVersionResponse(v *storage.FileVersion) versionResponse {
 		VersionNum: v.VersionNum, SizeBytes: v.SizeBytes, SHA256: v.SHA256, MimeType: v.MimeType, CreatedAt: v.CreatedAt,
 	}
 }
+
+type groupResponse struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+func toGroupResponse(g *users.Group) groupResponse {
+	return groupResponse{ID: g.ID, Name: g.Name}
+}
+
+// shareResponse nunca expone PasswordHash/TokenHash (§172): HasPassword es
+// un booleano derivado, y Token solo se rellena en la respuesta de creación
+// de un enlace -- una única vez, igual que sesiones/invitaciones (§78) -- el
+// resto de respuestas (listar, etc.) lo dejan vacío.
+type shareResponse struct {
+	ID                 string     `json:"id"`
+	ResourceType       string     `json:"resource_type"`
+	ResourceID         string     `json:"resource_id"`
+	ResourceName       string     `json:"resource_name,omitempty"`
+	ShareType          string     `json:"share_type"`
+	TargetUserID       string     `json:"target_user_id,omitempty"`
+	TargetUsername     string     `json:"target_username,omitempty"`
+	TargetGroupID      string     `json:"target_group_id,omitempty"`
+	TargetGroupName    string     `json:"target_group_name,omitempty"`
+	Label              string     `json:"label,omitempty"`
+	CanDownload        bool       `json:"can_download"`
+	CanUpload          bool       `json:"can_upload"`
+	HasPassword        bool       `json:"has_password"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	MaxDownloads       *int       `json:"max_downloads,omitempty"`
+	DownloadCount      int        `json:"download_count"`
+	MaxUploadSizeBytes *int64     `json:"max_upload_size_bytes,omitempty"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Token              string     `json:"token,omitempty"`
+}
+
+// shareResponseExtra agrupa los nombres resueltos (usuario/grupo destino,
+// recurso) que toShareResponse no puede resolver por sí sola -- son I/O
+// adicional que corresponde al handler, no a un mapper DTO puro.
+type shareResponseExtra struct {
+	ResourceName    string
+	TargetUsername  string
+	TargetGroupName string
+}
+
+func toShareResponse(s *storage.Share, extra shareResponseExtra) shareResponse {
+	resourceType, resourceID := "file", s.FileID
+	if s.IsDirectoryShare() {
+		resourceType, resourceID = "directory", s.DirectoryID
+	}
+	return shareResponse{
+		ID:                 s.ID,
+		ResourceType:       resourceType,
+		ResourceID:         resourceID,
+		ResourceName:       extra.ResourceName,
+		ShareType:          string(s.Type),
+		TargetUserID:       s.TargetUserID,
+		TargetUsername:     extra.TargetUsername,
+		TargetGroupID:      s.TargetGroupID,
+		TargetGroupName:    extra.TargetGroupName,
+		Label:              s.Label,
+		CanDownload:        s.CanDownload,
+		CanUpload:          s.CanUpload,
+		HasPassword:        s.HasPassword(),
+		ExpiresAt:          s.ExpiresAt,
+		MaxDownloads:       s.MaxDownloads,
+		DownloadCount:      s.DownloadCount,
+		MaxUploadSizeBytes: s.MaxUploadSizeBytes,
+		CreatedAt:          s.CreatedAt,
+	}
+}

@@ -18,7 +18,7 @@ func testConfig(t *testing.T) *config.Config {
 // currentSchemaVersion es la versión de esquema más alta esperada tras
 // aplicar todas las migraciones embebidas. Actualízala al añadir una nueva
 // migración (§8: cada una suma, nunca se reescribe una ya aplicada).
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 func TestMigrateAppliesFullSchema(t *testing.T) {
 	cfg := testConfig(t)
@@ -75,6 +75,15 @@ func TestMigrateAppliesFullSchema(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("file_versions = %d filas, esperado 0 en un esquema recién migrado", count)
+	}
+
+	// shares (0005) debe existir y estar vacía tras un esquema recién
+	// migrado.
+	if err := conn.QueryRow("SELECT COUNT(*) FROM shares").Scan(&count); err != nil {
+		t.Fatalf("consultando shares: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("shares = %d filas, esperado 0 en un esquema recién migrado", count)
 	}
 }
 

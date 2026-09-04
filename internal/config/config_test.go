@@ -23,6 +23,12 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if len(cfg.Security.CORSAllowedOrigins) != 0 {
 		t.Error("security.corsAllowedOrigins debe estar vacío por defecto")
 	}
+	if cfg.Sharing.PublicLinksEnabled {
+		t.Error("sharing.publicLinksEnabled debe ser false por defecto (§3, §47): es la única superficie sin sesión que añade Sharing")
+	}
+	if !cfg.Sharing.Enabled {
+		t.Error("sharing.enabled (compartición interna usuario/grupo, siempre autenticada) debe ser true por defecto, igual que trash/versioning")
+	}
 }
 
 func TestLoadMissingFileFallsBackToDefaults(t *testing.T) {

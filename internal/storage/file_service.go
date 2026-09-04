@@ -31,21 +31,28 @@ type FileService struct {
 	files              FileRepository
 	directories        DirectoryRepository
 	versions           VersionRepository
+	shares             ShareRepository
 	pools              PoolRepository
 	provider           Provider
+	hasher             PasswordHasher
 	trashEnabled       bool
 	versioningEnabled  bool
 	maxVersionsPerFile int
+	sharingEnabled     bool
+	publicLinksEnabled bool
 }
 
 func NewFileService(
-	files FileRepository, directories DirectoryRepository, versions VersionRepository,
-	pools PoolRepository, provider Provider,
+	files FileRepository, directories DirectoryRepository, versions VersionRepository, shares ShareRepository,
+	pools PoolRepository, provider Provider, hasher PasswordHasher,
 	trashEnabled, versioningEnabled bool, maxVersionsPerFile int,
+	sharingEnabled, publicLinksEnabled bool,
 ) *FileService {
 	return &FileService{
-		files: files, directories: directories, versions: versions, pools: pools, provider: provider,
+		files: files, directories: directories, versions: versions, shares: shares,
+		pools: pools, provider: provider, hasher: hasher,
 		trashEnabled: trashEnabled, versioningEnabled: versioningEnabled, maxVersionsPerFile: maxVersionsPerFile,
+		sharingEnabled: sharingEnabled, publicLinksEnabled: publicLinksEnabled,
 	}
 }
 
@@ -306,7 +313,9 @@ func (s *FileService) rejectIfTrashOccupiesName(ctx context.Context, poolID, own
 	return nil
 }
 
-// Download exige que requesterID sea el propietario del archivo (§198
+// Download exige que requesterID sea el propietario del archivo, o que
+// tenga acceso vía un share de tipo user/group -- directo o a través de una
+// carpeta ancestro compartida (§37) -- antes de caer en ErrForbidden (§198
 // IDOR): conocer el ID no basta. Un archivo en la papelera sigue siendo
 // descargable por su propietario (solo deja de listarse).
 func (s *FileService) Download(ctx context.Context, requesterID, fileID string) (*FileMeta, io.ReadCloser, error) {
@@ -315,7 +324,13 @@ func (s *FileService) Download(ctx context.Context, requesterID, fileID string) 
 		return nil, nil, err
 	}
 	if meta.OwnerID != requesterID {
-		return nil, nil, ErrForbidden
+		ok, err := s.hasShareAccessToFile(ctx, requesterID, meta)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
+			return nil, nil, ErrForbidden
+		}
 	}
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
 	rc, err := s.provider.Read(ctx, rel)

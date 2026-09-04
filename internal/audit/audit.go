@@ -22,6 +22,8 @@ const (
 	EventUpload            = "upload"
 	EventDownload          = "download"
 	EventDelete            = "delete"
+	EventShareCreate       = "share_create"
+	EventShareRevoke       = "share_revoke"
 	EventConfigChanged     = "config_changed"
 )
 

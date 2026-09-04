@@ -10,8 +10,9 @@ import (
 
 // NewRouter construye el árbol de rutas /api/v1 (§42). loginLimiter aplica
 // rate limiting específico al endpoint de login (§27, más estricto);
-// apiLimiter cubre el resto de la API.
-func NewRouter(h *Handlers, loginLimiter, apiLimiter *security.RateLimiter) http.Handler {
+// apiLimiter cubre el resto de la API; publicLimiter cubre los enlaces
+// públicos de compartición (§37), la otra superficie sin sesión.
+func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.RateLimiter) http.Handler {
 	r := chi.NewRouter()
 	keyFunc := func(req *http.Request) string { return security.ClientIP(req, h.TrustedProxies) }
 
@@ -24,6 +25,18 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter *security.RateLimiter) http
 		r.Post("/auth/login", h.Login)
 	})
 	r.Post("/invitations/redeem", h.RedeemInvitation)
+
+	// Enlaces públicos (§37): sin sesión, autorizados solo por el token en
+	// la URL (y contraseña opcional vía cabecera X-Share-Password). Rate
+	// limit propio y más estricto -- objetivo obvio de fuerza bruta sobre la
+	// contraseña, igual motivo que loginLimiter.
+	r.Group(func(r chi.Router) {
+		r.Use(publicLimiter.Middleware(keyFunc))
+		r.Get("/public/shares/{token}", h.GetPublicShare)
+		r.Get("/public/shares/{token}/download", h.DownloadPublicShare)
+		r.Get("/public/shares/{token}/browse", h.BrowsePublicShare)
+		r.Post("/public/shares/{token}/upload", h.UploadPublicShare)
+	})
 
 	r.Group(func(r chi.Router) {
 		r.Use(h.RequireAuth)
@@ -49,6 +62,13 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter *security.RateLimiter) http
 		r.Post("/directories/{id}/restore", h.RestoreDirectory)
 
 		r.Get("/trash", h.ListTrash)
+
+		r.Get("/groups", h.ListGroups)
+
+		r.Post("/shares", h.CreateShare)
+		r.Get("/shares", h.ListShares)
+		r.Delete("/shares/{id}", h.RevokeShare)
+		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
 
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)

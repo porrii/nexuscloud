@@ -11,6 +11,7 @@ import (
 
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/db"
+	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/users"
 )
 
@@ -23,20 +24,22 @@ type testEnv struct {
 	files       FileRepository
 	directories DirectoryRepository
 	versions    VersionRepository
+	shares      ShareRepository
 	provider    *LocalFilesystemProvider
 	userSvc     *users.Service
+	userRepo    users.Repository
 }
 
 // newTestEnv mantiene su firma de dos parámetros (usada por ~20 tests
-// preexistentes) con versionado activado y un límite generoso por defecto;
-// newTestEnvFull permite controlar también esas dos dimensiones para los
-// tests que las ejercitan directamente.
+// preexistentes) con versionado y compartición activados por defecto;
+// newTestEnvFull permite controlar también esas dimensiones para los tests
+// que las ejercitan directamente.
 func newTestEnv(t *testing.T, trashEnabled bool) *testEnv {
 	t.Helper()
-	return newTestEnvFull(t, trashEnabled, true, 10)
+	return newTestEnvFull(t, trashEnabled, true, 10, true, true)
 }
 
-func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersionsPerFile int) *testEnv {
+func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersionsPerFile int, sharingEnabled, publicLinksEnabled bool) *testEnv {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Database.Driver = "sqlite"
@@ -64,16 +67,38 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	files := NewSQLFileRepository(conn)
 	directories := NewSQLDirectoryRepository(conn)
 	versions := NewSQLVersionRepository(conn)
+	shares := NewSQLShareRepository(conn)
+	userRepo := users.NewSQLRepository(conn)
 
 	return &testEnv{
-		svc: NewFileService(files, directories, versions, pools, provider,
-			trashEnabled, versioningEnabled, maxVersionsPerFile),
+		svc: NewFileService(files, directories, versions, shares, pools, provider, &testPasswordHasher{},
+			trashEnabled, versioningEnabled, maxVersionsPerFile,
+			sharingEnabled, publicLinksEnabled),
 		files:       files,
 		directories: directories,
 		versions:    versions,
+		shares:      shares,
 		provider:    provider,
-		userSvc:     users.NewService(users.NewSQLRepository(conn)),
+		userSvc:     users.NewService(userRepo),
+		userRepo:    userRepo,
 	}
+}
+
+// testPasswordHasher es un PasswordHasher trivial y determinista para
+// pruebas -- evita depender de auth.Hasher (internal/storage no puede
+// importar internal/auth, ver share.go) y de la lentitud deliberada de
+// Argon2id en un test que crea muchas contraseñas.
+type testPasswordHasher struct{}
+
+func (testPasswordHasher) Hash(password string) (string, error) {
+	return "test-hash:" + password, nil
+}
+
+func (testPasswordHasher) Verify(password, encodedHash string) error {
+	if encodedHash != "test-hash:"+password {
+		return errors.New("contraseña incorrecta")
+	}
+	return nil
 }
 
 // user crea (si hace falta) un usuario real con ese username y devuelve su
@@ -85,6 +110,24 @@ func (e *testEnv) user(t *testing.T, username string) string {
 		t.Fatalf("creando usuario de prueba %q: %v", username, err)
 	}
 	return u.ID
+}
+
+// group crea un grupo real y devuelve su ID, para las pruebas de
+// compartición usuario→grupo (§37).
+func (e *testEnv) group(t *testing.T, name string) string {
+	t.Helper()
+	g := &users.Group{ID: idgen.New(), Name: name, CreatedAt: time.Now().UTC()}
+	if err := e.userRepo.CreateGroup(context.Background(), g); err != nil {
+		t.Fatalf("creando grupo de prueba %q: %v", name, err)
+	}
+	return g.ID
+}
+
+func (e *testEnv) addToGroup(t *testing.T, userID, groupID string) {
+	t.Helper()
+	if err := e.userRepo.AddUserToGroup(context.Background(), userID, groupID); err != nil {
+		t.Fatalf("añadiendo usuario %s al grupo %s: %v", userID, groupID, err)
+	}
 }
 
 func TestUploadDownloadRoundTrip(t *testing.T) {
@@ -667,7 +710,7 @@ func TestUploadSkipsVersionWhenContentIdentical(t *testing.T) {
 
 func TestUploadSkipsVersioningWhenDisabled(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, false, 10)
+	env := newTestEnvFull(t, true, false, 10, true, true)
 	owner := env.user(t, "user-1")
 
 	first, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})
@@ -740,7 +783,7 @@ func TestRestoreVersionSwapsContentAndKeepsHistory(t *testing.T) {
 
 func TestEnforceMaxVersionsPurgesOldest(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, true, 2) // como mucho 2 versiones en el historial
+	env := newTestEnvFull(t, true, true, 2, true, true) // como mucho 2 versiones en el historial
 	owner := env.user(t, "user-1")
 
 	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})

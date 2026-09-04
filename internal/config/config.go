@@ -27,6 +27,7 @@ type Config struct {
 	Security      SecurityConfig   `yaml:"security"`
 	Trash         TrashConfig      `yaml:"trash"`
 	Versioning    VersioningConfig `yaml:"versioning"`
+	Sharing       SharingConfig    `yaml:"sharing"`
 	API           APIConfig        `yaml:"api"`
 	Web           WebConfig        `yaml:"web"`
 	Logging       LoggingConfig    `yaml:"logging"`
@@ -101,9 +102,22 @@ type VersioningConfig struct {
 	MaxVersionsPerFile int  `yaml:"maxVersionsPerFile"`
 }
 
+// SharingConfig gobierna la compartición (§37). Enabled cubre usuario→usuario
+// y usuario→grupo: no añaden ninguna superficie sin autenticar (siguen
+// exigiendo sesión igual que el resto de la API), así que su valor por
+// defecto es true, igual que trash/versioning. PublicLinksEnabled cubre los
+// enlaces públicos, la ÚNICA superficie que Sharing expone sin sesión --
+// coherente con el precedente ya sentado por web.enabled (§3, §47), su valor
+// por defecto es false: el administrador debe activarla explícitamente.
+type SharingConfig struct {
+	Enabled            bool `yaml:"enabled"`
+	PublicLinksEnabled bool `yaml:"publicLinksEnabled"`
+}
+
 type RateLimitConfig struct {
-	LoginPerMinute int `yaml:"loginPerMinute"`
-	APIPerMinute   int `yaml:"apiPerMinute"`
+	LoginPerMinute      int `yaml:"loginPerMinute"`
+	APIPerMinute        int `yaml:"apiPerMinute"`
+	PublicLinkPerMinute int `yaml:"publicLinkPerMinute"`
 }
 
 type APIConfig struct {
@@ -150,14 +164,16 @@ func Defaults() *Config {
 				Parallelism: 4,
 			},
 			RateLimit: RateLimitConfig{
-				LoginPerMinute: 5,
-				APIPerMinute:   300,
+				LoginPerMinute:      5,
+				APIPerMinute:        300,
+				PublicLinkPerMinute: 20,
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
 		},
 		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
+		Sharing:    SharingConfig{Enabled: true, PublicLinksEnabled: false},
 		API:        APIConfig{Enabled: true},
 		Web:        WebConfig{Enabled: false},
 		Logging:    LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
