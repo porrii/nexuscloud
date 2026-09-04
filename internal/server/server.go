@@ -65,6 +65,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	poolRepo := storage.NewSQLPoolRepository(conn)
 	fileRepo := storage.NewSQLFileRepository(conn)
 	directoryRepo := storage.NewSQLDirectoryRepository(conn)
+	versionRepo := storage.NewSQLVersionRepository(conn)
 	auditRepo := audit.NewSQLRepository(conn)
 
 	pool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, cfg.DefaultStorageDir())
@@ -82,7 +83,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	userSvc := users.NewService(userRepo)
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
-	fileSvc := storage.NewFileService(fileRepo, directoryRepo, poolRepo, provider, cfg.Trash.Enabled)
+	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, poolRepo, provider,
+		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 
 	h := &apiv1.Handlers{

@@ -16,4 +16,8 @@ type Provider interface {
 	Delete(ctx context.Context, relPath string) error
 	Exists(ctx context.Context, relPath string) (bool, error)
 	MkdirAll(ctx context.Context, relPath string) error
+	// Move reubica el contenido de fromRelPath a toRelPath (usado por el
+	// historial de versiones, §15, para apartar el contenido superado sin
+	// copiarlo). Debe ser atómico cuando la plataforma lo permita.
+	Move(ctx context.Context, fromRelPath, toRelPath string) error
 }

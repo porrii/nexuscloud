@@ -59,6 +59,13 @@ trash:
   enabled: true
   retentionDays: 30
 
+# Historial de versiones (§15): con enabled=false, subir a un path
+# existente sobrescribe sin dejar rastro. Al superar maxVersionsPerFile se
+# purga automáticamente la versión más antigua.
+versioning:
+  enabled: true
+  maxVersionsPerFile: 10
+
 api:
   enabled: true
 

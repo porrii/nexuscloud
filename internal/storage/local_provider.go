@@ -117,3 +117,21 @@ func (p *LocalFilesystemProvider) MkdirAll(ctx context.Context, relPath string) 
 	}
 	return os.MkdirAll(full, 0o750)
 }
+
+func (p *LocalFilesystemProvider) Move(ctx context.Context, fromRelPath, toRelPath string) error {
+	fromFull, err := SafeJoin(p.root, fromRelPath)
+	if err != nil {
+		return err
+	}
+	toFull, err := SafeJoin(p.root, toRelPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(toFull), 0o750); err != nil {
+		return fmt.Errorf("creando directorio destino: %w", err)
+	}
+	if err := os.Rename(fromFull, toFull); err != nil {
+		return fmt.Errorf("moviendo %s a %s: %w", fromRelPath, toRelPath, err)
+	}
+	return nil
+}

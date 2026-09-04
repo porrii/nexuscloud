@@ -195,6 +195,8 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "not_empty", "La carpeta no está vacía.")
 	case errors.Is(err, storage.ErrNameOccupiedByTrash):
 		writeError(w, http.StatusConflict, "name_occupied_by_trash", err.Error())
+	case errors.Is(err, storage.ErrVersionNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Versión no encontrada.")
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):
 		writeError(w, http.StatusBadRequest, "invalid_request", "Nombre o ruta inválidos.")
 	default:

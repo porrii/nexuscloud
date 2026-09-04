@@ -7,6 +7,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"strconv"
 	"time"
 
 	"github.com/porrii/nexuscloud/internal/idgen"
@@ -27,15 +28,25 @@ var invalidNameChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 // autorización (propiedad) y la ruta lógica antes de delegar en Provider.
 // Ningún otro paquete debe tocar Provider directamente (§195-196).
 type FileService struct {
-	files        FileRepository
-	directories  DirectoryRepository
-	pools        PoolRepository
-	provider     Provider
-	trashEnabled bool
+	files              FileRepository
+	directories        DirectoryRepository
+	versions           VersionRepository
+	pools              PoolRepository
+	provider           Provider
+	trashEnabled       bool
+	versioningEnabled  bool
+	maxVersionsPerFile int
 }
 
-func NewFileService(files FileRepository, directories DirectoryRepository, pools PoolRepository, provider Provider, trashEnabled bool) *FileService {
-	return &FileService{files: files, directories: directories, pools: pools, provider: provider, trashEnabled: trashEnabled}
+func NewFileService(
+	files FileRepository, directories DirectoryRepository, versions VersionRepository,
+	pools PoolRepository, provider Provider,
+	trashEnabled, versioningEnabled bool, maxVersionsPerFile int,
+) *FileService {
+	return &FileService{
+		files: files, directories: directories, versions: versions, pools: pools, provider: provider,
+		trashEnabled: trashEnabled, versioningEnabled: versioningEnabled, maxVersionsPerFile: maxVersionsPerFile,
+	}
 }
 
 func validateName(name string) error {
@@ -63,6 +74,19 @@ func physicalPath(ownerID, parentPath, name string) string {
 	return path.Join("/", ownerID, parentPath, name)
 }
 
+// stagingPath es una ubicación temporal fuera del árbol lógico visible,
+// usada para escribir (y poder hashear) el contenido entrante de Upload
+// antes de decidir si hay que versionar el contenido anterior.
+func stagingPath(ownerID string) string {
+	return path.Join("/", ownerID, ".nexuscloud-staging", idgen.New())
+}
+
+// versionStoragePath ubica el contenido de una versión superada, fuera del
+// árbol lógico visible del usuario (§15).
+func versionStoragePath(ownerID, fileID string, versionNum int) string {
+	return path.Join("/", ownerID, ".nexuscloud-versions", fileID, strconv.Itoa(versionNum))
+}
+
 type UploadInput struct {
 	OwnerID    string
 	ParentPath string
@@ -70,11 +94,11 @@ type UploadInput struct {
 	Content    io.Reader
 }
 
-// Upload valida nombre/ruta, escribe el contenido de forma atómica vía el
-// Provider y solo entonces persiste los metadatos. Subir al mismo path
-// activo existente sobrescribe (versionado real llega en Fase 2, §498-507);
-// si el path está ocupado por un elemento en la papelera, se rechaza en vez
-// de resucitarlo/sobrescribirlo en silencio (§128).
+// Upload valida nombre/ruta y escribe primero a una ubicación provisional
+// para poder conocer el hash del contenido entrante sin perder todavía el
+// contenido anterior (necesario para decidir si versionarlo). Si el path
+// está ocupado por un elemento en la papelera, se rechaza en vez de
+// resucitarlo/sobrescribirlo en silencio (§128).
 func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, error) {
 	if err := validateName(in.Name); err != nil {
 		return nil, err
@@ -90,11 +114,32 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 		return nil, err
 	}
 
-	rel := physicalPath(in.OwnerID, parent, in.Name)
-	size, sha, err := s.provider.Write(ctx, rel, in.Content)
+	staging := stagingPath(in.OwnerID)
+	size, sha, err := s.provider.Write(ctx, staging, in.Content)
 	if err != nil {
 		return nil, fmt.Errorf("escribiendo archivo: %w", err)
 	}
+	movedToFinal := false
+	defer func() {
+		if !movedToFinal {
+			_ = s.provider.Delete(ctx, staging) // best-effort: limpia el staging si algo falló después
+		}
+	}()
+
+	rel := physicalPath(in.OwnerID, parent, in.Name)
+	existing, existingErr := s.files.GetFileByNaturalKey(ctx, pool.ID, in.OwnerID, parent, in.Name)
+	hasActiveExisting := existingErr == nil && !existing.IsTrashed()
+
+	if hasActiveExisting && s.versioningEnabled && existing.SHA256 != sha {
+		if err := s.snapshotVersion(ctx, existing); err != nil {
+			return nil, fmt.Errorf("guardando versión anterior: %w", err)
+		}
+	}
+
+	if err := s.provider.Move(ctx, staging, rel); err != nil {
+		return nil, fmt.Errorf("moviendo archivo a destino final: %w", err)
+	}
+	movedToFinal = true
 
 	now := time.Now().UTC()
 	meta := &FileMeta{
@@ -110,7 +155,142 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 		UpdatedAt:  now,
 	}
 	if err := s.files.UpsertFile(ctx, meta); err != nil {
-		_ = s.provider.Delete(ctx, rel) // best-effort: no dejar contenido huérfano si falla el metadato
+		return nil, err
+	}
+	return meta, nil
+}
+
+// snapshotVersion aparta el contenido actualmente en rel(existing) a su
+// propia ubicación versionada y registra la fila de historial, antes de que
+// Upload lo sobrescriba. CreatedAt de la versión es existing.UpdatedAt: el
+// momento en que ESE contenido pasó a ser la versión vigente, no "ahora".
+func (s *FileService) snapshotVersion(ctx context.Context, existing *FileMeta) error {
+	nextNum, err := s.versions.LatestVersionNum(ctx, existing.ID)
+	if err != nil {
+		return err
+	}
+	nextNum++
+
+	oldRel := physicalPath(existing.OwnerID, existing.ParentPath, existing.Name)
+	versionKey := versionStoragePath(existing.OwnerID, existing.ID, nextNum)
+	if err := s.provider.Move(ctx, oldRel, versionKey); err != nil {
+		return fmt.Errorf("apartando contenido anterior: %w", err)
+	}
+
+	v := &FileVersion{
+		ID:         idgen.New(),
+		FileID:     existing.ID,
+		VersionNum: nextNum,
+		SizeBytes:  existing.SizeBytes,
+		SHA256:     existing.SHA256,
+		MimeType:   existing.MimeType,
+		StorageKey: versionKey,
+		CreatedAt:  existing.UpdatedAt,
+	}
+	if err := s.versions.CreateVersion(ctx, v); err != nil {
+		return err
+	}
+
+	return s.enforceMaxVersions(ctx, existing.ID)
+}
+
+// enforceMaxVersions purga la versión más antigua mientras se exceda el
+// límite configurado (§15 "política automática de limpieza").
+func (s *FileService) enforceMaxVersions(ctx context.Context, fileID string) error {
+	if s.maxVersionsPerFile <= 0 {
+		return nil
+	}
+	versions, err := s.versions.ListVersions(ctx, fileID) // ya viene ordenado version_num DESC
+	if err != nil {
+		return err
+	}
+	for len(versions) > s.maxVersionsPerFile {
+		oldest := versions[len(versions)-1]
+		if err := s.provider.Delete(ctx, oldest.StorageKey); err != nil {
+			return fmt.Errorf("purgando contenido de versión antigua: %w", err)
+		}
+		if err := s.versions.DeleteVersion(ctx, oldest.ID); err != nil {
+			return err
+		}
+		versions = versions[:len(versions)-1]
+	}
+	return nil
+}
+
+// ListVersions devuelve el historial de un archivo, más reciente primero.
+// Exige propiedad (§198).
+func (s *FileService) ListVersions(ctx context.Context, requesterID, fileID string) ([]*FileVersion, error) {
+	meta, err := s.files.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.OwnerID != requesterID {
+		return nil, ErrForbidden
+	}
+	return s.versions.ListVersions(ctx, fileID)
+}
+
+// DownloadVersion sirve el contenido de una versión concreta, no la actual.
+func (s *FileService) DownloadVersion(ctx context.Context, requesterID, fileID string, versionNum int) (*FileVersion, io.ReadCloser, error) {
+	meta, err := s.files.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, nil, err
+	}
+	if meta.OwnerID != requesterID {
+		return nil, nil, ErrForbidden
+	}
+	v, err := s.versions.GetVersion(ctx, fileID, versionNum)
+	if err != nil {
+		return nil, nil, err
+	}
+	rc, err := s.provider.Read(ctx, v.StorageKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("leyendo versión: %w", err)
+	}
+	return v, rc, nil
+}
+
+// RestoreVersion hace que una versión antigua vuelva a ser el contenido
+// vigente: la versión actual pasa a su vez a formar parte del historial
+// (nunca se pierde), y la versión restaurada se retira de la tabla de
+// versiones porque ahora es -de nuevo- el archivo activo.
+func (s *FileService) RestoreVersion(ctx context.Context, requesterID, fileID string, versionNum int) (*FileMeta, error) {
+	meta, err := s.files.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.OwnerID != requesterID {
+		return nil, ErrForbidden
+	}
+	target, err := s.versions.GetVersion(ctx, fileID, versionNum)
+	if err != nil {
+		return nil, err
+	}
+
+	if s.versioningEnabled {
+		if err := s.snapshotVersion(ctx, meta); err != nil {
+			return nil, fmt.Errorf("guardando versión actual antes de restaurar: %w", err)
+		}
+	} else {
+		rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
+		if err := s.provider.Delete(ctx, rel); err != nil {
+			return nil, fmt.Errorf("descartando contenido actual: %w", err)
+		}
+	}
+
+	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
+	if err := s.provider.Move(ctx, target.StorageKey, rel); err != nil {
+		return nil, fmt.Errorf("restaurando versión: %w", err)
+	}
+	if err := s.versions.DeleteVersion(ctx, target.ID); err != nil {
+		return nil, err
+	}
+
+	meta.SizeBytes = target.SizeBytes
+	meta.SHA256 = target.SHA256
+	meta.MimeType = target.MimeType
+	meta.UpdatedAt = time.Now().UTC()
+	if err := s.files.UpsertFile(ctx, meta); err != nil {
 		return nil, err
 	}
 	return meta, nil
@@ -176,11 +356,27 @@ func (s *FileService) PermanentlyDeleteFile(ctx context.Context, requesterID, fi
 	return s.permanentlyDeleteFile(ctx, meta)
 }
 
+// permanentlyDeleteFile también purga el historial de versiones (§15): no
+// tiene sentido conservarlo cuando el archivo al que pertenece ya no existe.
 func (s *FileService) permanentlyDeleteFile(ctx context.Context, meta *FileMeta) error {
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
 	if err := s.provider.Delete(ctx, rel); err != nil {
 		return fmt.Errorf("eliminando contenido: %w", err)
 	}
+
+	versions, err := s.versions.ListVersions(ctx, meta.ID)
+	if err != nil {
+		return fmt.Errorf("listando versiones a purgar: %w", err)
+	}
+	for _, v := range versions {
+		if err := s.provider.Delete(ctx, v.StorageKey); err != nil {
+			return fmt.Errorf("eliminando contenido de versión %d: %w", v.VersionNum, err)
+		}
+	}
+	if err := s.versions.DeleteAllVersions(ctx, meta.ID); err != nil {
+		return fmt.Errorf("eliminando historial de versiones: %w", err)
+	}
+
 	return s.files.DeleteFile(ctx, meta.ID)
 }
 

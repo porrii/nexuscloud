@@ -65,5 +65,9 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("trash.retentionDays debe ser >= 1 cuando trash.enabled=true")
 	}
 
+	if cfg.Versioning.Enabled && cfg.Versioning.MaxVersionsPerFile < 1 {
+		return fmt.Errorf("versioning.maxVersionsPerFile debe ser >= 1 cuando versioning.enabled=true")
+	}
+
 	return nil
 }

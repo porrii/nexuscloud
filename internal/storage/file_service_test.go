@@ -22,11 +22,21 @@ type testEnv struct {
 	svc         *FileService
 	files       FileRepository
 	directories DirectoryRepository
+	versions    VersionRepository
 	provider    *LocalFilesystemProvider
 	userSvc     *users.Service
 }
 
+// newTestEnv mantiene su firma de dos parámetros (usada por ~20 tests
+// preexistentes) con versionado activado y un límite generoso por defecto;
+// newTestEnvFull permite controlar también esas dos dimensiones para los
+// tests que las ejercitan directamente.
 func newTestEnv(t *testing.T, trashEnabled bool) *testEnv {
+	t.Helper()
+	return newTestEnvFull(t, trashEnabled, true, 10)
+}
+
+func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersionsPerFile int) *testEnv {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Database.Driver = "sqlite"
@@ -53,11 +63,14 @@ func newTestEnv(t *testing.T, trashEnabled bool) *testEnv {
 	}
 	files := NewSQLFileRepository(conn)
 	directories := NewSQLDirectoryRepository(conn)
+	versions := NewSQLVersionRepository(conn)
 
 	return &testEnv{
-		svc:         NewFileService(files, directories, pools, provider, trashEnabled),
+		svc: NewFileService(files, directories, versions, pools, provider,
+			trashEnabled, versioningEnabled, maxVersionsPerFile),
 		files:       files,
 		directories: directories,
+		versions:    versions,
 		provider:    provider,
 		userSvc:     users.NewService(users.NewSQLRepository(conn)),
 	}
@@ -584,5 +597,231 @@ func TestPermanentlyDeleteDirectoryRemovesItForGood(t *testing.T) {
 	}
 	if _, err := env.directories.GetDirectoryByID(ctx, dir.ID); !errors.Is(err, ErrDirectoryNotFound) {
 		t.Errorf("err = %v, esperado ErrDirectoryNotFound tras el borrado definitivo", err)
+	}
+}
+
+func TestUploadCreatesVersionWhenContentChanges(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))}); err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	second, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("versión dos"))})
+	if err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	versions, err := env.svc.ListVersions(ctx, owner, second.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 1 || versions[0].VersionNum != 1 {
+		t.Fatalf("versions = %+v, esperado exactamente la versión 1", versions)
+	}
+
+	_, rc, err := env.svc.DownloadVersion(ctx, owner, second.ID, 1)
+	if err != nil {
+		t.Fatalf("DownloadVersion falló: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "v1" {
+		t.Errorf("contenido de la versión 1 = %q, esperado v1", got)
+	}
+
+	// El contenido actual sigue siendo el de la segunda subida.
+	_, rc, err = env.svc.Download(ctx, owner, second.ID)
+	if err != nil {
+		t.Fatalf("Download falló: %v", err)
+	}
+	got, _ = io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "versión dos" {
+		t.Errorf("contenido actual = %q, esperado 'versión dos'", got)
+	}
+}
+
+func TestUploadSkipsVersionWhenContentIdentical(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	first, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("igual"))})
+	if err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("igual"))}); err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	versions, err := env.svc.ListVersions(ctx, owner, first.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("volver a subir contenido idéntico no debería crear versión: %+v", versions)
+	}
+}
+
+func TestUploadSkipsVersioningWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, false, 10)
+	owner := env.user(t, "user-1")
+
+	first, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})
+	if err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v2"))}); err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	versions, err := env.svc.ListVersions(ctx, owner, first.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("con versioning.enabled=false no debería crearse historial: %+v", versions)
+	}
+}
+
+func TestRestoreVersionSwapsContentAndKeepsHistory(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("original"))}); err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("editado"))})
+	if err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	restored, err := env.svc.RestoreVersion(ctx, owner, meta.ID, 1)
+	if err != nil {
+		t.Fatalf("RestoreVersion falló: %v", err)
+	}
+	if restored.ID != meta.ID {
+		t.Errorf("restaurar una versión no debería cambiar el ID del archivo: %q != %q", restored.ID, meta.ID)
+	}
+
+	_, rc, err := env.svc.Download(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("Download falló: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "original" {
+		t.Errorf("tras restaurar, el contenido actual = %q, esperado 'original'", got)
+	}
+
+	// La versión "editado" (la que estaba vigente antes de restaurar) debe
+	// haber pasado, a su vez, a formar parte del historial.
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("versions = %+v, esperado exactamente 1 (el 'editado' recién desplazado)", versions)
+	}
+	_, rc, err = env.svc.DownloadVersion(ctx, owner, meta.ID, versions[0].VersionNum)
+	if err != nil {
+		t.Fatalf("DownloadVersion falló: %v", err)
+	}
+	got, _ = io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "editado" {
+		t.Errorf("la versión desplazada por el restore = %q, esperado 'editado'", got)
+	}
+}
+
+func TestEnforceMaxVersionsPurgesOldest(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, true, 2) // como mucho 2 versiones en el historial
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})
+	if err != nil {
+		t.Fatalf("upload v1 falló: %v", err)
+	}
+	for _, content := range []string{"v2", "v3", "v4"} {
+		meta, err = env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte(content))})
+		if err != nil {
+			t.Fatalf("upload %s falló: %v", content, err)
+		}
+	}
+	// Contenido actual: v4. Historial esperado, tras purgar por el límite
+	// de 2: solo las dos versiones más recientes antes de v4 (v2 y v3);
+	// v1 debería haberse purgado.
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("versions = %+v, esperadas exactamente 2 (límite maxVersionsPerFile)", versions)
+	}
+	for _, v := range versions {
+		if _, rc, err := env.svc.DownloadVersion(ctx, owner, meta.ID, v.VersionNum); err != nil {
+			t.Errorf("la versión %d debería seguir descargable: %v", v.VersionNum, err)
+		} else {
+			got, _ := io.ReadAll(rc)
+			rc.Close()
+			if string(got) == "v1" {
+				t.Error("v1 debería haberse purgado por exceder maxVersionsPerFile, pero sigue presente")
+			}
+		}
+	}
+}
+
+func TestVersionOperationsRejectNonOwner(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	victima := env.user(t, "victima")
+	atacante := env.user(t, "atacante")
+
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: victima, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))}); err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: victima, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v2"))})
+	if err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	if _, err := env.svc.ListVersions(ctx, atacante, meta.ID); !errors.Is(err, ErrForbidden) {
+		t.Errorf("ListVersions: err = %v, esperado ErrForbidden", err)
+	}
+	if _, _, err := env.svc.DownloadVersion(ctx, atacante, meta.ID, 1); !errors.Is(err, ErrForbidden) {
+		t.Errorf("DownloadVersion: err = %v, esperado ErrForbidden", err)
+	}
+	if _, err := env.svc.RestoreVersion(ctx, atacante, meta.ID, 1); !errors.Is(err, ErrForbidden) {
+		t.Errorf("RestoreVersion: err = %v, esperado ErrForbidden (§198 IDOR)", err)
+	}
+}
+
+func TestPermanentlyDeleteFilePurgesVersionHistory(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))}); err != nil {
+		t.Fatalf("primer Upload falló: %v", err)
+	}
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v2"))})
+	if err != nil {
+		t.Fatalf("segundo Upload falló: %v", err)
+	}
+
+	if err := env.svc.PermanentlyDeleteFile(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteFile falló: %v", err)
+	}
+	versions, err := env.versions.ListVersions(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Errorf("el historial debería haberse purgado junto con el archivo: %+v", versions)
 	}
 }

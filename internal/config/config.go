@@ -19,16 +19,17 @@ const CurrentConfigVersion = 1
 
 // Config es el árbol completo de configuración de una instancia NexusCloud.
 type Config struct {
-	ConfigVersion int            `yaml:"configVersion"`
-	General       GeneralConfig  `yaml:"general"`
-	Server        ServerConfig   `yaml:"server"`
-	Database      DatabaseConfig `yaml:"database"`
-	Storage       StorageConfig  `yaml:"storage"`
-	Security      SecurityConfig `yaml:"security"`
-	Trash         TrashConfig    `yaml:"trash"`
-	API           APIConfig      `yaml:"api"`
-	Web           WebConfig      `yaml:"web"`
-	Logging       LoggingConfig  `yaml:"logging"`
+	ConfigVersion int              `yaml:"configVersion"`
+	General       GeneralConfig    `yaml:"general"`
+	Server        ServerConfig     `yaml:"server"`
+	Database      DatabaseConfig   `yaml:"database"`
+	Storage       StorageConfig    `yaml:"storage"`
+	Security      SecurityConfig   `yaml:"security"`
+	Trash         TrashConfig      `yaml:"trash"`
+	Versioning    VersioningConfig `yaml:"versioning"`
+	API           APIConfig        `yaml:"api"`
+	Web           WebConfig        `yaml:"web"`
+	Logging       LoggingConfig    `yaml:"logging"`
 }
 
 type GeneralConfig struct {
@@ -90,6 +91,16 @@ type TrashConfig struct {
 	RetentionDays int  `yaml:"retentionDays"`
 }
 
+// VersioningConfig gobierna el historial de versiones (§15). Con
+// Enabled=false, subir a un path existente sigue sobrescribiendo sin dejar
+// rastro, como en la Fase 1. MaxVersionsPerFile acota el espacio: al
+// superarse, se purga la versión más antigua (§15 "política automática de
+// limpieza"); no hay todavía límite por antigüedad ni por espacio total.
+type VersioningConfig struct {
+	Enabled            bool `yaml:"enabled"`
+	MaxVersionsPerFile int  `yaml:"maxVersionsPerFile"`
+}
+
 type RateLimitConfig struct {
 	LoginPerMinute int `yaml:"loginPerMinute"`
 	APIPerMinute   int `yaml:"apiPerMinute"`
@@ -145,10 +156,11 @@ func Defaults() *Config {
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
 		},
-		Trash:   TrashConfig{Enabled: true, RetentionDays: 30},
-		API:     APIConfig{Enabled: true},
-		Web:     WebConfig{Enabled: false},
-		Logging: LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
+		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
+		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
+		API:        APIConfig{Enabled: true},
+		Web:        WebConfig{Enabled: false},
+		Logging:    LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
 	}
 }
 

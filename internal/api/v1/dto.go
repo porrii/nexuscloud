@@ -82,3 +82,17 @@ func toFileResponse(f *storage.FileMeta) fileResponse {
 		SHA256: f.SHA256, MimeType: f.MimeType, CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt, DeletedAt: f.DeletedAt,
 	}
 }
+
+type versionResponse struct {
+	VersionNum int       `json:"version_num"`
+	SizeBytes  int64     `json:"size_bytes"`
+	SHA256     string    `json:"sha256"`
+	MimeType   string    `json:"mime_type"`
+	CreatedAt  time.Time `json:"created_at"`
+}
+
+func toVersionResponse(v *storage.FileVersion) versionResponse {
+	return versionResponse{
+		VersionNum: v.VersionNum, SizeBytes: v.SizeBytes, SHA256: v.SHA256, MimeType: v.MimeType, CreatedAt: v.CreatedAt,
+	}
+}
