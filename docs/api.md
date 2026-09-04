@@ -44,6 +44,9 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/files/{id}` | sesión, propietario | Descarga (streaming, sin soporte `Range` todavía); funciona también si está en la papelera |
 | DELETE | `/api/v1/files/{id}` | sesión, propietario | Mueve a la papelera (§16); `?permanent=true` borra directamente para siempre |
 | POST | `/api/v1/files/{id}/restore` | sesión, propietario | Saca un archivo de la papelera |
+| GET | `/api/v1/files/{id}/versions` | sesión, propietario | Historial de versiones, más reciente primero (§15) |
+| GET | `/api/v1/files/{id}/versions/{n}` | sesión, propietario | Descarga el contenido de esa versión concreta |
+| POST | `/api/v1/files/{id}/versions/{n}/restore` | sesión, propietario | Restaura esa versión como contenido actual (la actual pasa al historial) |
 | POST | `/api/v1/directories` | sesión | `{parent_path, name}` → crea carpeta (idempotente); 409 si el nombre está ocupado por algo en la papelera |
 | DELETE | `/api/v1/directories/{id}` | sesión, propietario | Mueve a la papelera una carpeta **vacía** (409 si contiene algo activo); `?permanent=true` borra para siempre |
 | POST | `/api/v1/directories/{id}/restore` | sesión, propietario | Saca una carpeta de la papelera (recrea su marcador físico) |

@@ -49,6 +49,14 @@ export interface ListResult {
   files: FileEntry[]
 }
 
+export interface FileVersion {
+  version_num: number
+  size_bytes: number
+  sha256: string
+  mime_type: string
+  created_at: string
+}
+
 export class ApiClientError extends Error {
   status: number
   code: string
@@ -151,4 +159,9 @@ export const api = {
   restoreDirectory: (id: string) => request<void>(`/api/v1/directories/${id}/restore`, { method: 'POST' }),
 
   trash: () => request<ListResult>('/api/v1/trash'),
+
+  listVersions: (fileId: string) => request<FileVersion[]>(`/api/v1/files/${fileId}/versions`),
+  downloadVersionUrl: (fileId: string, versionNum: number) => `/api/v1/files/${fileId}/versions/${versionNum}`,
+  restoreVersion: (fileId: string, versionNum: number) =>
+    request<FileEntry>(`/api/v1/files/${fileId}/versions/${versionNum}/restore`, { method: 'POST' }),
 }

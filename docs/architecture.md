@@ -34,7 +34,7 @@ web/                  → interfaz web (React+TS+Vite); web/embed.go la embebe e
 
 ## Modelo de datos
 
-`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files`/`directories` (solo metadatos; el contenido vive en el filesystem; `directories` desde la migración 0002, ver [ADR-002](architecture/decisions/ADR-002-storage.md); ambas con `deleted_at` desde la migración 0003 para la papelera, §16 — ver `docs/storage.md#papelera`), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
+`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files`/`directories` (solo metadatos; el contenido vive en el filesystem; `directories` desde la migración 0002, ver [ADR-002](architecture/decisions/ADR-002-storage.md); ambas con `deleted_at` desde la migración 0003 para la papelera, §16 — ver `docs/storage.md#papelera`), `file_versions` (historial de versiones, migración 0004, §15 — ver `docs/storage.md#versionado-15` y [ADR-007](architecture/decisions/ADR-007-versioning.md)), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
 
 ## Superficie de API
 
@@ -47,8 +47,8 @@ El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **L
 | Fase | Contenido | Estado |
 |---|---|---|
 | 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa |
-| 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera` |
-| 2 | Sharing, Versionado | Pendiente |
+| 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15` |
+| 2 | Sharing | Pendiente |
 | 3 | Cliente Desktop (Windows/Linux) | Pendiente — Flutter, Clean Architecture (ver ADR-005) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
 | 5 | Backup Manager, Snapshots, gestión de discos/RAID | Pendiente |

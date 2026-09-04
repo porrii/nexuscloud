@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
 import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
+import VersionHistoryDialog from '../components/VersionHistoryDialog'
 
 interface UploadProgress {
   key: string
@@ -41,6 +42,7 @@ export default function FilesPage() {
   const [newFolderOpen, setNewFolderOpen] = useState(false)
   const [newFolderName, setNewFolderName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
+  const [historyFile, setHistoryFile] = useState<FileEntry | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const navigateTo = useCallback(
@@ -274,6 +276,12 @@ export default function FilesPage() {
                       Descargar
                     </a>
                     <button
+                      onClick={() => setHistoryFile(f)}
+                      className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Historial
+                    </button>
+                    <button
                       onClick={() => setPendingDelete({ kind: 'file', entry: f })}
                       className="invisible rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 group-hover:visible dark:text-red-400 dark:hover:bg-red-950"
                     >
@@ -296,6 +304,10 @@ export default function FilesPage() {
           onConfirm={() => void handleConfirmDelete()}
           onCancel={() => setPendingDelete(null)}
         />
+      )}
+
+      {historyFile && (
+        <VersionHistoryDialog file={historyFile} onClose={() => setHistoryFile(null)} onRestored={() => void load()} />
       )}
     </div>
   )

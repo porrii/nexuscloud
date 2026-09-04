@@ -48,7 +48,9 @@ Análisis por actor (§166), reflejando el estado real de la Fase 1 — qué est
 
 **Mitigado hoy**: la papelera (§16, `docs/storage.md#papelera`) está activada por defecto — un `DELETE` no destruye el contenido de inmediato, y se conserva durante `trash.retentionDays` (30 días por defecto) antes de purgarse. Esto cubre el caso de que el ransomware *borre* archivos, y también da una ventana de reacción si el atacante narra sus víctimas por la interfaz.
 
-**Pendiente**: la papelera **no** protege si el ransomware *sobrescribe* un archivo activo con una versión cifrada (subir con el mismo nombre reemplaza el contenido, §498-507) — eso exige versionado real (Fase 2, todavía no implementado) o backups externos (Fase 5). Hasta entonces, cifrar-y-sobrescribir en vez de borrar sigue sin tener recuperación vía NexusCloud — se documenta este gap explícitamente para que no se asuma una protección que la papelera por sí sola no da.
+El versionado (§15, `docs/storage.md#versionado-15`, [ADR-007](../architecture/decisions/ADR-007-versioning.md)) cierra el hueco que la papelera por sí sola dejaba abierto: si el ransomware *sobrescribe* un archivo activo con una versión cifrada (subir con el mismo nombre, §498-507) en vez de borrarlo, el contenido previo a la cifrado no se pierde — `Upload` lo aparta automáticamente al historial de versiones antes de aceptar el contenido nuevo, y `POST /api/v1/files/{id}/versions/{n}/restore` lo recupera. Esta protección depende de `versioning.enabled=true` (activado por defecto) y de que el ataque no supere `versioning.maxVersionsPerFile` (10 por defecto) sobrescribiendo el mismo archivo en bucle antes de ser detectado — un escenario de cifrado masivo y repetido que la purga automática por conteo no cubre.
+
+**Pendiente**: ni la papelera ni el versionado sustituyen a un backup externo e inmutable (Fase 5, Backup Manager) — ambos viven en el mismo storage que el ataque podría alcanzar si compromete además las credenciales de administrador o el propio filesystem subyacente. Se documenta este límite explícitamente para que no se asuma una protección equivalente a un backup air-gapped.
 
 ## Robo del dispositivo servidor
 

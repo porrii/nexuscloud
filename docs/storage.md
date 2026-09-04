@@ -48,9 +48,19 @@ Activada por defecto (`trash.enabled: true`, `trash.retentionDays: 30`). `Delete
 - Al mover una carpeta a la papelera se retira también su marcador físico (está garantizado vacío); al restaurarla, `RestoreDirectory` lo recrea.
 - Fuera de esta pasada: purga por tamaño máximo de papelera (§16 lo menciona; solo se implementó el límite por días).
 
+## Versionado (§15)
+
+Activado por defecto (`versioning.enabled: true`, `versioning.maxVersionsPerFile: 10`). Subir contenido distinto a un path que ya tiene un archivo activo aparta automáticamente el contenido anterior como una versión del historial en vez de perderlo; el archivo conserva siempre su mismo ID.
+
+- **Flujo de `Upload`**: el contenido entrante se escribe primero a una ubicación provisional (`.nexuscloud-staging/`) para poder calcular su SHA-256 sin tocar todavía el contenido existente. Si hay un archivo activo en ese path y su hash difiere del nuevo (subir contenido idéntico no crea versión, evita ruido), su contenido actual se **mueve** (no se copia) a `.nexuscloud-versions/<file_id>/<version_num>` y se registra en `file_versions` (migración 0004); solo entonces el contenido en staging se mueve a su destino final.
+- `GET /api/v1/files/{id}/versions` lista el historial; `GET .../versions/{n}` descarga una versión concreta; `POST .../versions/{n}/restore` la restaura.
+- **Restaurar nunca pierde datos**: la versión actualmente vigente pasa, a su vez, a formar parte del historial antes de que la versión antigua ocupe su lugar — ver [ADR-007](architecture/decisions/ADR-007-versioning.md).
+- **Límite automático**: al superar `maxVersionsPerFile`, se purga la versión más antigua (contenido + fila) — política de limpieza automática de §15.
+- Borrar un archivo para siempre (`?permanent=true`, o purga por retención de la papelera) purga también todo su historial de versiones: no tiene sentido conservarlo sin el archivo al que pertenece.
+- Fuera de esta pasada: retención por antigüedad y por espacio total ocupado (§15 los menciona; solo se implementó el límite por número de versiones).
+
 ## Qué falta (fases posteriores)
 
-- **Versionado** (§15): subir al mismo `parent_path`+`name` sobrescribe el archivo conservando su ID (upsert); no hay historial de versiones todavía — tiene su propia tabla reservada para la Fase 2.
 - **Snapshots** (§17): delegado al filesystem/SO subyacente (ZFS/Btrfs/Storage Spaces) cuando llegue.
 - **Backups** (§18): Backup Manager independiente, Fase 5.
 - **Compartición y enlaces públicos** (§37): Fase 2.

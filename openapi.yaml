@@ -324,6 +324,59 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
         "409": { description: "Ya existe otro elemento con ese nombre en la ruta original" }
 
+  /files/{id}/versions:
+    get:
+      summary: Listar el historial de versiones de un archivo (§15), más reciente primero
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/FileVersion" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /files/{id}/versions/{versionNum}:
+    get:
+      summary: Descargar el contenido de una versión concreta (no la actual)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+        - name: versionNum
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Contenido de esa versión
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /files/{id}/versions/{versionNum}/restore:
+    post:
+      summary: Restaurar una versión antigua como contenido actual
+      description: La versión que estaba vigente pasa, a su vez, a formar parte del historial -- nunca se pierde contenido al restaurar.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+        - name: versionNum
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: Restaurada; devuelve el archivo actualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
   /directories:
     post:
       summary: Crear una carpeta (idempotente)
@@ -475,6 +528,15 @@ components:
         created_at: { type: string, format: date-time }
         used_at: { type: string, format: date-time, nullable: true }
         revoked: { type: boolean }
+
+    FileVersion:
+      type: object
+      properties:
+        version_num: { type: integer }
+        size_bytes: { type: integer, format: int64 }
+        sha256: { type: string }
+        mime_type: { type: string }
+        created_at: { type: string, format: date-time }
 
     Directory:
       type: object
