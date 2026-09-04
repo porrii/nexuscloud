@@ -289,9 +289,9 @@ export default function FilesPage() {
 
       {pendingDelete && (
         <ConfirmDialog
-          title={pendingDelete.kind === 'file' ? 'Eliminar archivo' : 'Eliminar carpeta'}
-          message={`¿Seguro que quieres eliminar "${pendingDelete.entry.name}"? Esta acción no se puede deshacer.`}
-          confirmLabel="Eliminar"
+          title={pendingDelete.kind === 'file' ? 'Mover a la papelera' : 'Mover carpeta a la papelera'}
+          message={`"${pendingDelete.entry.name}" se moverá a la papelera. Podrás restaurarlo desde ahí mientras no se purgue automáticamente.`}
+          confirmLabel="Mover a la papelera"
           danger
           onConfirm={() => void handleConfirmDelete()}
           onCancel={() => setPendingDelete(null)}

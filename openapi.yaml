@@ -290,6 +290,7 @@ paths:
   /files/{id}:
     get:
       summary: Descargar un archivo (streaming; sin soporte Range todavía)
+      description: Funciona también si el archivo está en la papelera, mientras lo pida su propietario.
       parameters:
         - $ref: "#/components/parameters/idParam"
       responses:
@@ -301,12 +302,27 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
     delete:
-      summary: Eliminar un archivo (contenido + metadatos)
+      summary: Eliminar un archivo
+      description: Por defecto lo mueve a la papelera (§16); con permanent=true (o si trash.enabled=false) lo borra directamente para siempre.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+        - name: permanent
+          in: query
+          schema: { type: boolean, default: false }
+      responses:
+        "204": { description: Eliminado (o movido a la papelera) }
+        "403": { $ref: "#/components/responses/Error" }
+
+  /files/{id}/restore:
+    post:
+      summary: Restaurar un archivo desde la papelera
       parameters:
         - $ref: "#/components/parameters/idParam"
       responses:
-        "204": { description: Eliminado }
+        "204": { description: Restaurado }
         "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "Ya existe otro elemento con ese nombre en la ruta original" }
 
   /directories:
     post:
@@ -328,17 +344,51 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Directory" }
         "400": { $ref: "#/components/responses/Error" }
+        "409": { description: "El nombre está ocupado por un elemento en la papelera" }
 
   /directories/{id}:
     delete:
-      summary: Eliminar una carpeta vacía
+      summary: Eliminar una carpeta vacía (de contenido activo)
+      description: Por defecto la mueve a la papelera (§16); con permanent=true (o si trash.enabled=false) la borra directamente para siempre.
       parameters:
         - $ref: "#/components/parameters/idParam"
+        - name: permanent
+          in: query
+          schema: { type: boolean, default: false }
       responses:
-        "204": { description: Eliminada }
+        "204": { description: Eliminada (o movida a la papelera) }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
         "409": { description: "La carpeta no está vacía" }
+
+  /directories/{id}/restore:
+    post:
+      summary: Restaurar una carpeta desde la papelera (recrea su marcador físico)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Restaurada }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "Ya existe otro elemento con ese nombre en la ruta original" }
+
+  /trash:
+    get:
+      summary: Listar la papelera del usuario (vista plana, sin jerarquía)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
 
   /audit:
     get:
@@ -433,6 +483,7 @@ components:
         parent_path: { type: string }
         name: { type: string }
         created_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
 
     File:
       type: object
@@ -445,6 +496,7 @@ components:
         mime_type: { type: string }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+        deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
 
     AuditEvent:
       type: object

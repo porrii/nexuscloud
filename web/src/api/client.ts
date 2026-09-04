@@ -29,6 +29,7 @@ export interface DirectoryEntry {
   parent_path: string
   name: string
   created_at: string
+  deleted_at?: string
 }
 
 export interface FileEntry {
@@ -40,6 +41,7 @@ export interface FileEntry {
   mime_type: string
   created_at: string
   updated_at: string
+  deleted_at?: string
 }
 
 export interface ListResult {
@@ -137,8 +139,16 @@ export const api = {
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
   upload: uploadWithProgress,
   downloadUrl: (id: string) => `/api/v1/files/${id}`,
+  // Por defecto mueve a la papelera (§16); permanent=true la salta.
   deleteFile: (id: string) => request<void>(`/api/v1/files/${id}`, { method: 'DELETE' }),
+  deleteFileForever: (id: string) => request<void>(`/api/v1/files/${id}?permanent=true`, { method: 'DELETE' }),
+  restoreFile: (id: string) => request<void>(`/api/v1/files/${id}/restore`, { method: 'POST' }),
+
   mkdir: (parent_path: string, name: string) =>
     request<DirectoryEntry>('/api/v1/directories', { method: 'POST', body: JSON.stringify({ parent_path, name }) }),
   deleteDirectory: (id: string) => request<void>(`/api/v1/directories/${id}`, { method: 'DELETE' }),
+  deleteDirectoryForever: (id: string) => request<void>(`/api/v1/directories/${id}?permanent=true`, { method: 'DELETE' }),
+  restoreDirectory: (id: string) => request<void>(`/api/v1/directories/${id}/restore`, { method: 'POST' }),
+
+  trash: () => request<ListResult>('/api/v1/trash'),
 }

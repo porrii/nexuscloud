@@ -5,6 +5,7 @@ import AppShell from './components/AppShell'
 import AccountPage from './pages/AccountPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
+import TrashPage from './pages/TrashPage'
 
 export default function App() {
   return (
@@ -20,6 +21,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<FilesPage />} />
+            <Route path="/trash" element={<TrashPage />} />
             <Route path="/account" element={<AccountPage />} />
           </Route>
         </Routes>

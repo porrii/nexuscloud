@@ -46,9 +46,9 @@ Análisis por actor (§166), reflejando el estado real de la Fase 1 — qué est
 
 **Puede intentar**: cifrar los archivos de un usuario y pedir rescate.
 
-**Mitigado hoy**: nada específico todavía — no hay versionado ni papelera implementados en Fase 1 (esa es precisamente la primera línea de defensa contra ransomware, §128).
+**Mitigado hoy**: la papelera (§16, `docs/storage.md#papelera`) está activada por defecto — un `DELETE` no destruye el contenido de inmediato, y se conserva durante `trash.retentionDays` (30 días por defecto) antes de purgarse. Esto cubre el caso de que el ransomware *borre* archivos, y también da una ventana de reacción si el atacante narra sus víctimas por la interfaz.
 
-**Pendiente**: es una prioridad explícita de Fase 2 (versionado/papelera) y Fase 5 (backups, snapshots). Hasta entonces, un ransomware con las credenciales de un usuario puede sobrescribir sus archivos sin posibilidad de recuperación vía NexusCloud — se documenta este gap explícitamente para que no se asuma protección donde no la hay.
+**Pendiente**: la papelera **no** protege si el ransomware *sobrescribe* un archivo activo con una versión cifrada (subir con el mismo nombre reemplaza el contenido, §498-507) — eso exige versionado real (Fase 2, todavía no implementado) o backups externos (Fase 5). Hasta entonces, cifrar-y-sobrescribir en vez de borrar sigue sin tener recuperación vía NexusCloud — se documenta este gap explícitamente para que no se asuma una protección que la papelera por sí sola no da.
 
 ## Robo del dispositivo servidor
 
