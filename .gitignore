@@ -1,0 +1,42 @@
+# Go
+/bin/
+/dist/
+*.exe
+*.exe~
+*.test
+*.out
+__debug_bin*
+
+# Datos y runtime locales (nunca versionar contenido de usuarios)
+/data/
+/config.yaml
+*.db
+*.db-wal
+*.db-shm
+/backups/
+/logs/
+
+# Frontend web (Fase 2)
+/web/node_modules/
+/web/dist/
+
+# Cliente Flutter (Fase 3-4)
+/client/build/
+/client/.dart_tool/
+/client/**/pubspec.lock
+
+# Herramientas / IDE
+.vscode/
+.idea/
+*.iml
+
+# Sistema operativo
+.DS_Store
+Thumbs.db
+
+# Estado local de herramientas de asistencia (Claude Code, etc.)
+.claude/
+
+# Cobertura y artefactos de test
+coverage.out
+coverage.html
