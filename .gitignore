@@ -16,9 +16,9 @@ __debug_bin*
 /backups/
 /logs/
 
-# Frontend web (Fase 2)
+# Frontend web (Fase 2): ver también web/.gitignore, que gobierna dist/
+# (una regla ahí, más específica, tiene prioridad sobre esta).
 /web/node_modules/
-/web/dist/
 
 # Cliente Flutter (Fase 3-4)
 /client/build/

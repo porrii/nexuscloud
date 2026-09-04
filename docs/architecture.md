@@ -19,6 +19,7 @@ internal/security     → rate limiting, CORS, cabeceras, IP de cliente
 internal/audit        → registro de eventos de auditoría
 internal/idgen        → IDs y tokens aleatorios (UUID v4, tokens opacos)
 internal/version      → metadatos de build
+web/                  → interfaz web (React+TS+Vite); web/embed.go la embebe en el binario
 ```
 
 ### Regla de dependencia
@@ -31,9 +32,9 @@ internal/version      → metadatos de build
 - Las migraciones SQL viven en `internal/db/migrations/` (no en `/migrations` en la raíz) porque `go:embed` no puede referenciar rutas fuera del árbol del paquete que las embebe.
 - No existe una carpeta `/pkg`: todo el código es interno a este binario (`/internal`), coherente con que NexusCloud no expone (todavía) un SDK Go público.
 
-## Modelo de datos (Fase 1)
+## Modelo de datos
 
-`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files` (solo metadatos; el contenido vive en el filesystem), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
+`users`, `roles`+`user_roles` (RBAC, semillas: `super_admin`/`administrator`/`user`/`read_only`), `groups`+`user_groups`, `sessions` (tokens opacos, solo se guarda su hash SHA-256), `invitations` (única vía de alta además del CLI — no hay registro público, §21), `storage_pools`, `files` (solo metadatos; el contenido vive en el filesystem), `directories` (registro de carpetas, incluidas las vacías — migración 0002, ver [ADR-002](architecture/decisions/ADR-002-storage.md)), `audit_events`. Todas las columnas de timestamp se guardan como `TEXT` en RFC3339 UTC en ambos dialectos (ver [ADR-003](architecture/decisions/ADR-003-database.md)) para evitar diferencias de escaneo de tipos entre drivers.
 
 ## Superficie de API
 
@@ -41,17 +42,22 @@ Ver [docs/api.md](api.md) para la referencia completa. Resumen: `/health`, `/rea
 
 ## Fases
 
-El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **Este repositorio implementa la Fase 1 por completo** y dejó decididas (pero no implementadas) varias piezas de fases posteriores para no tener que rediseñar:
+El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **La Fase 1 está completa**; de la Fase 2, la interfaz web y el explorador de archivos ya están implementados y verificados — sharing, papelera y versionado siguen pendientes:
 
 | Fase | Contenido | Estado |
 |---|---|---|
 | 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa |
-| 2 | Web UI (React+TS+Vite embebido), File manager, Sharing, Trash, Versionado | Pendiente — stack ya decidido |
+| 2 | Web UI (React+TS+Vite embebido) + File manager | ✅ Completa — ver `web/README.md` |
+| 2 | Sharing, Trash, Versionado | Pendiente |
 | 3 | Cliente Desktop (Windows/Linux) | Pendiente — Flutter, Clean Architecture (ver ADR-005) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
 | 5 | Backup Manager, Snapshots, gestión de discos/RAID | Pendiente |
 | 6 | Seguridad avanzada: 2FA reforzado, Passkeys/WebAuthn, WebDAV | Pendiente — `security`/`storage`/`backup` ya reservados en el CLI |
 | 7 | Integración real con el ecosistema Nexus (NexusWorkspace, etc.) | Pendiente |
+
+### Explorador de archivos web: alcance real
+
+El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arrastrar y soltar), descarga, creación y borrado de carpetas vacías, y gestión de sesiones — todo respaldado por endpoints reales del backend. Section §143 (dashboard de usuario) menciona además "Compartido conmigo", "Compartido por mí", "Favoritos", "Recientes" y "Papelera": **deliberadamente no se construyó ninguna pantalla para estas**, porque el backend todavía no las soporta — una UI para una funcionalidad inexistente sería peor que no tenerla.
 
 ### Gaps conocidos dentro de la propia Fase 1
 

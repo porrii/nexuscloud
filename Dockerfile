@@ -1,5 +1,15 @@
 # syntax=docker/dockerfile:1
 
+# ---- frontend -----------------------------------------------------------
+FROM node:24-alpine AS frontend-builder
+WORKDIR /src/web
+
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
 # ---- build ------------------------------------------------------------
 FROM golang:1.25-bookworm AS builder
 WORKDIR /src
@@ -8,6 +18,9 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+# Sustituye el web/dist con solo el .gitkeep por el build real de la web
+# (go:embed necesita contenido real en tiempo de compilación de Go).
+COPY --from=frontend-builder /src/web/dist ./web/dist
 
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
@@ -37,6 +50,8 @@ COPY --from=builder /out/nexuscloud /usr/local/bin/nexuscloud
 COPY --from=builder --chown=65532:65532 /data /data
 
 ENV NEXUSCLOUD_DATA_DIR=/data
+# La interfaz web ya viaja embebida en el binario; sigue desactivada por
+# defecto (secure by default, §3/§47) hasta que se active explícitamente.
 VOLUME ["/data"]
 EXPOSE 8080
 

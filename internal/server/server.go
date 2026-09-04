@@ -9,8 +9,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -23,6 +25,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/security"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
+	nexuscloudweb "github.com/porrii/nexuscloud/web"
 )
 
 // Server agrupa el handler HTTP raíz junto con los recursos que hay que
@@ -116,7 +119,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter))
 	}
 	if cfg.Web.Enabled {
-		logger.Warn("web.enabled=true pero la interfaz web todavía no existe en esta fase (Fase 2); no se monta ninguna ruta")
+		webHandler, err := newWebUIHandler()
+		if err != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("preparando interfaz web: %w", err)
+		}
+		root.Handle("/*", webHandler)
 	}
 
 	return &Server{Handler: root, DB: sqlDB, loginLimiter: loginLimiter, apiLimiter: apiLimiter}, nil
@@ -154,4 +162,35 @@ func writeHealthJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// newWebUIHandler sirve los assets embebidos de web/dist (§44, §47). Solo
+// se monta cuando web.enabled=true (desactivado por defecto, §3).
+func newWebUIHandler() (http.Handler, error) {
+	dist, err := fs.Sub(nexuscloudweb.DistFS, "dist")
+	if err != nil {
+		return nil, fmt.Errorf("preparando assets embebidos: %w", err)
+	}
+	return spaFileServer(dist), nil
+}
+
+// spaFileServer sirve ficheros estáticos y, para cualquier ruta que no
+// corresponda a un fichero real embebido, devuelve index.html -- así el
+// enrutado del lado cliente (React Router, historial del navegador) se
+// resuelve incluso al recargar la página en /account, por ejemplo.
+func spaFileServer(distFS fs.FS) http.Handler {
+	fileServer := http.FileServer(http.FS(distFS))
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upath := strings.TrimPrefix(r.URL.Path, "/")
+		if upath == "" {
+			upath = "."
+		}
+		if _, err := fs.Stat(distFS, upath); err != nil {
+			r2 := r.Clone(r.Context())
+			r2.URL.Path = "/"
+			fileServer.ServeHTTP(w, r2)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }

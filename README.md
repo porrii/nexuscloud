@@ -4,20 +4,21 @@ Plataforma de almacenamiento en nube privada, autoalojada, modular y multiplataf
 
 NexusCloud es el primer componente con servidor del ecosistema **Nexus** (self-hosted, offline-capable), pensado para funcionar tanto en una red local sin Internet como, más adelante, detrás de un dominio propio.
 
-> **Estado del proyecto**: Fase 1 completada (ver [docs/architecture.md](docs/architecture.md#fases)). Hay un backend real, probado y funcional — API REST, autenticación, almacenamiento de archivos, seguridad de base — pero **todavía no hay interfaz web ni clientes de escritorio/móvil**. Consulta la sección "Qué funciona hoy" más abajo antes de asumir cualquier funcionalidad de las fases futuras.
+> **Estado del proyecto**: Fase 1 completa + interfaz web/explorador de archivos de la Fase 2 (ver [docs/architecture.md](docs/architecture.md#fases)). Hay un backend real, probado y funcional, y una web para usarlo sin tocar la API directamente — pero **todavía no hay clientes de escritorio/móvil, ni compartición, papelera o versionado**. Consulta la sección "Qué funciona hoy" antes de asumir cualquier funcionalidad de las fases futuras.
 
-## Qué funciona hoy (Fase 1)
+## Qué funciona hoy
 
 - Usuarios, roles (RBAC), grupos, cuotas, invitaciones (sin registro público, §21)
 - Autenticación: contraseña + Argon2id, sesiones revocables, TOTP (2FA)
-- Almacenamiento de archivos: subida/descarga en streaming, protección activa contra path traversal e IDOR
+- Almacenamiento de archivos y carpetas: subida/descarga en streaming, protección activa contra path traversal e IDOR
+- **Interfaz web** (React+TS+Vite, embebida en el binario): login, explorador de archivos con arrastrar-y-soltar, gestión de sesiones — ver [web/README.md](web/README.md)
 - API REST versionada (`/api/v1`) — ver [docs/api.md](docs/api.md)
 - Seguridad transversal: rate limiting, CORS estricto, cabeceras defensivas, auditoría
 - Multi-base de datos: SQLite (por defecto) o PostgreSQL, sin cambiar código
 - CLI (`nexuscloud`) con `start`, `doctor`, `migrate`, `admin`, `users`, `config`
 - Docker, systemd, CI multiplataforma (Linux/Windows/ARM64)
 
-**Explícitamente fuera de esta fase**: interfaz web, clientes Flutter (Windows/Linux/Android), compartición, papelera, versionado, sincronización, WebDAV, backups automáticos, snapshots, detección de discos/RAID, Passkeys/WebAuthn, sistema de plugins. Ver [docs/architecture.md](docs/architecture.md#fases) para el roadmap completo.
+**Explícitamente fuera de esta fase**: clientes Flutter (Windows/Linux/Android), compartición, papelera, versionado, sincronización, WebDAV, backups automáticos, snapshots, detección de discos/RAID, Passkeys/WebAuthn, sistema de plugins. Ver [docs/architecture.md](docs/architecture.md#fases) para el roadmap completo.
 
 ## Inicio rápido
 
@@ -41,7 +42,15 @@ go build -o nexuscloud ./cmd/nexuscloud
 ./nexuscloud start
 ```
 
-La interfaz web está desactivada por defecto (secure by default, §3/§47); esta fase solo expone la API REST. Consulta [docs/api.md](docs/api.md) para hacer login y subir tu primer archivo por API.
+La interfaz web está desactivada por defecto (secure by default, §3/§47). Para activarla:
+
+```bash
+cd web && npm install && npm run build && cd ..
+go build -o nexuscloud ./cmd/nexuscloud   # ahora embebe web/dist
+NEXUSCLOUD_WEB_ENABLED=true ./nexuscloud start
+```
+
+Y entra a `http://localhost:8080` con el usuario que acabas de crear. Sin interfaz web, consulta [docs/api.md](docs/api.md) para hacer login y subir tu primer archivo directamente por API.
 
 ## Documentación
 
