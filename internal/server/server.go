@@ -37,6 +37,7 @@ type Server struct {
 
 	loginLimiter *security.RateLimiter
 	apiLimiter   *security.RateLimiter
+	stopPurge    chan struct{}
 }
 
 // Build realiza todo el arranque en frío: abrir BD, migrar, construir
@@ -81,7 +82,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	userSvc := users.NewService(userRepo)
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
-	fileSvc := storage.NewFileService(fileRepo, directoryRepo, poolRepo, provider)
+	fileSvc := storage.NewFileService(fileRepo, directoryRepo, poolRepo, provider, cfg.Trash.Enabled)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 
 	h := &apiv1.Handlers{
@@ -127,14 +128,57 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		root.Handle("/*", webHandler)
 	}
 
-	return &Server{Handler: root, DB: sqlDB, loginLimiter: loginLimiter, apiLimiter: apiLimiter}, nil
+	stopPurge := make(chan struct{})
+	if cfg.Trash.Enabled {
+		startTrashPurgeLoop(fileSvc, cfg.Trash, logger, stopPurge)
+	}
+
+	return &Server{Handler: root, DB: sqlDB, loginLimiter: loginLimiter, apiLimiter: apiLimiter, stopPurge: stopPurge}, nil
+}
+
+// startTrashPurgeLoop lanza la limpieza automática de la papelera por
+// retención (§16 "limpieza automática"). Se ejecuta una vez al arrancar
+// (por si el proceso estuvo parado más tiempo del de retención) y luego
+// cada hora.
+func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, logger *slog.Logger, stop <-chan struct{}) {
+	retention := time.Duration(cfg.RetentionDays) * 24 * time.Hour
+
+	runOnce := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		files, dirs, err := fileSvc.PurgeExpiredTrash(ctx, retention)
+		if err != nil {
+			logger.Error("purgando papelera expirada", "error", err)
+			return
+		}
+		if files > 0 || dirs > 0 {
+			logger.Info("papelera purgada por retención", "files", files, "directories", dirs, "retention_days", cfg.RetentionDays)
+		}
+	}
+
+	go func() {
+		runOnce()
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runOnce()
+			case <-stop:
+				return
+			}
+		}
+	}()
 }
 
 // Close libera los recursos abiertos por Build: conexión a base de datos y
-// las goroutines de limpieza de los rate limiters.
+// las goroutines de limpieza de los rate limiters y de la papelera.
 func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
+	if s.stopPurge != nil {
+		close(s.stopPurge)
+	}
 	return s.DB.Close()
 }
 

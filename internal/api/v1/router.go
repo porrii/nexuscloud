@@ -40,8 +40,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter *security.RateLimiter) http
 		r.Post("/files", h.UploadFile)
 		r.Get("/files/{id}", h.DownloadFile)
 		r.Delete("/files/{id}", h.DeleteFile)
+		r.Post("/files/{id}/restore", h.RestoreFile)
 		r.Post("/directories", h.Mkdir)
 		r.Delete("/directories/{id}", h.DeleteDirectory)
+		r.Post("/directories/{id}/restore", h.RestoreDirectory)
+
+		r.Get("/trash", h.ListTrash)
 
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)

@@ -25,6 +25,7 @@ type Config struct {
 	Database      DatabaseConfig `yaml:"database"`
 	Storage       StorageConfig  `yaml:"storage"`
 	Security      SecurityConfig `yaml:"security"`
+	Trash         TrashConfig    `yaml:"trash"`
 	API           APIConfig      `yaml:"api"`
 	Web           WebConfig      `yaml:"web"`
 	Logging       LoggingConfig  `yaml:"logging"`
@@ -78,6 +79,15 @@ type Argon2Config struct {
 	MemoryKiB   uint32 `yaml:"memoryKiB"`
 	Iterations  uint32 `yaml:"iterations"`
 	Parallelism uint8  `yaml:"parallelism"`
+}
+
+// TrashConfig gobierna la papelera (§16), la primera línea de defensa
+// contra un borrado accidental o ransomware (§128). Con Enabled=false,
+// eliminar un archivo/carpeta es inmediato y permanente -- sin red de
+// seguridad -- así que el valor por defecto es true.
+type TrashConfig struct {
+	Enabled       bool `yaml:"enabled"`
+	RetentionDays int  `yaml:"retentionDays"`
 }
 
 type RateLimitConfig struct {
@@ -135,6 +145,7 @@ func Defaults() *Config {
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
 		},
+		Trash:   TrashConfig{Enabled: true, RetentionDays: 30},
 		API:     APIConfig{Enabled: true},
 		Web:     WebConfig{Enabled: false},
 		Logging: LoggingConfig{Level: "info", Format: "text", Output: "stdout"},

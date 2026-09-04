@@ -22,11 +22,22 @@ type Directory struct {
 	ParentPath string
 	Name       string
 	CreatedAt  time.Time
+	DeletedAt  *time.Time // no nil = en la papelera (§16)
 }
+
+func (d *Directory) IsTrashed() bool { return d.DeletedAt != nil }
 
 type DirectoryRepository interface {
 	CreateDirectory(ctx context.Context, d *Directory) error
+	// GetDirectoryByNaturalKey no filtra por deleted_at: ver el porqué en
+	// FileRepository.GetFileByNaturalKey (§128).
+	GetDirectoryByNaturalKey(ctx context.Context, poolID, ownerID, parentPath, name string) (*Directory, error)
+	// ListDirectories devuelve solo carpetas activas de esa ruta.
 	ListDirectories(ctx context.Context, ownerID, parentPath string) ([]*Directory, error)
+	ListTrashedDirectories(ctx context.Context, ownerID string) ([]*Directory, error)
 	GetDirectoryByID(ctx context.Context, id string) (*Directory, error)
+	SoftDeleteDirectory(ctx context.Context, id string, deletedAt time.Time) error
+	RestoreDirectory(ctx context.Context, id string) error
 	DeleteDirectory(ctx context.Context, id string) error
+	ListDirectoriesDeletedBefore(ctx context.Context, cutoff time.Time) ([]*Directory, error)
 }

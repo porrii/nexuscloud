@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/porrii/nexuscloud/internal/db"
 )
@@ -22,7 +23,7 @@ func (r *SQLFileRepository) UpsertFile(ctx context.Context, meta *FileMeta) erro
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (pool_id, owner_id, parent_path, name)
 		DO UPDATE SET size_bytes = excluded.size_bytes, sha256 = excluded.sha256,
-			mime_type = excluded.mime_type, updated_at = excluded.updated_at`,
+			mime_type = excluded.mime_type, updated_at = excluded.updated_at, deleted_at = NULL`,
 		meta.ID, meta.PoolID, meta.OwnerID, meta.ParentPath, meta.Name,
 		meta.SizeBytes, meta.SHA256, meta.MimeType,
 		db.TimeToString(meta.CreatedAt), db.TimeToString(meta.UpdatedAt),
@@ -57,23 +58,61 @@ func (r *SQLFileRepository) GetFileByID(ctx context.Context, id string) (*FileMe
 	return f, nil
 }
 
+func (r *SQLFileRepository) GetFileByNaturalKey(ctx context.Context, poolID, ownerID, parentPath, name string) (*FileMeta, error) {
+	row := r.conn.QueryRowContext(ctx,
+		fileSelectColumns+` WHERE pool_id = ? AND owner_id = ? AND parent_path = ? AND name = ?`,
+		poolID, ownerID, parentPath, name)
+	f, err := scanFile(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrFileNotFound
+		}
+		return nil, err
+	}
+	return f, nil
+}
+
 func (r *SQLFileRepository) ListFiles(ctx context.Context, ownerID, parentPath string) ([]*FileMeta, error) {
 	rows, err := r.conn.QueryContext(ctx,
-		fileSelectColumns+` WHERE owner_id = ? AND parent_path = ? ORDER BY name`, ownerID, parentPath)
+		fileSelectColumns+` WHERE owner_id = ? AND parent_path = ? AND deleted_at IS NULL ORDER BY name`, ownerID, parentPath)
 	if err != nil {
 		return nil, fmt.Errorf("listando archivos: %w", err)
 	}
 	defer rows.Close()
+	return scanFileRows(rows)
+}
 
-	var out []*FileMeta
-	for rows.Next() {
-		f, err := scanFileRow(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, f)
+func (r *SQLFileRepository) ListTrashedFiles(ctx context.Context, ownerID string) ([]*FileMeta, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		fileSelectColumns+` WHERE owner_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC`, ownerID)
+	if err != nil {
+		return nil, fmt.Errorf("listando papelera de archivos: %w", err)
 	}
-	return out, rows.Err()
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
+func (r *SQLFileRepository) SoftDeleteFile(ctx context.Context, id string, deletedAt time.Time) error {
+	return r.setDeletedAt(ctx, id, db.TimeToString(deletedAt))
+}
+
+func (r *SQLFileRepository) RestoreFile(ctx context.Context, id string) error {
+	return r.setDeletedAt(ctx, id, nil)
+}
+
+func (r *SQLFileRepository) setDeletedAt(ctx context.Context, id string, deletedAt any) error {
+	res, err := r.conn.ExecContext(ctx, `UPDATE files SET deleted_at = ? WHERE id = ?`, deletedAt, id)
+	if err != nil {
+		return fmt.Errorf("actualizando estado de papelera: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrFileNotFound
+	}
+	return nil
 }
 
 func (r *SQLFileRepository) DeleteFile(ctx context.Context, id string) error {
@@ -91,15 +130,38 @@ func (r *SQLFileRepository) DeleteFile(ctx context.Context, id string) error {
 	return nil
 }
 
-const fileSelectColumns = `SELECT id, pool_id, owner_id, parent_path, name, size_bytes, sha256, mime_type, created_at, updated_at FROM files`
+func (r *SQLFileRepository) ListFilesDeletedBefore(ctx context.Context, cutoff time.Time) ([]*FileMeta, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		fileSelectColumns+` WHERE deleted_at IS NOT NULL AND deleted_at < ?`, db.TimeToString(cutoff))
+	if err != nil {
+		return nil, fmt.Errorf("listando archivos para purgar: %w", err)
+	}
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
+const fileSelectColumns = `SELECT id, pool_id, owner_id, parent_path, name, size_bytes, sha256, mime_type, created_at, updated_at, deleted_at FROM files`
 
 func scanFile(row *sql.Row) (*FileMeta, error) { return scanFileRow(row) }
+
+func scanFileRows(rows *sql.Rows) ([]*FileMeta, error) {
+	var out []*FileMeta
+	for rows.Next() {
+		f, err := scanFileRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
 
 func scanFileRow(row rowScanner) (*FileMeta, error) {
 	var f FileMeta
 	var createdAt, updatedAt string
+	var deletedAt sql.NullString
 	if err := row.Scan(&f.ID, &f.PoolID, &f.OwnerID, &f.ParentPath, &f.Name,
-		&f.SizeBytes, &f.SHA256, &f.MimeType, &createdAt, &updatedAt); err != nil {
+		&f.SizeBytes, &f.SHA256, &f.MimeType, &createdAt, &updatedAt, &deletedAt); err != nil {
 		return nil, err
 	}
 	var err error
@@ -108,6 +170,9 @@ func scanFileRow(row rowScanner) (*FileMeta, error) {
 	}
 	if f.UpdatedAt, err = db.StringToTime(updatedAt); err != nil {
 		return nil, fmt.Errorf("parseando updated_at: %w", err)
+	}
+	if f.DeletedAt, err = db.ParseNullableTime(deletedAt.String, deletedAt.Valid); err != nil {
+		return nil, fmt.Errorf("parseando deleted_at: %w", err)
 	}
 	return &f, nil
 }

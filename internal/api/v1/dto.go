@@ -53,30 +53,32 @@ func toSessionResponse(s *auth.Session) sessionResponse {
 }
 
 type directoryResponse struct {
-	ID         string    `json:"id"`
-	ParentPath string    `json:"parent_path"`
-	Name       string    `json:"name"`
-	CreatedAt  time.Time `json:"created_at"`
+	ID         string     `json:"id"`
+	ParentPath string     `json:"parent_path"`
+	Name       string     `json:"name"`
+	CreatedAt  time.Time  `json:"created_at"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
 }
 
 func toDirectoryResponse(d *storage.Directory) directoryResponse {
-	return directoryResponse{ID: d.ID, ParentPath: d.ParentPath, Name: d.Name, CreatedAt: d.CreatedAt}
+	return directoryResponse{ID: d.ID, ParentPath: d.ParentPath, Name: d.Name, CreatedAt: d.CreatedAt, DeletedAt: d.DeletedAt}
 }
 
 type fileResponse struct {
-	ID         string    `json:"id"`
-	ParentPath string    `json:"parent_path"`
-	Name       string    `json:"name"`
-	SizeBytes  int64     `json:"size_bytes"`
-	SHA256     string    `json:"sha256"`
-	MimeType   string    `json:"mime_type"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID         string     `json:"id"`
+	ParentPath string     `json:"parent_path"`
+	Name       string     `json:"name"`
+	SizeBytes  int64      `json:"size_bytes"`
+	SHA256     string     `json:"sha256"`
+	MimeType   string     `json:"mime_type"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
+	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
 }
 
 func toFileResponse(f *storage.FileMeta) fileResponse {
 	return fileResponse{
 		ID: f.ID, ParentPath: f.ParentPath, Name: f.Name, SizeBytes: f.SizeBytes,
-		SHA256: f.SHA256, MimeType: f.MimeType, CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt,
+		SHA256: f.SHA256, MimeType: f.MimeType, CreatedAt: f.CreatedAt, UpdatedAt: f.UpdatedAt, DeletedAt: f.DeletedAt,
 	}
 }

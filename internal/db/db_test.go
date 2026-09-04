@@ -18,7 +18,7 @@ func testConfig(t *testing.T) *config.Config {
 // currentSchemaVersion es la versión de esquema más alta esperada tras
 // aplicar todas las migraciones embebidas. Actualízala al añadir una nueva
 // migración (§8: cada una suma, nunca se reescribe una ya aplicada).
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 
 func TestMigrateAppliesFullSchema(t *testing.T) {
 	cfg := testConfig(t)
@@ -58,6 +58,14 @@ func TestMigrateAppliesFullSchema(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("directories = %d filas, esperado 0 en un esquema recién migrado", count)
+	}
+
+	// deleted_at (0003) debe existir en files y directories.
+	if err := conn.QueryRow("SELECT COUNT(*) FROM files WHERE deleted_at IS NOT NULL").Scan(&count); err != nil {
+		t.Fatalf("la columna files.deleted_at debería existir tras la migración 0003: %v", err)
+	}
+	if err := conn.QueryRow("SELECT COUNT(*) FROM directories WHERE deleted_at IS NOT NULL").Scan(&count); err != nil {
+		t.Fatalf("la columna directories.deleted_at debería existir tras la migración 0003: %v", err)
 	}
 }
 

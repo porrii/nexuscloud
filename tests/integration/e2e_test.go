@@ -23,6 +23,17 @@ import (
 	"github.com/porrii/nexuscloud/internal/users"
 )
 
+// listResponseDTO refleja la forma de GET /api/v1/files y GET /api/v1/trash
+// (ver internal/api/v1/files_handlers.go: listResponse).
+type listResponseDTO struct {
+	Directories []struct {
+		ID string `json:"id"`
+	} `json:"directories"`
+	Files []struct {
+		ID string `json:"id"`
+	} `json:"files"`
+}
+
 // newTestServer arranca un server.Server real sobre sqlite en un directorio
 // temporal, con rate limiting generoso (los tests de rate limiting propios
 // usan límites ajustados por separado).
@@ -262,14 +273,64 @@ func TestFullHappyPathFlow(t *testing.T) {
 		}
 	})
 
-	t.Run("borrar archivo y comprobar que desaparece", func(t *testing.T) {
+	t.Run("borrar archivo lo mueve a la papelera, restaurar y purgar para siempre", func(t *testing.T) {
+		// Delete por defecto es soft-delete (§16): el archivo sigue
+		// existiendo (y siendo descargable por su dueño) pero desaparece
+		// del listado normal y aparece en /trash.
 		resp := c.do(http.MethodDelete, "/api/v1/files/"+fileID, nil, adminToken)
 		if resp.StatusCode != http.StatusNoContent {
 			t.Fatalf("delete = %d", resp.StatusCode)
 		}
 		resp = c.do(http.MethodGet, "/api/v1/files/"+fileID, nil, adminToken)
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("un archivo en la papelera debería seguir siendo descargable por su dueño: status = %d", resp.StatusCode)
+		}
+
+		resp = c.do(http.MethodGet, "/api/v1/files?path=/Documentos", nil, adminToken)
+		listing := decodeJSON[listResponseDTO](t, resp)
+		for _, f := range listing.Files {
+			if f.ID == fileID {
+				t.Error("un archivo en la papelera no debería aparecer en el listado normal")
+			}
+		}
+
+		resp = c.do(http.MethodGet, "/api/v1/trash", nil, adminToken)
+		trash := decodeJSON[listResponseDTO](t, resp)
+		found := false
+		for _, f := range trash.Files {
+			if f.ID == fileID {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("el archivo borrado debería aparecer en /trash: %+v", trash.Files)
+		}
+
+		// Restaurar lo devuelve al listado normal.
+		resp = c.do(http.MethodPost, "/api/v1/files/"+fileID+"/restore", nil, adminToken)
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("restore = %d", resp.StatusCode)
+		}
+		resp = c.do(http.MethodGet, "/api/v1/files?path=/Documentos", nil, adminToken)
+		listing = decodeJSON[listResponseDTO](t, resp)
+		found = false
+		for _, f := range listing.Files {
+			if f.ID == fileID {
+				found = true
+			}
+		}
+		if !found {
+			t.Error("tras restaurar, el archivo debería volver a aparecer en el listado normal")
+		}
+
+		// Borrado definitivo: ahora sí desaparece de verdad.
+		resp = c.do(http.MethodDelete, "/api/v1/files/"+fileID+"?permanent=true", nil, adminToken)
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete permanente = %d", resp.StatusCode)
+		}
+		resp = c.do(http.MethodGet, "/api/v1/files/"+fileID, nil, adminToken)
 		if resp.StatusCode != http.StatusNotFound {
-			t.Errorf("status tras borrar = %d, esperado 404", resp.StatusCode)
+			t.Errorf("status tras borrado definitivo = %d, esperado 404", resp.StatusCode)
 		}
 	})
 

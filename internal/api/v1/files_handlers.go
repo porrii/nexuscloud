@@ -98,15 +98,35 @@ func (h *Handlers) DownloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// DeleteFile mueve el archivo a la papelera por defecto (§16); con
+// ?permanent=true (o si trash.enabled=false en la configuración) borra
+// directamente y para siempre.
 func (h *Handlers) DeleteFile(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	if err := h.Files.Delete(r.Context(), u.ID, id); err != nil {
+	var err error
+	if r.URL.Query().Get("permanent") == "true" {
+		err = h.Files.PermanentlyDeleteFile(r.Context(), u.ID, id)
+	} else {
+		err = h.Files.Delete(r.Context(), u.ID, id)
+	}
+	if err != nil {
 		writeFileError(w, err)
 		return
 	}
 	h.AuditLog.Record(r.Context(), audit.EventDelete, u.ID, "file", id, security.ClientIP(r, h.TrustedProxies), nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) RestoreFile(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if err := h.Files.RestoreFile(r.Context(), u.ID, id); err != nil {
+		writeFileError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -130,17 +150,36 @@ func (h *Handlers) Mkdir(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toDirectoryResponse(dir))
 }
 
-// DeleteDirectory solo borra carpetas vacías (§184-185): si contiene algo,
-// devuelve 409 en vez de borrar en cascada sin confirmación explícita.
+// DeleteDirectory solo borra carpetas vacías -- de contenido activo --
+// (§184-185): si contiene algo, devuelve 409 en vez de borrar en cascada
+// sin confirmación explícita. Mueve a la papelera por defecto; con
+// ?permanent=true borra para siempre.
 func (h *Handlers) DeleteDirectory(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFromContext(r.Context())
 	id := chi.URLParam(r, "id")
 
-	if err := h.Files.DeleteDirectory(r.Context(), u.ID, id); err != nil {
+	var err error
+	if r.URL.Query().Get("permanent") == "true" {
+		err = h.Files.PermanentlyDeleteDirectory(r.Context(), u.ID, id)
+	} else {
+		err = h.Files.DeleteDirectory(r.Context(), u.ID, id)
+	}
+	if err != nil {
 		writeFileError(w, err)
 		return
 	}
 	h.AuditLog.Record(r.Context(), audit.EventDelete, u.ID, "directory", id, security.ClientIP(r, h.TrustedProxies), nil)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handlers) RestoreDirectory(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	if err := h.Files.RestoreDirectory(r.Context(), u.ID, id); err != nil {
+		writeFileError(w, err)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -154,6 +193,8 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "Carpeta no encontrada.")
 	case errors.Is(err, storage.ErrDirectoryNotEmpty):
 		writeError(w, http.StatusConflict, "not_empty", "La carpeta no está vacía.")
+	case errors.Is(err, storage.ErrNameOccupiedByTrash):
+		writeError(w, http.StatusConflict, "name_occupied_by_trash", err.Error())
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):
 		writeError(w, http.StatusBadRequest, "invalid_request", "Nombre o ruta inválidos.")
 	default:

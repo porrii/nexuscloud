@@ -61,5 +61,9 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("server.tlsCertFile y server.tlsKeyFile deben especificarse juntos")
 	}
 
+	if cfg.Trash.Enabled && cfg.Trash.RetentionDays < 1 {
+		return fmt.Errorf("trash.retentionDays debe ser >= 1 cuando trash.enabled=true")
+	}
+
 	return nil
 }

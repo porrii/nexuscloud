@@ -7,6 +7,7 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/db"
@@ -25,7 +26,7 @@ type testEnv struct {
 	userSvc     *users.Service
 }
 
-func newTestEnv(t *testing.T) *testEnv {
+func newTestEnv(t *testing.T, trashEnabled bool) *testEnv {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Database.Driver = "sqlite"
@@ -54,7 +55,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	directories := NewSQLDirectoryRepository(conn)
 
 	return &testEnv{
-		svc:         NewFileService(files, directories, pools, provider),
+		svc:         NewFileService(files, directories, pools, provider, trashEnabled),
 		files:       files,
 		directories: directories,
 		provider:    provider,
@@ -75,7 +76,7 @@ func (e *testEnv) user(t *testing.T, username string) string {
 
 func TestUploadDownloadRoundTrip(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 	content := []byte("contenido de prueba con ñ y áéíóú")
 
@@ -103,7 +104,7 @@ func TestUploadDownloadRoundTrip(t *testing.T) {
 
 func TestDownloadRejectsNonOwner(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	victima := env.user(t, "victima")
 	atacante := env.user(t, "atacante")
 
@@ -121,7 +122,7 @@ func TestDownloadRejectsNonOwner(t *testing.T) {
 
 func TestDeleteRejectsNonOwner(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	victima := env.user(t, "victima")
 	atacante := env.user(t, "atacante")
 
@@ -140,7 +141,7 @@ func TestDeleteRejectsNonOwner(t *testing.T) {
 
 func TestUploadRejectsPathTraversalInName(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	_, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "../../../etc/passwd", Content: bytes.NewReader([]byte("x"))})
@@ -151,7 +152,7 @@ func TestUploadRejectsPathTraversalInName(t *testing.T) {
 
 func TestUploadNormalizesPathTraversalInParentPath(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/../../etc", Name: "passwd.txt", Content: bytes.NewReader([]byte("x"))})
@@ -171,7 +172,7 @@ func TestUploadNormalizesPathTraversalInParentPath(t *testing.T) {
 
 func TestUploadOverwritesExistingPathKeepingSameID(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	first, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "notas.txt", Content: bytes.NewReader([]byte("v1"))})
@@ -199,7 +200,7 @@ func TestUploadOverwritesExistingPathKeepingSameID(t *testing.T) {
 
 func TestTwoUsersCanUseTheSamePathWithoutColliding(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	userA := env.user(t, "user-a")
 	userB := env.user(t, "user-b")
 
@@ -227,9 +228,54 @@ func TestTwoUsersCanUseTheSamePathWithoutColliding(t *testing.T) {
 	}
 }
 
-func TestDeleteRemovesContentAndMetadata(t *testing.T) {
+// Con la papelera activada (por defecto), Delete es un soft-delete: el
+// archivo desaparece del listado pero sigue existiendo (§16).
+func TestDeleteMovesToTrashWhenEnabled(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "borrame.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+
+	got, err := env.files.GetFileByID(ctx, meta.ID)
+	if err != nil {
+		t.Fatalf("los metadatos deberían seguir existiendo (en la papelera): %v", err)
+	}
+	if !got.IsTrashed() {
+		t.Error("el archivo debería estar marcado como en la papelera")
+	}
+	if _, _, err := env.svc.Download(ctx, owner, meta.ID); err != nil {
+		t.Errorf("un archivo en la papelera debería seguir siendo descargable por su dueño: %v", err)
+	}
+
+	list, err := env.svc.List(ctx, owner, "/")
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(list.Files) != 0 {
+		t.Errorf("un archivo en la papelera no debería aparecer en el listado normal: %+v", list.Files)
+	}
+
+	trash, err := env.svc.ListTrash(ctx, owner)
+	if err != nil {
+		t.Fatalf("ListTrash falló: %v", err)
+	}
+	if len(trash.Files) != 1 || trash.Files[0].ID != meta.ID {
+		t.Errorf("ListTrash = %+v, esperado solo %s", trash.Files, meta.ID)
+	}
+}
+
+// Con la papelera desactivada, Delete borra de inmediato y para siempre
+// (comportamiento original de la Fase 1/2a).
+func TestDeletePermanentWhenTrashDisabled(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, false)
 	owner := env.user(t, "user-1")
 
 	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "borrame.txt", Content: bytes.NewReader([]byte("x"))})
@@ -243,13 +289,128 @@ func TestDeleteRemovesContentAndMetadata(t *testing.T) {
 		t.Errorf("los metadatos deberían haber desaparecido: err = %v", err)
 	}
 	if _, _, err := env.svc.Download(ctx, owner, meta.ID); err == nil {
-		t.Error("descargar un archivo borrado debería fallar")
+		t.Error("descargar un archivo borrado para siempre debería fallar")
+	}
+}
+
+func TestRestoreFileBringsItBackToListing(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "recupera.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+	if err := env.svc.RestoreFile(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("RestoreFile falló: %v", err)
+	}
+
+	list, err := env.svc.List(ctx, owner, "/")
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(list.Files) != 1 || list.Files[0].ID != meta.ID {
+		t.Errorf("List(/) tras restaurar = %+v, esperado solo %s", list.Files, meta.ID)
+	}
+}
+
+func TestUploadRejectsNameOccupiedByTrash(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "notas.txt", Content: bytes.NewReader([]byte("original"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+
+	_, err = env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "notas.txt", Content: bytes.NewReader([]byte("nuevo"))})
+	if !errors.Is(err, ErrNameOccupiedByTrash) {
+		t.Errorf("err = %v, esperado ErrNameOccupiedByTrash (no debe resucitar/sobrescribir en silencio, §128)", err)
+	}
+
+	// El contenido original en la papelera debe seguir intacto.
+	_, rc, err := env.svc.Download(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("Download del archivo en papelera falló: %v", err)
+	}
+	got, _ := io.ReadAll(rc)
+	rc.Close()
+	if string(got) != "original" {
+		t.Errorf("el intento de subida rechazado no debería haber tocado el contenido en papelera: got %q", got)
+	}
+}
+
+func TestPermanentlyDeleteFileRemovesItForGood(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "adios.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+	if err := env.svc.PermanentlyDeleteFile(ctx, owner, meta.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteFile falló: %v", err)
+	}
+	if _, err := env.files.GetFileByID(ctx, meta.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("err = %v, esperado ErrFileNotFound tras el borrado definitivo", err)
+	}
+}
+
+func TestPurgeExpiredTrashRemovesOnlyOldEnoughItems(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	oldMeta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "viejo.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	recentMeta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "reciente.txt", Content: bytes.NewReader([]byte("y"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, oldMeta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, recentMeta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+	// Retrocedemos artificialmente la fecha de borrado del primero para
+	// simular que lleva mucho tiempo en la papelera.
+	if err := env.files.SoftDeleteFile(ctx, oldMeta.ID, time.Now().UTC().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("SoftDeleteFile falló: %v", err)
+	}
+
+	purgedFiles, _, err := env.svc.PurgeExpiredTrash(ctx, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("PurgeExpiredTrash falló: %v", err)
+	}
+	if purgedFiles != 1 {
+		t.Errorf("purgedFiles = %d, esperado 1", purgedFiles)
+	}
+	if _, err := env.files.GetFileByID(ctx, oldMeta.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("el archivo viejo debería haberse purgado: err = %v", err)
+	}
+	if _, err := env.files.GetFileByID(ctx, recentMeta.ID); err != nil {
+		t.Errorf("el archivo reciente no debería haberse purgado todavía: %v", err)
 	}
 }
 
 func TestListReturnsOnlyFilesInThatParentPath(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Fotos", Name: "a.jpg", Content: bytes.NewReader([]byte("a"))}); err != nil {
@@ -270,7 +431,7 @@ func TestListReturnsOnlyFilesInThatParentPath(t *testing.T) {
 
 func TestMkdirCreatesAListableDirectory(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
@@ -292,7 +453,7 @@ func TestMkdirCreatesAListableDirectory(t *testing.T) {
 
 func TestMkdirIsIdempotent(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); err != nil {
@@ -305,7 +466,7 @@ func TestMkdirIsIdempotent(t *testing.T) {
 
 func TestDeleteDirectoryRejectsNonEmpty(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
@@ -323,7 +484,7 @@ func TestDeleteDirectoryRejectsNonEmpty(t *testing.T) {
 
 func TestDeleteDirectoryRemovesEmptyDirectory(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
 	dir, err := env.svc.Mkdir(ctx, owner, "/", "Vacia")
@@ -345,7 +506,7 @@ func TestDeleteDirectoryRemovesEmptyDirectory(t *testing.T) {
 
 func TestDeleteDirectoryRejectsNonOwner(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnv(t)
+	env := newTestEnv(t, true)
 	victima := env.user(t, "victima")
 	atacante := env.user(t, "atacante")
 
@@ -355,5 +516,73 @@ func TestDeleteDirectoryRejectsNonOwner(t *testing.T) {
 	}
 	if err := env.svc.DeleteDirectory(ctx, atacante, dir.ID); !errors.Is(err, ErrForbidden) {
 		t.Errorf("err = %v, esperado ErrForbidden (§198 IDOR)", err)
+	}
+}
+
+func TestRestoreDirectoryRecreatesPhysicalMarkerAndAllowsUploads(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory falló: %v", err)
+	}
+	if err := env.svc.RestoreDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("RestoreDirectory falló: %v", err)
+	}
+
+	list, err := env.svc.List(ctx, owner, "/")
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(list.Directories) != 1 || list.Directories[0].ID != dir.ID {
+		t.Errorf("List(/) tras restaurar = %+v, esperado solo %s", list.Directories, dir.ID)
+	}
+
+	// El marcador físico debe haberse recreado: subir dentro no debería fallar.
+	if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Proyectos", Name: "notas.txt", Content: bytes.NewReader([]byte("x"))}); err != nil {
+		t.Errorf("subir dentro de la carpeta restaurada falló: %v", err)
+	}
+}
+
+func TestMkdirRejectsNameOccupiedByTrash(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory falló: %v", err)
+	}
+
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); !errors.Is(err, ErrNameOccupiedByTrash) {
+		t.Errorf("err = %v, esperado ErrNameOccupiedByTrash", err)
+	}
+}
+
+func TestPermanentlyDeleteDirectoryRemovesItForGood(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Efimera")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory falló: %v", err)
+	}
+	if err := env.svc.PermanentlyDeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteDirectory falló: %v", err)
+	}
+	if _, err := env.directories.GetDirectoryByID(ctx, dir.ID); !errors.Is(err, ErrDirectoryNotFound) {
+		t.Errorf("err = %v, esperado ErrDirectoryNotFound tras el borrado definitivo", err)
 	}
 }
