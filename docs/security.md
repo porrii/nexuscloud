@@ -1,6 +1,6 @@
 # Seguridad
 
-Este documento resume el modelo de seguridad implementado en la Fase 1. Para el análisis de amenazas por actor, ver [threat-model.md](security/threat-model.md); para las decisiones y su porqué, ver los [ADRs](architecture/decisions/).
+Este documento resume el modelo de seguridad implementado en las Fases 1 y 2. Para el análisis de amenazas por actor, ver [threat-model.md](security/threat-model.md); para las decisiones y su porqué, ver los [ADRs](architecture/decisions/).
 
 ## Secure by default (§3)
 
@@ -22,7 +22,8 @@ Una instalación recién hecha (`nexuscloud config init` + `nexuscloud admin cre
 ## Autorización
 
 - RBAC con 4 roles semilla (`super_admin`, `administrator`, `user`, `read_only`); `RequireAdmin` comprueba el rol en cada petición contra la base de datos, nunca confía en un claim cacheado.
-- **Propiedad de archivos**: cada archivo pertenece a exactamente un usuario en esta fase (no hay sharing todavía). `FileService.Download`/`Delete` comparan `OwnerID` contra el usuario autenticado antes de tocar el filesystem — comprobado también en `SessionRepository.RevokeSession`, que exige `user_id` en el propio `WHERE` de la query (defensa en profundidad contra IDOR, §198, incluso si una capa superior olvidara comprobar la propiedad).
+- **Propiedad de archivos**: cada archivo pertenece a exactamente un usuario. `FileService.Download`/`Delete` comparan `OwnerID` contra el usuario autenticado antes de tocar el filesystem — comprobado también en `SessionRepository.RevokeSession`, que exige `user_id` en el propio `WHERE` de la query (defensa en profundidad contra IDOR, §198, incluso si una capa superior olvidara comprobar la propiedad).
+- **Compartición (§37)**: además de la propiedad, un archivo/carpeta es accesible si existe un share activo (usuario, grupo o enlace público) — decisiones en [ADR-008](architecture/decisions/ADR-008-sharing.md), amenazas detalladas en [threat-model.md](security/threat-model.md#enlaces-públicos-de-compartición-§37). Enlaces públicos desactivados por defecto (`sharing.publicLinksEnabled: false`); cuando se activan: token de 256 bits de entropía, contraseña opcional transmitida por cabecera `X-Share-Password` (nunca en la URL), rate limit dedicado (`publicLinkPerMinute`, 20/min por defecto) y metadata (nombre/tamaño) oculta hasta que llega la contraseña correcta.
 
 ## Protección de archivos
 
@@ -47,6 +48,6 @@ Una instalación recién hecha (`nexuscloud config init` + `nexuscloud admin cre
 ## Lo que NO está implementado todavía
 
 - Passkeys/WebAuthn (arquitectura de auth ya preparada para añadirlo sin romper el modelo de sesiones actual)
-- Content Security Policy (no aplica aún: no hay interfaz web que servir)
+- Content Security Policy: la Web UI (Fase 2) ya se sirve desde este mismo binario pero todavía sin cabecera `Content-Security-Policy` — gap real, no solo ausencia de superficie
 - Escaneo antivirus de subidas (§76) — Fase 5/6
 - Cifrado de datos en reposo a nivel de aplicación (§29) — el disco/filesystem subyacente es responsabilidad del administrador en esta fase
