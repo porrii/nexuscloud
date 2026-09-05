@@ -48,7 +48,7 @@ El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **L
 |---|---|---|
 | 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa |
 | 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado + Sharing | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15`, `docs/storage.md#compartición-37` |
-| 3 | Cliente Desktop (Windows/Linux) | Pendiente — Flutter, Clean Architecture (ver ADR-005) |
+| 3 | Cliente Desktop (Windows/Linux) | En progreso — slice 1 (login + explorador de solo lectura) implementado y verificado; sync/subida/descarga/sharing en el cliente quedan para slices posteriores. Ver `client/README.md`, [ADR-005](architecture/decisions/ADR-005-multiplatform-strategy.md), [ADR-009](architecture/decisions/ADR-009-flutter-client-foundation.md) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
 | 5 | Backup Manager, Snapshots, gestión de discos/RAID | Pendiente |
 | 6 | Seguridad avanzada: 2FA reforzado, Passkeys/WebAuthn, WebDAV | Pendiente — `security`/`storage`/`backup` ya reservados en el CLI |
