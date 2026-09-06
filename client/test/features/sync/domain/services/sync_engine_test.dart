@@ -5,6 +5,7 @@ import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/sync_engine.dart';
@@ -67,6 +68,26 @@ class _FakeFilesRepository implements FilesRepository {
 
   @override
   Future<DirectoryListing> listTrash() => throw UnimplementedError();
+
+  @override
+  Future<List<FileVersion>> listVersions(String fileId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  }) =>
+      throw UnimplementedError();
 }
 
 FileEntry _file({

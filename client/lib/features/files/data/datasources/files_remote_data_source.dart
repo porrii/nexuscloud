@@ -7,9 +7,11 @@ import '../../../../core/network/api_client.dart';
 import '../../../../core/network/api_exception.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
+import '../../domain/entities/file_version.dart';
 import '../../domain/repositories/files_repository.dart' show TransferProgress;
 import '../models/directory_entry_model.dart';
 import '../models/file_entry_model.dart';
+import '../models/file_version_model.dart';
 
 class FilesRemoteDataSource {
   FilesRemoteDataSource({required ApiClient apiClient}) : _apiClient = apiClient;
@@ -153,5 +155,63 @@ class FilesRemoteDataSource {
         .map(FileEntryModel.fromJson)
         .toList();
     return DirectoryListing(directories: directories, files: files);
+  }
+
+  /// El servidor devuelve un array JSON crudo (sin envoltorio `{...}`),
+  /// más reciente primero -- de ahí `List<dynamic>` y no `Map<String,
+  /// dynamic>` como el resto de listados de esta clase.
+  Future<List<FileVersion>> listVersions(String fileId) async {
+    final response = await _apiClient.request(
+      (dio) => dio.get<List<dynamic>>('/files/$fileId/versions'),
+    );
+    return (response.data ?? [])
+        .cast<Map<String, dynamic>>()
+        .map(FileVersionModel.fromJson)
+        .toList();
+  }
+
+  /// Misma lógica exacta que [downloadFile] (mismo `deleteOnError`
+  /// implícito de `dio.download`, misma verificación de integridad), pero
+  /// contra el contenido de una versión concreta en vez del actual.
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) async {
+    final response = await _apiClient.request(
+      (dio) => dio.download(
+        '/files/$fileId/versions/${version.versionNum}',
+        saveToPath,
+        onReceiveProgress: onProgress,
+      ),
+    );
+
+    final expectedHash =
+        response.headers.value('x-content-sha256') ?? version.sha256;
+    final downloaded = File(saveToPath);
+    final digest = await sha256.bind(downloaded.openRead()).first;
+    if (digest.toString() != expectedHash) {
+      await downloaded.delete();
+      throw const ApiException(
+        code: 'integrity_mismatch',
+        message: 'El archivo descargado no coincide con el original.',
+      );
+    }
+  }
+
+  /// A diferencia de `restoreFile`/`restoreDirectory` (`204` sin cuerpo),
+  /// este endpoint sí manda el `FileEntry` actualizado -- se propaga en
+  /// vez de descartarse (ver doc en `FilesRepository.restoreVersion`).
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  }) async {
+    final response = await _apiClient.request(
+      (dio) => dio.post<Map<String, dynamic>>(
+        '/files/$fileId/versions/$versionNum/restore',
+      ),
+    );
+    return FileEntryModel.fromJson(response.data!);
   }
 }

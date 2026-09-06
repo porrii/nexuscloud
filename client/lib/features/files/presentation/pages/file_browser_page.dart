@@ -12,6 +12,7 @@ import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
+import 'file_versions_page.dart';
 import 'trash_page.dart';
 
 enum _LoadState { loading, loaded, error }
@@ -326,6 +327,18 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                       tooltip: 'Descargar',
                       icon: const Icon(Icons.download),
                       onPressed: () => _downloadFile(file),
+                    ),
+                    IconButton(
+                      tooltip: 'Historial',
+                      icon: const Icon(Icons.history),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => FileVersionsPage(
+                            file: file,
+                            onRestored: () => _load(_currentPath),
+                          ),
+                        ),
+                      ),
                     ),
                     IconButton(
                       tooltip: 'Eliminar',

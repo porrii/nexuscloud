@@ -4,6 +4,7 @@ import 'package:nexuscloud_client/features/files/data/datasources/files_remote_d
 import 'package:nexuscloud_client/features/files/data/repositories/files_repository_impl.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 
 class _FakeFilesRemoteDataSource implements FilesRemoteDataSource {
@@ -91,6 +92,46 @@ class _FakeFilesRemoteDataSource implements FilesRemoteDataSource {
   Future<DirectoryListing> listTrash() async {
     if (trashError != null) throw trashError!;
     return trashListing ?? const DirectoryListing(directories: [], files: []);
+  }
+
+  List<FileVersion>? versions;
+  ApiException? versionsError;
+  ApiException? downloadVersionError;
+  final List<String> downloadedVersionFileIds = [];
+  final List<int> downloadedVersionNums = [];
+  FileEntry? restoreVersionResult;
+  ApiException? restoreVersionError;
+  final List<String> restoreVersionFileIds = [];
+  final List<int> restoreVersionNums = [];
+
+  @override
+  Future<List<FileVersion>> listVersions(String fileId) async {
+    if (versionsError != null) throw versionsError!;
+    return versions ?? const [];
+  }
+
+  @override
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) async {
+    downloadedVersionFileIds.add(fileId);
+    downloadedVersionNums.add(version.versionNum);
+    onProgress?.call(1, 1);
+    if (downloadVersionError != null) throw downloadVersionError!;
+  }
+
+  @override
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  }) async {
+    restoreVersionFileIds.add(fileId);
+    restoreVersionNums.add(versionNum);
+    if (restoreVersionError != null) throw restoreVersionError!;
+    return restoreVersionResult!;
   }
 }
 
@@ -241,5 +282,96 @@ void main() {
     final result = await repo.listTrash();
 
     expect(result.files, [testFile]);
+  });
+
+  final testVersion = FileVersion(
+    versionNum: 3,
+    sizeBytes: 512,
+    sha256: 'def456',
+    mimeType: 'image/jpeg',
+    createdAt: DateTime.utc(2026),
+  );
+
+  test('listVersions delega y devuelve tal cual el resultado', () async {
+    final fake = _FakeFilesRemoteDataSource()..versions = [testVersion];
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    final result = await repo.listVersions('f1');
+
+    expect(result, [testVersion]);
+  });
+
+  test('una ApiException de listVersions se propaga sin cambios', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..versionsError = const ApiException(code: 'forbidden', message: 'x');
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await expectLater(
+      repo.listVersions('f1'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'forbidden')),
+    );
+  });
+
+  test('downloadVersion delega con el fileId y la versión correctos', () async {
+    final fake = _FakeFilesRemoteDataSource();
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.downloadVersion(
+      fileId: 'f1',
+      version: testVersion,
+      saveToPath: '/tmp/out.jpg',
+    );
+
+    expect(fake.downloadedVersionFileIds, ['f1']);
+    expect(fake.downloadedVersionNums, [3]);
+  });
+
+  test(
+    'una ApiException de downloadVersion (incluida integrity_mismatch) se propaga',
+    () async {
+      final fake = _FakeFilesRemoteDataSource()
+        ..downloadVersionError = const ApiException(
+          code: 'integrity_mismatch',
+          message: 'x',
+        );
+      final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+      await expectLater(
+        repo.downloadVersion(
+          fileId: 'f1',
+          version: testVersion,
+          saveToPath: '/tmp/out.jpg',
+        ),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.code, 'code', 'integrity_mismatch'),
+        ),
+      );
+    },
+  );
+
+  test(
+    'restoreVersion delega con el fileId/versionNum correctos y propaga el FileEntry devuelto',
+    () async {
+      final fake = _FakeFilesRemoteDataSource()..restoreVersionResult = testFile;
+      final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+      final result = await repo.restoreVersion(fileId: 'f1', versionNum: 3);
+
+      expect(result, testFile);
+      expect(fake.restoreVersionFileIds, ['f1']);
+      expect(fake.restoreVersionNums, [3]);
+    },
+  );
+
+  test('una ApiException de restoreVersion se propaga sin cambios', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..restoreVersionError = const ApiException(code: 'not_found', message: 'x');
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await expectLater(
+      repo.restoreVersion(fileId: 'f1', versionNum: 3),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'not_found')),
+    );
   });
 }

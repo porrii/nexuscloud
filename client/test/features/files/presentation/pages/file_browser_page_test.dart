@@ -9,6 +9,7 @@ import 'package:nexuscloud_client/features/auth/domain/repositories/auth_reposit
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/files/presentation/pages/file_browser_page.dart';
 
@@ -97,6 +98,29 @@ class _FakeFilesRepository implements FilesRepository {
 
   @override
   Future<DirectoryListing> listTrash() => throw UnimplementedError();
+
+  // El historial de versiones es responsabilidad de FileVersionsPage, no
+  // de FileBrowserPage -- este archivo solo comprueba que el icono
+  // aparece en el sitio correcto, nunca llega a tocarlo.
+  @override
+  Future<List<FileVersion>> listVersions(String fileId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  }) =>
+      throw UnimplementedError();
 }
 
 void main() {
@@ -266,6 +290,42 @@ void main() {
         findsOneWidget,
       );
       expect(find.text('mensaje crudo del servidor'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'el icono de Historial solo aparece en filas de archivo, no de carpeta',
+    (tester) async {
+      final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
+      filesRepo.listingsByPath['/'] = DirectoryListing(
+        directories: [
+          DirectoryEntry(
+            id: 'd1',
+            parentPath: '/',
+            name: 'Carpeta',
+            createdAt: DateTime.utc(2026),
+          ),
+        ],
+        files: [
+          FileEntry(
+            id: 'f1',
+            parentPath: '/',
+            name: 'archivo.txt',
+            sizeBytes: 10,
+            sha256: 'abc',
+            mimeType: 'text/plain',
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      // Una sola fila de archivo -> un solo icono de Historial, ninguno
+      // asociado a la fila de la carpeta.
+      expect(find.byTooltip('Historial'), findsOneWidget);
     },
   );
 }

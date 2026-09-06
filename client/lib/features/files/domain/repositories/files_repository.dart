@@ -1,5 +1,6 @@
 import '../entities/directory_listing.dart';
 import '../entities/file_entry.dart';
+import '../entities/file_version.dart';
 
 /// Progreso de una transferencia (subida o descarga) -- `done`/`total` en
 /// bytes. Typedef propio en vez de reutilizar el `ProgressCallback` de
@@ -51,4 +52,29 @@ abstract interface class FilesRepository {
   /// por el usuario -- misma forma que [list], siempre con `deletedAt`
   /// poblado.
   Future<DirectoryListing> listTrash();
+
+  /// Historial de versiones de un archivo (ADR-007), más reciente primero.
+  /// Solo los archivos tienen versiones -- no existe el concepto para
+  /// carpetas, ni aquí ni en el servidor.
+  Future<List<FileVersion>> listVersions(String fileId);
+
+  /// Descarga el contenido de [version] (no el actual) a [saveToPath],
+  /// con la misma verificación de integridad que [downloadFile].
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  });
+
+  /// Restaura [versionNum] como el contenido activo del archivo --
+  /// no-destructivo por diseño (el contenido activo actual se empuja a su
+  /// vez al historial antes de traer de vuelta el antiguo), por lo que no
+  /// requiere confirmación en la UI. A diferencia de [restoreFile]
+  /// (`204` sin cuerpo), este endpoint sí devuelve el `FileEntry`
+  /// actualizado -- se propaga en vez de descartarse.
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  });
 }

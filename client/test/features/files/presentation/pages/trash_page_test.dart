@@ -4,6 +4,7 @@ import 'package:nexuscloud_client/core/di/service_locator.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/files/presentation/pages/trash_page.dart';
 
@@ -68,6 +69,26 @@ class _FakeFilesRepository implements FilesRepository {
     required FileEntry file,
     required String saveToPath,
     TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<List<FileVersion>> listVersions(String fileId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
   }) =>
       throw UnimplementedError();
 }

@@ -1,5 +1,6 @@
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
+import '../../domain/entities/file_version.dart';
 import '../../domain/repositories/files_repository.dart';
 import '../datasources/files_remote_data_source.dart';
 
@@ -56,4 +57,29 @@ class FilesRepositoryImpl implements FilesRepository {
 
   @override
   Future<DirectoryListing> listTrash() => _remoteDataSource.listTrash();
+
+  @override
+  Future<List<FileVersion>> listVersions(String fileId) =>
+      _remoteDataSource.listVersions(fileId);
+
+  @override
+  Future<void> downloadVersion({
+    required String fileId,
+    required FileVersion version,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      _remoteDataSource.downloadVersion(
+        fileId: fileId,
+        version: version,
+        saveToPath: saveToPath,
+        onProgress: onProgress,
+      );
+
+  @override
+  Future<FileEntry> restoreVersion({
+    required String fileId,
+    required int versionNum,
+  }) =>
+      _remoteDataSource.restoreVersion(fileId: fileId, versionNum: versionNum);
 }
