@@ -155,6 +155,7 @@ void main() {
 
       expect(find.byTooltip('Subir archivo'), findsOneWidget);
       expect(find.byTooltip('Descargar'), findsOneWidget);
+      expect(find.byTooltip('Sincronización'), findsOneWidget);
     },
   );
 

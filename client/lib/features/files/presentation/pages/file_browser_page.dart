@@ -9,6 +9,7 @@ import '../../domain/entities/directory_entry.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
+import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
 
 enum _LoadState { loading, loaded, error }
@@ -139,6 +140,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
       appBar: AppBar(
         title: BreadcrumbBar(path: _currentPath, onNavigate: _load),
         actions: [
+          IconButton(
+            tooltip: 'Sincronización',
+            icon: const Icon(Icons.sync),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SyncSettingsPage()),
+            ),
+          ),
           IconButton(
             tooltip: 'Subir archivo',
             icon: const Icon(Icons.upload_file),
