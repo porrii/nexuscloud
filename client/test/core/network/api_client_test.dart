@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:dio/dio.dart';
@@ -24,15 +26,29 @@ class _FakeTokenStore implements TokenStore {
 }
 
 class _FakeResponse {
-  _FakeResponse(this.statusCode, this.body) : isConnectionError = false;
+  _FakeResponse(this.statusCode, this.body)
+      : isConnectionError = false,
+        failMidStreamAfterBytes = null;
   _FakeResponse.connectionError()
       : statusCode = -1,
         body = const {},
-        isConnectionError = true;
+        isConnectionError = true,
+        failMidStreamAfterBytes = null;
+
+  /// Simula una conexión que responde 200 pero se corta a mitad de la
+  /// transmisión -- para probar que `dio.download` no deja un archivo a
+  /// medias (ADR-010), a diferencia de un error limpio antes de empezar a
+  /// escribir a disco.
+  _FakeResponse.streamFailsMidway()
+      : statusCode = 200,
+        body = const {},
+        isConnectionError = false,
+        failMidStreamAfterBytes = 3;
 
   final int statusCode;
   final Map<String, dynamic> body;
   final bool isConnectionError;
+  final int? failMidStreamAfterBytes;
 }
 
 /// Adaptador HTTP falso -- responde según una cola programada por el test,
@@ -55,6 +71,12 @@ class _FakeHttpClientAdapter implements HttpClientAdapter {
     if (next.isConnectionError) {
       throw Exception('conexión rechazada (simulada)');
     }
+    if (next.failMidStreamAfterBytes != null) {
+      return ResponseBody(
+        _flakyStream(next.failMidStreamAfterBytes!),
+        next.statusCode,
+      );
+    }
     return ResponseBody.fromString(
       jsonEncode(next.body),
       next.statusCode,
@@ -62,6 +84,11 @@ class _FakeHttpClientAdapter implements HttpClientAdapter {
         Headers.contentTypeHeader: [Headers.jsonContentType],
       },
     );
+  }
+
+  Stream<Uint8List> _flakyStream(int bytesBeforeFailure) async* {
+    yield Uint8List.fromList(List.filled(bytesBeforeFailure, 1));
+    throw Exception('conexión perdida a mitad de la transmisión (simulada)');
   }
 
   @override
@@ -193,4 +220,59 @@ void main() {
       'Bearer mi-token-secreto',
     );
   });
+
+  test(
+    'un cuerpo Stream (subida) no se reintenta automáticamente en 429',
+    () async {
+      adapter.queue.add(_FakeResponse(429, {
+        'error': {'code': 'rate_limited', 'message': 'Demasiadas peticiones.'},
+      }));
+
+      final controller = StreamController<List<int>>();
+      controller.add([1, 2, 3]);
+      unawaited(controller.close());
+
+      await expectLater(
+        apiClient.request(
+          (d) => d.post<Map<String, dynamic>>(
+            '/files',
+            data: controller.stream,
+            options: Options(headers: {Headers.contentLengthHeader: 3}),
+          ),
+        ),
+        throwsA(
+          isA<ApiException>().having((e) => e.code, 'code', 'rate_limited'),
+        ),
+      );
+
+      // Sin reintento: si lo hubiera intentado, habría lanzado StateError
+      // (stream de una sola suscripción ya consumido) en vez de propagar
+      // rate_limited con limpieza -- y el adaptador habría visto 2+
+      // peticiones en vez de 1.
+      expect(adapter.requests.length, 1);
+    },
+  );
+
+  test(
+    'una descarga que se corta a medias no deja el archivo en disco',
+    () async {
+      final tempDir = Directory.systemTemp.createTempSync('nexuscloud_dl_');
+      addTearDown(() {
+        if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+      });
+      final savePath = '${tempDir.path}/archivo.bin';
+
+      adapter.queue.add(_FakeResponse.streamFailsMidway());
+
+      await expectLater(
+        apiClient.request((d) => d.download('/files/f1', savePath)),
+        throwsA(anything),
+      );
+
+      // dio.download usa deleteOnError:true por defecto -- no hay que
+      // borrar el archivo a mano en el data source (ADR-010); esta prueba
+      // guarda contra que ese valor por defecto cambie algún día.
+      expect(File(savePath).existsSync(), isFalse);
+    },
+  );
 }

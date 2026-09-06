@@ -48,6 +48,27 @@ class _FakeFilesRepository implements FilesRepository {
     return listingsByPath[path] ??
         const DirectoryListing(directories: [], files: []);
   }
+
+  // uploadFile/downloadFile pasan por `file_selector` (un canal de
+  // plataforma real) antes de llegar aquí -- ese flujo completo se cubre
+  // en la verificación manual (ADR-010), no en este widget test. Aquí
+  // solo hace falta satisfacer la interfaz.
+  @override
+  Future<FileEntry> uploadFile({
+    required String parentPath,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> downloadFile({
+    required FileEntry file,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
 }
 
 void main() {
@@ -108,6 +129,34 @@ void main() {
     expect(filesRepo.requestedPaths, contains('/Fotos'));
     expect(find.text('Esta carpeta está vacía'), findsOneWidget);
   });
+
+  testWidgets(
+    'muestra la acción de subir en la AppBar y de descargar por archivo',
+    (tester) async {
+      final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
+      filesRepo.listingsByPath['/'] = DirectoryListing(
+        directories: const [],
+        files: [
+          FileEntry(
+            id: 'f1',
+            parentPath: '/',
+            name: 'informe.pdf',
+            sizeBytes: 2048,
+            sha256: 'abc',
+            mimeType: 'application/pdf',
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Subir archivo'), findsOneWidget);
+      expect(find.byTooltip('Descargar'), findsOneWidget);
+    },
+  );
 
   testWidgets('muestra un banner de error y permite reintentar', (tester) async {
     final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;

@@ -1,4 +1,5 @@
 import '../../domain/entities/directory_listing.dart';
+import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
 import '../datasources/files_remote_data_source.dart';
 
@@ -10,4 +11,30 @@ class FilesRepositoryImpl implements FilesRepository {
 
   @override
   Future<DirectoryListing> list(String path) => _remoteDataSource.list(path);
+
+  @override
+  Future<FileEntry> uploadFile({
+    required String parentPath,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) =>
+      _remoteDataSource.uploadFile(
+        parentPath: parentPath,
+        localFilePath: localFilePath,
+        fileName: fileName,
+        onProgress: onProgress,
+      );
+
+  @override
+  Future<void> downloadFile({
+    required FileEntry file,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      _remoteDataSource.downloadFile(
+        file: file,
+        saveToPath: saveToPath,
+        onProgress: onProgress,
+      );
 }

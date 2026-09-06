@@ -1,9 +1,34 @@
 import '../entities/directory_listing.dart';
+import '../entities/file_entry.dart';
 
-/// Solo lectura en este slice -- deliberadamente NO tiene el patrón
-/// Stream+getter de auth (ver `AuthRepository`): no hay mutación local ni
-/// varios observadores, un simple `Future` de petición/respuesta es la
-/// representación honesta (ADR-009).
+/// Progreso de una transferencia (subida o descarga) -- `done`/`total` en
+/// bytes. Typedef propio en vez de reutilizar el `ProgressCallback` de
+/// `dio`: el dominio no debe conocer el paquete HTTP concreto (ADR-009).
+typedef TransferProgress = void Function(int done, int total);
+
+/// Listado de solo lectura, y ahora también transferencia de contenido
+/// (ADR-010). El listado deliberadamente NO tiene el patrón Stream+getter
+/// de auth (ver `AuthRepository`): no hay mutación local ni varios
+/// observadores, un simple `Future` de petición/respuesta es la
+/// representación honesta.
 abstract interface class FilesRepository {
   Future<DirectoryListing> list(String path);
+
+  /// Sube el archivo local en [localFilePath] como [fileName] dentro de
+  /// [parentPath]. Devuelve los metadatos ya creados en el servidor.
+  Future<FileEntry> uploadFile({
+    required String parentPath,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  });
+
+  /// Descarga [file] a [saveToPath] y verifica su integridad contra
+  /// `file.sha256` (§41 no tiene reanudación todavía -- un corte a medias
+  /// sería invisible sin esta comprobación, ADR-010).
+  Future<void> downloadFile({
+    required FileEntry file,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  });
 }

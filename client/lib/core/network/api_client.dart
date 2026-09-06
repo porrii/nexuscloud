@@ -16,7 +16,9 @@ import 'session_expiry_notifier.dart';
 ///     `Authorization` dispara [SessionExpiryNotifier] (un 401 al propio
 ///     login no cuenta — ahí simplemente la contraseña es incorrecta).
 ///  4. Reintentar 429 con backoff antes de propagar `rate_limited` (el
-///     servidor no manda `Retry-After`).
+///     servidor no manda `Retry-After`) -- excepto si el cuerpo de la
+///     petición es un `Stream` (subida de archivos, ADR-010), que no es
+///     seguro releer dos veces.
 ///
 /// La URL base NUNCA es una constante (§48: no asumir puertos fijos) — se
 /// fija en tiempo de ejecución con [configureBaseUrl].
@@ -113,8 +115,17 @@ class ApiClient {
     }
 
     if (response.statusCode == 429) {
+      // Un cuerpo en streaming (subida de archivos, ADR-010) es de una
+      // sola suscripción: `_dio.fetch` reintentando re-leería
+      // `requestOptions.data` sobre un stream ya consumido y lanzaría un
+      // `StateError` en vez de un error limpio. Para esos casos, no
+      // reintentar automáticamente -- cae directo al mapeo de abajo
+      // (`rate_limited`), visible en la fila de esa transferencia; el
+      // usuario reintenta manualmente, lo que reabre el archivo con un
+      // stream fresco.
+      final isRetryableBody = err.requestOptions.data is! Stream;
       final attempt = (err.requestOptions.extra['retry_attempt'] as int?) ?? 0;
-      if (_retryPolicy.shouldRetry(attempt)) {
+      if (isRetryableBody && _retryPolicy.shouldRetry(attempt)) {
         await _retryPolicy.waitBeforeRetry(attempt);
         err.requestOptions.extra['retry_attempt'] = attempt + 1;
         try {
