@@ -37,4 +37,23 @@ class FilesRepositoryImpl implements FilesRepository {
         saveToPath: saveToPath,
         onProgress: onProgress,
       );
+
+  @override
+  Future<void> deleteFile(String fileId, {bool permanent = false}) =>
+      _remoteDataSource.deleteFile(fileId, permanent: permanent);
+
+  @override
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+      _remoteDataSource.deleteDirectory(directoryId, permanent: permanent);
+
+  @override
+  Future<void> restoreFile(String fileId) =>
+      _remoteDataSource.restoreFile(fileId);
+
+  @override
+  Future<void> restoreDirectory(String directoryId) =>
+      _remoteDataSource.restoreDirectory(directoryId);
+
+  @override
+  Future<DirectoryListing> listTrash() => _remoteDataSource.listTrash();
 }

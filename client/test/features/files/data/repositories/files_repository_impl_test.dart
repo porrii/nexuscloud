@@ -49,6 +49,49 @@ class _FakeFilesRemoteDataSource implements FilesRemoteDataSource {
     onProgress?.call(1, 1);
     if (downloadError != null) throw downloadError!;
   }
+
+  ApiException? deleteError;
+  ApiException? restoreError;
+  DirectoryListing? trashListing;
+  ApiException? trashError;
+  final List<String> deletedFileIds = [];
+  final List<bool> deletedFilePermanentFlags = [];
+  final List<String> deletedDirectoryIds = [];
+  final List<bool> deletedDirectoryPermanentFlags = [];
+  final List<String> restoredFileIds = [];
+  final List<String> restoredDirectoryIds = [];
+
+  @override
+  Future<void> deleteFile(String fileId, {bool permanent = false}) async {
+    if (deleteError != null) throw deleteError!;
+    deletedFileIds.add(fileId);
+    deletedFilePermanentFlags.add(permanent);
+  }
+
+  @override
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) async {
+    if (deleteError != null) throw deleteError!;
+    deletedDirectoryIds.add(directoryId);
+    deletedDirectoryPermanentFlags.add(permanent);
+  }
+
+  @override
+  Future<void> restoreFile(String fileId) async {
+    if (restoreError != null) throw restoreError!;
+    restoredFileIds.add(fileId);
+  }
+
+  @override
+  Future<void> restoreDirectory(String directoryId) async {
+    if (restoreError != null) throw restoreError!;
+    restoredDirectoryIds.add(directoryId);
+  }
+
+  @override
+  Future<DirectoryListing> listTrash() async {
+    if (trashError != null) throw trashError!;
+    return trashListing ?? const DirectoryListing(directories: [], files: []);
+  }
 }
 
 void main() {
@@ -148,4 +191,55 @@ void main() {
       );
     },
   );
+
+  test('deleteFile delega con permanent=false por defecto', () async {
+    final fake = _FakeFilesRemoteDataSource();
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.deleteFile('f1');
+
+    expect(fake.deletedFileIds, ['f1']);
+    expect(fake.deletedFilePermanentFlags, [false]);
+  });
+
+  test('deleteFile delega permanent=true cuando se pide', () async {
+    final fake = _FakeFilesRemoteDataSource();
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.deleteFile('f1', permanent: true);
+
+    expect(fake.deletedFilePermanentFlags, [true]);
+  });
+
+  test('deleteDirectory propaga un error not_empty sin cambios', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..deleteError = const ApiException(code: 'not_empty', message: 'x');
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await expectLater(
+      repo.deleteDirectory('d1'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'not_empty')),
+    );
+  });
+
+  test('restoreFile y restoreDirectory delegan correctamente', () async {
+    final fake = _FakeFilesRemoteDataSource();
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.restoreFile('f1');
+    await repo.restoreDirectory('d1');
+
+    expect(fake.restoredFileIds, ['f1']);
+    expect(fake.restoredDirectoryIds, ['d1']);
+  });
+
+  test('listTrash delega y devuelve tal cual el resultado', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..trashListing = DirectoryListing(directories: const [], files: [testFile]);
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    final result = await repo.listTrash();
+
+    expect(result.files, [testFile]);
+  });
 }

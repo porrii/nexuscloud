@@ -15,6 +15,7 @@ class FileEntry extends Equatable {
     required this.mimeType,
     required this.createdAt,
     required this.updatedAt,
+    this.deletedAt,
   });
 
   final String id;
@@ -26,7 +27,20 @@ class FileEntry extends Equatable {
   final DateTime createdAt;
   final DateTime updatedAt;
 
+  /// Solo poblado cuando este archivo viene de `FilesRepository.listTrash`
+  /// -- `null` en un listado normal.
+  final DateTime? deletedAt;
+
   @override
-  List<Object?> get props =>
-      [id, parentPath, name, sizeBytes, sha256, mimeType, createdAt, updatedAt];
+  List<Object?> get props => [
+        id,
+        parentPath,
+        name,
+        sizeBytes,
+        sha256,
+        mimeType,
+        createdAt,
+        updatedAt,
+        deletedAt,
+      ];
 }

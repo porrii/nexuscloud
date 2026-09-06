@@ -8,6 +8,7 @@ class DirectoryEntry extends Equatable {
     required this.parentPath,
     required this.name,
     required this.createdAt,
+    this.deletedAt,
   });
 
   final String id;
@@ -15,6 +16,10 @@ class DirectoryEntry extends Equatable {
   final String name;
   final DateTime createdAt;
 
+  /// Solo poblado cuando esta carpeta viene de `FilesRepository.listTrash`
+  /// -- `null` en un listado normal.
+  final DateTime? deletedAt;
+
   @override
-  List<Object?> get props => [id, parentPath, name, createdAt];
+  List<Object?> get props => [id, parentPath, name, createdAt, deletedAt];
 }

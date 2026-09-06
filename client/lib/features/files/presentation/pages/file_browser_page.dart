@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/network/api_exception.dart';
 import '../../../../core/paths/remote_path.dart';
+import '../../../../core/widgets/confirm_dialog.dart';
 import '../../../auth/domain/repositories/auth_repository.dart';
 import '../../domain/entities/directory_entry.dart';
 import '../../domain/entities/directory_listing.dart';
@@ -11,6 +12,7 @@ import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
+import 'trash_page.dart';
 
 enum _LoadState { loading, loaded, error }
 
@@ -134,12 +136,69 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
     }
   }
 
+  Future<void> _deleteDirectory(DirectoryEntry directory) async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Mover carpeta a la papelera',
+      message: '"${directory.name}" se moverá a la papelera. Podrás '
+          'restaurarlo desde ahí mientras no se purgue automáticamente.',
+      confirmLabel: 'Mover a la papelera',
+      danger: true,
+    );
+    if (!confirmed) return;
+
+    try {
+      await _filesRepository.deleteDirectory(directory.id);
+      if (mounted) await _load(_currentPath);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      // Mismo criterio que el cliente web: "not_empty" se sustituye por un
+      // mensaje más claro en vez de mostrar el genérico del servidor.
+      setState(() {
+        _errorMessage = e.code == 'not_empty'
+            ? 'Esa carpeta no está vacía: elimina primero su contenido.'
+            : e.message;
+        _state = _LoadState.error;
+      });
+    }
+  }
+
+  Future<void> _deleteFile(FileEntry file) async {
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Mover a la papelera',
+      message: '"${file.name}" se moverá a la papelera. Podrás restaurarlo '
+          'desde ahí mientras no se purgue automáticamente.',
+      confirmLabel: 'Mover a la papelera',
+      danger: true,
+    );
+    if (!confirmed) return;
+
+    try {
+      await _filesRepository.deleteFile(file.id);
+      if (mounted) await _load(_currentPath);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _errorMessage = e.message;
+        _state = _LoadState.error;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: BreadcrumbBar(path: _currentPath, onNavigate: _load),
         actions: [
+          IconButton(
+            tooltip: 'Papelera',
+            icon: const Icon(Icons.delete_outline),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const TrashPage()),
+            ),
+          ),
           IconButton(
             tooltip: 'Sincronización',
             icon: const Icon(Icons.sync),
@@ -249,16 +308,31 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 leading: const Icon(Icons.folder),
                 title: Text(directory.name),
                 onTap: () => _openDirectory(directory),
+                trailing: IconButton(
+                  tooltip: 'Eliminar',
+                  icon: const Icon(Icons.delete_outline),
+                  onPressed: () => _deleteDirectory(directory),
+                ),
               ),
             for (final file in listing.files)
               ListTile(
                 leading: const Icon(Icons.insert_drive_file),
                 title: Text(file.name),
                 subtitle: Text(_formatSize(file.sizeBytes)),
-                trailing: IconButton(
-                  tooltip: 'Descargar',
-                  icon: const Icon(Icons.download),
-                  onPressed: () => _downloadFile(file),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Descargar',
+                      icon: const Icon(Icons.download),
+                      onPressed: () => _downloadFile(file),
+                    ),
+                    IconButton(
+                      tooltip: 'Eliminar',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _deleteFile(file),
+                    ),
+                  ],
                 ),
               ),
           ],

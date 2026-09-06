@@ -48,6 +48,25 @@ class _FakeFilesRepository implements FilesRepository {
     // real).
     await File(saveToPath).writeAsBytes(List.filled(file.sizeBytes, 0));
   }
+
+  // El motor de sync (slice A) es de solo lectura hacia el servidor --
+  // nunca borra/restaura nada. No lo ejercita ningún test de este archivo.
+  @override
+  Future<void> deleteFile(String fileId, {bool permanent = false}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> restoreFile(String fileId) => throw UnimplementedError();
+
+  @override
+  Future<void> restoreDirectory(String directoryId) => throw UnimplementedError();
+
+  @override
+  Future<DirectoryListing> listTrash() => throw UnimplementedError();
 }
 
 FileEntry _file({

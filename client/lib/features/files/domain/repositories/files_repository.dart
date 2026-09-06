@@ -31,4 +31,24 @@ abstract interface class FilesRepository {
     required String saveToPath,
     TransferProgress? onProgress,
   });
+
+  /// Mueve un archivo a la papelera, o lo borra para siempre si
+  /// [permanent] es `true` -- un único método con flag, igual que el
+  /// propio servidor modela `DELETE /files/{id}?permanent=true`, en vez
+  /// de dos métodos separados.
+  Future<void> deleteFile(String fileId, {bool permanent = false});
+
+  /// Igual que [deleteFile], para carpetas. El servidor rechaza borrar
+  /// (normal o permanente) una carpeta activa con contenido activo
+  /// dentro (`409 not_empty`) -- elementos ya trasheados no cuentan.
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false});
+
+  Future<void> restoreFile(String fileId);
+
+  Future<void> restoreDirectory(String directoryId);
+
+  /// Vista plana (sin jerarquía) de todo lo borrado (no permanentemente)
+  /// por el usuario -- misma forma que [list], siempre con `deletedAt`
+  /// poblado.
+  Future<DirectoryListing> listTrash();
 }

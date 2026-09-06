@@ -12,5 +12,8 @@ class FileEntryModel {
         mimeType: json['mime_type'] as String,
         createdAt: DateTime.parse(json['created_at'] as String),
         updatedAt: DateTime.parse(json['updated_at'] as String),
+        deletedAt: json['deleted_at'] != null
+            ? DateTime.parse(json['deleted_at'] as String)
+            : null,
       );
 }

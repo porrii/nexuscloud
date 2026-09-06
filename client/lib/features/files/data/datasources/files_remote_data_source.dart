@@ -106,4 +106,52 @@ class FilesRemoteDataSource {
       );
     }
   }
+
+  /// El parámetro `permanent` solo se manda cuando es `true` -- igual que
+  /// el cliente web, que nunca lo incluye para un borrado normal. El
+  /// servidor compara la query string como string exacta (`"true"`), así
+  /// que no tiene sentido mandar `"false"` tampoco.
+  Future<void> deleteFile(String fileId, {bool permanent = false}) {
+    return _apiClient.request(
+      (dio) => dio.delete<void>(
+        '/files/$fileId',
+        queryParameters: permanent ? {'permanent': 'true'} : null,
+      ),
+    );
+  }
+
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) {
+    return _apiClient.request(
+      (dio) => dio.delete<void>(
+        '/directories/$directoryId',
+        queryParameters: permanent ? {'permanent': 'true'} : null,
+      ),
+    );
+  }
+
+  Future<void> restoreFile(String fileId) {
+    return _apiClient.request((dio) => dio.post<void>('/files/$fileId/restore'));
+  }
+
+  Future<void> restoreDirectory(String directoryId) {
+    return _apiClient.request(
+      (dio) => dio.post<void>('/directories/$directoryId/restore'),
+    );
+  }
+
+  Future<DirectoryListing> listTrash() async {
+    final response = await _apiClient.request(
+      (dio) => dio.get<Map<String, dynamic>>('/trash'),
+    );
+    final data = response.data!;
+    final directories = (data['directories'] as List)
+        .cast<Map<String, dynamic>>()
+        .map(DirectoryEntryModel.fromJson)
+        .toList();
+    final files = (data['files'] as List)
+        .cast<Map<String, dynamic>>()
+        .map(FileEntryModel.fromJson)
+        .toList();
+    return DirectoryListing(directories: directories, files: files);
+  }
 }

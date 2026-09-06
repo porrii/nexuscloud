@@ -69,6 +69,34 @@ class _FakeFilesRepository implements FilesRepository {
     TransferProgress? onProgress,
   }) =>
       throw UnimplementedError();
+
+  final List<String> deletedFileIds = [];
+  final List<String> deletedDirectoryIds = [];
+  ApiException? deleteError;
+
+  @override
+  Future<void> deleteFile(String fileId, {bool permanent = false}) async {
+    if (deleteError != null) throw deleteError!;
+    deletedFileIds.add(fileId);
+  }
+
+  @override
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) async {
+    if (deleteError != null) throw deleteError!;
+    deletedDirectoryIds.add(directoryId);
+  }
+
+  // restoreFile/restoreDirectory/listTrash son responsabilidad de
+  // TrashPage, no de FileBrowserPage -- no los ejercita ningún test de
+  // este archivo.
+  @override
+  Future<void> restoreFile(String fileId) => throw UnimplementedError();
+
+  @override
+  Future<void> restoreDirectory(String directoryId) => throw UnimplementedError();
+
+  @override
+  Future<DirectoryListing> listTrash() => throw UnimplementedError();
 }
 
 void main() {
@@ -172,4 +200,72 @@ void main() {
     expect(find.text('Acceso no permitido.'), findsOneWidget);
     expect(find.text('Reintentar'), findsOneWidget);
   });
+
+  testWidgets('borra un archivo tras confirmar y recarga el listado', (tester) async {
+    final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
+    filesRepo.listingsByPath['/'] = DirectoryListing(
+      directories: const [],
+      files: [
+        FileEntry(
+          id: 'f1',
+          parentPath: '/',
+          name: 'borrame.txt',
+          sizeBytes: 10,
+          sha256: 'abc',
+          mimeType: 'text/plain',
+          createdAt: DateTime.utc(2026),
+          updatedAt: DateTime.utc(2026),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byTooltip('Eliminar'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Mover a la papelera'), findsWidgets); // título + botón
+
+    await tester.tap(find.widgetWithText(FilledButton, 'Mover a la papelera'));
+    await tester.pumpAndSettle();
+
+    expect(filesRepo.deletedFileIds, ['f1']);
+  });
+
+  testWidgets(
+    'el error not_empty al borrar una carpeta muestra un mensaje claro, no el crudo',
+    (tester) async {
+      final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
+      filesRepo.listingsByPath['/'] = DirectoryListing(
+        directories: [
+          DirectoryEntry(
+            id: 'd1',
+            parentPath: '/',
+            name: 'NoVacia',
+            createdAt: DateTime.utc(2026),
+          ),
+        ],
+        files: const [],
+      );
+      filesRepo.deleteError = const ApiException(
+        code: 'not_empty',
+        message: 'mensaje crudo del servidor',
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byTooltip('Eliminar'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Mover a la papelera'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Esa carpeta no está vacía: elimina primero su contenido.'),
+        findsOneWidget,
+      );
+      expect(find.text('mensaje crudo del servidor'), findsNothing);
+    },
+  );
 }
