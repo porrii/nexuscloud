@@ -1,4 +1,6 @@
 import '../../../../core/storage/server_config_store.dart';
+import '../../../files/domain/entities/directory_listing.dart';
+import '../../../files/domain/repositories/files_repository.dart' show TransferProgress;
 import '../../domain/entities/group.dart';
 import '../../domain/entities/share.dart';
 import '../../domain/repositories/sharing_repository.dart';
@@ -55,4 +57,20 @@ class SharingRepositoryImpl implements SharingRepository {
 
   @override
   Future<String?> get serverBaseUrl => _serverConfigStore.read();
+
+  @override
+  Future<DirectoryListing> listSharedDirectory(String directoryId) =>
+      _remoteDataSource.listSharedDirectory(directoryId);
+
+  @override
+  Future<void> downloadSharedFile({
+    required String fileId,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) =>
+      _remoteDataSource.downloadSharedFile(
+        fileId: fileId,
+        saveToPath: saveToPath,
+        onProgress: onProgress,
+      );
 }

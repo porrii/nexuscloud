@@ -1,6 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/core/storage/server_config_store.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart' show TransferProgress;
 import 'package:nexuscloud_client/features/sharing/data/datasources/sharing_remote_data_source.dart';
 import 'package:nexuscloud_client/features/sharing/data/repositories/sharing_repository_impl.dart';
 import 'package:nexuscloud_client/features/sharing/domain/entities/group.dart';
@@ -64,6 +66,32 @@ class _FakeSharingRemoteDataSource implements SharingRemoteDataSource {
   Future<void> revokeShare(String shareId) async {
     if (revokeError != null) throw revokeError!;
     revokedIds.add(shareId);
+  }
+
+  DirectoryListing? sharedDirectoryListing;
+  ApiException? sharedDirectoryError;
+  final List<String> requestedSharedDirectoryIds = [];
+
+  ApiException? downloadSharedFileError;
+  final List<String> downloadedSharedFileIds = [];
+
+  @override
+  Future<DirectoryListing> listSharedDirectory(String directoryId) async {
+    requestedSharedDirectoryIds.add(directoryId);
+    if (sharedDirectoryError != null) throw sharedDirectoryError!;
+    return sharedDirectoryListing ??
+        const DirectoryListing(directories: [], files: []);
+  }
+
+  @override
+  Future<void> downloadSharedFile({
+    required String fileId,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) async {
+    downloadedSharedFileIds.add(fileId);
+    onProgress?.call(1, 1);
+    if (downloadSharedFileError != null) throw downloadSharedFileError!;
   }
 }
 
@@ -234,4 +262,69 @@ void main() {
 
     expect(await repo.serverBaseUrl, 'https://midominio.com');
   });
+
+  test('listSharedDirectory delega el id y devuelve tal cual el resultado',
+      () async {
+    const listing = DirectoryListing(directories: [], files: []);
+    final fake = _FakeSharingRemoteDataSource()..sharedDirectoryListing = listing;
+    final repo = SharingRepositoryImpl(
+      remoteDataSource: fake,
+      serverConfigStore: _FakeServerConfigStore(),
+    );
+
+    final result = await repo.listSharedDirectory('d1');
+
+    expect(result, listing);
+    expect(fake.requestedSharedDirectoryIds, ['d1']);
+  });
+
+  test('una ApiException de listSharedDirectory (p.ej. forbidden) se propaga',
+      () async {
+    final fake = _FakeSharingRemoteDataSource()
+      ..sharedDirectoryError = const ApiException(code: 'forbidden', message: 'x');
+    final repo = SharingRepositoryImpl(
+      remoteDataSource: fake,
+      serverConfigStore: _FakeServerConfigStore(),
+    );
+
+    await expectLater(
+      repo.listSharedDirectory('d1'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'forbidden')),
+    );
+  });
+
+  test('downloadSharedFile delega con el fileId correcto', () async {
+    final fake = _FakeSharingRemoteDataSource();
+    final repo = SharingRepositoryImpl(
+      remoteDataSource: fake,
+      serverConfigStore: _FakeServerConfigStore(),
+    );
+
+    await repo.downloadSharedFile(fileId: 'f1', saveToPath: '/tmp/out.txt');
+
+    expect(fake.downloadedSharedFileIds, ['f1']);
+  });
+
+  test(
+    'una ApiException de downloadSharedFile (incluida integrity_mismatch) se propaga',
+    () async {
+      final fake = _FakeSharingRemoteDataSource()
+        ..downloadSharedFileError = const ApiException(
+          code: 'integrity_mismatch',
+          message: 'x',
+        );
+      final repo = SharingRepositoryImpl(
+        remoteDataSource: fake,
+        serverConfigStore: _FakeServerConfigStore(),
+      );
+
+      await expectLater(
+        repo.downloadSharedFile(fileId: 'f1', saveToPath: '/tmp/out.txt'),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.code, 'code', 'integrity_mismatch'),
+        ),
+      );
+    },
+  );
 }

@@ -1,3 +1,5 @@
+import '../../../files/domain/entities/directory_listing.dart';
+import '../../../files/domain/repositories/files_repository.dart' show TransferProgress;
 import '../entities/group.dart';
 import '../entities/share.dart';
 
@@ -38,4 +40,28 @@ abstract interface class SharingRepository {
   /// Se usa para construir la URL pública mostrable
   /// `{serverBaseUrl}/s/{token}` tras crear un enlace.
   Future<String?> get serverBaseUrl;
+
+  /// Navega una carpeta compartida por otro usuario -- mismo endpoint
+  /// re-autorizado en cada nivel contra el ID real de la (sub)carpeta,
+  /// nunca una ruta. Reutiliza `DirectoryListing`/`DirectoryEntry`/
+  /// `FileEntry` de `features/files`: el servidor devuelve exactamente la
+  /// misma forma que `GET /files`, con metadatos completos por archivo
+  /// (así que un archivo encontrado aquí se descarga con
+  /// `FilesRepository.downloadFile`, no con [downloadSharedFile]).
+  Future<DirectoryListing> listSharedDirectory(String directoryId);
+
+  /// Descarga un archivo compartido DIRECTAMENTE conmigo (sin pasar por
+  /// una carpeta) -- a diferencia de `FilesRepository.downloadFile`, no
+  /// hay un `FileEntry` conocido de antemano (el listado `with-me` solo
+  /// trae `resourceName`, sin tamaño/hash: el servidor calcula el tamaño
+  /// para construir su propia respuesta interna y lo descarta antes de
+  /// serializarla). La verificación de integridad depende únicamente de
+  /// `X-Content-SHA256` en la respuesta de descarga (el mismo endpoint
+  /// `GET /files/{id}` que ya usa `downloadFile`, con el mismo conjunto de
+  /// cabeceras siempre presente según el propio servidor).
+  Future<void> downloadSharedFile({
+    required String fileId,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  });
 }

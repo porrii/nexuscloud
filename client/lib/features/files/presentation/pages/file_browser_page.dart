@@ -13,6 +13,7 @@ import '../../domain/repositories/files_repository.dart';
 import '../../../sharing/domain/entities/share.dart';
 import '../../../sharing/presentation/pages/my_shares_page.dart';
 import '../../../sharing/presentation/pages/share_page.dart';
+import '../../../sharing/presentation/pages/shared_with_me_page.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
 import 'file_versions_page.dart';
@@ -215,6 +216,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             icon: const Icon(Icons.share),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const MySharesPage()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Compartido conmigo',
+            icon: const Icon(Icons.folder_shared),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SharedWithMePage()),
             ),
           ),
           IconButton(
