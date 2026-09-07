@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
@@ -46,10 +47,74 @@ class SyncEngine {
   /// hacer round-trip por `setLastModified`/`FileStat.modified`.
   static const _mtimeTolerance = Duration(seconds: 2);
 
+  Future<SyncResult>? _inFlight;
+  final _busyController = StreamController<bool>.broadcast();
+
+  /// Emite `true` justo cuando arranca cualquier sincronización y `false`
+  /// justo cuando termina (con éxito o error) -- sin importar si la
+  /// arrancó el botón manual de `SyncSettingsPage` o `AutoSyncScheduler`.
+  /// Existe para que cualquier UI pueda deshabilitar sus propias acciones
+  /// de sync mientras haya una en curso, la haya arrancado quien la haya
+  /// arrancado -- ver [syncNow] sobre por qué esto no es opcional.
+  Stream<bool> get onBusyChanged => _busyController.stream;
+
+  bool get isRunning => _inFlight != null;
+
+  /// Deliberadamente NO `async`: el chequeo+asignación de [_inFlight]
+  /// tiene que ocurrir en el mismo tramo síncrono, antes de que
+  /// `_runSync` ceda el control en su primer `await` interno -- así dos
+  /// llamadas seguidas (aunque vengan del mismo evento) ven la guarda de
+  /// forma consistente, sin ninguna ventana de carrera en el propio
+  /// chequeo.
+  ///
+  /// Una segunda llamada mientras la primera sigue en curso NO lanza una
+  /// excepción ni se descarta: se une a la ya-en-curso y recibe el mismo
+  /// [SyncResult] cuando termine -- ni duplica trabajo de red ni escribe
+  /// dos veces al mismo archivo local. Sin esta guarda, un disparador
+  /// automático (`AutoSyncScheduler`) solapado con un sync manual, o dos
+  /// ticks automáticos seguidos si uno tarda más que el intervalo,
+  /// recorrerían el árbol remoto por duplicado y podrían escribir al
+  /// mismo archivo local a la vez.
+  ///
+  /// Coste aceptado: quien se une no recibe los `onStatus` de la
+  /// ejecución a la que se unió (solo la primera llamada los recibe) --
+  /// razonable para un caso límite raro, no vale la pena una difusión
+  /// multi-listener para esto.
   Future<SyncResult> syncNow(
     SyncPair pair, {
     void Function(String status)? onStatus,
-  }) async {
+  }) {
+    final existing = _inFlight;
+    if (existing != null) {
+      onStatus?.call(
+        'Ya hay una sincronización en curso; esperando a que termine...',
+      );
+      return existing;
+    }
+    final future = _runSync(pair, onStatus);
+    _inFlight = future;
+    _busyController.add(true);
+    // `.whenComplete(...)` devuelve una Future NUEVA e independiente, no
+    // la misma que ya se le devuelve a quien llama -- si no se descarta
+    // con `.ignore()`, un fallo de arranque (p.ej. ruta remota
+    // inexistente) dispara un reporte de "error no capturado" de más en
+    // la zona, encima del error que sí recibe correctamente quien de
+    // verdad esperaba `syncNow`.
+    future
+        .whenComplete(() {
+          _inFlight = null;
+          _busyController.add(false);
+        })
+        .ignore();
+    return future;
+  }
+
+  void dispose() => _busyController.close();
+
+  Future<SyncResult> _runSync(
+    SyncPair pair,
+    void Function(String status)? onStatus,
+  ) async {
     final remoteFiles = await _walkRemote(pair.remotePath, onStatus);
 
     final groups = <String, List<_RemoteFile>>{};

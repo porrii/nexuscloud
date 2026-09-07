@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -14,9 +15,19 @@ class _FakeFilesRepository implements FilesRepository {
   final Map<String, DirectoryListing> listingsByPath = {};
   final List<String> downloadedFileIds = [];
   final Set<String> failForFileIds = {};
+  int listCallCount = 0;
+
+  /// Si no es null, cada llamada a [list] espera a que se complete antes
+  /// de devolver nada -- usado para mantener una sincronización "en
+  /// curso" a propósito mientras un test dispara una segunda llamada a
+  /// `syncNow` y comprueba la guarda de reentrancia.
+  Completer<void>? listGate;
 
   @override
   Future<DirectoryListing> list(String path) async {
+    listCallCount++;
+    final gate = listGate;
+    if (gate != null) await gate.future;
     final listing = listingsByPath[path];
     if (listing == null) {
       throw const ApiException(code: 'not_found', message: 'Carpeta no encontrada.');
@@ -256,4 +267,52 @@ void main() {
       throwsA(isA<ApiException>().having((e) => e.code, 'code', 'not_found')),
     );
   });
+
+  test(
+    'dos llamadas solapadas a syncNow comparten la misma ejecución y no duplican trabajo',
+    () async {
+      fake.listingsByPath['/sync-root'] = DirectoryListing(
+        directories: const [],
+        files: [_file(id: 'f-a', parentPath: '/sync-root', name: 'a.txt')],
+      );
+      fake.listGate = Completer<void>();
+
+      final pair = SyncPair(remotePath: '/sync-root', localPath: tempDir.path);
+      final first = engine.syncNow(pair);
+      final second = engine.syncNow(pair);
+
+      // Misma Future exacta -- la segunda llamada no arrancó un recorrido
+      // nuevo, se unió a la ya en curso.
+      expect(identical(first, second), isTrue);
+      expect(engine.isRunning, isTrue);
+
+      fake.listGate!.complete();
+      final results = await Future.wait([first, second]);
+
+      expect(results[0], equals(results[1]));
+      expect(results[0].downloaded, 1);
+      expect(fake.listCallCount, 1);
+      expect(engine.isRunning, isFalse);
+    },
+  );
+
+  test(
+    'onBusyChanged emite true al arrancar y false al terminar, incluso en error',
+    () async {
+      final events = <bool>[];
+      final subscription = engine.onBusyChanged.listen(events.add);
+
+      await expectLater(
+        engine.syncNow(SyncPair(remotePath: '/no-existe', localPath: tempDir.path)),
+        throwsA(isA<ApiException>()),
+      );
+      // El `false` lo dispara un `whenComplete` sobre una Future aparte de
+      // la que se acaba de esperar arriba -- un giro de vuelta al event
+      // loop de margen para que también termine de entregarse al stream.
+      await Future<void>.delayed(Duration.zero);
+
+      expect(events, [true, false]);
+      await subscription.cancel();
+    },
+  );
 }
