@@ -10,6 +10,9 @@ import '../../domain/entities/directory_entry.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
+import '../../../sharing/domain/entities/share.dart';
+import '../../../sharing/presentation/pages/my_shares_page.dart';
+import '../../../sharing/presentation/pages/share_page.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
 import 'file_versions_page.dart';
@@ -208,6 +211,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             ),
           ),
           IconButton(
+            tooltip: 'Mis comparticiones',
+            icon: const Icon(Icons.share),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const MySharesPage()),
+            ),
+          ),
+          IconButton(
             tooltip: 'Subir archivo',
             icon: const Icon(Icons.upload_file),
             onPressed: _uploadFiles,
@@ -309,10 +319,28 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                 leading: const Icon(Icons.folder),
                 title: Text(directory.name),
                 onTap: () => _openDirectory(directory),
-                trailing: IconButton(
-                  tooltip: 'Eliminar',
-                  icon: const Icon(Icons.delete_outline),
-                  onPressed: () => _deleteDirectory(directory),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Compartir',
+                      icon: const Icon(Icons.share),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => SharePage(
+                            resourceId: directory.id,
+                            resourceName: directory.name,
+                            resourceType: ShareResourceType.directory,
+                          ),
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: 'Eliminar',
+                      icon: const Icon(Icons.delete_outline),
+                      onPressed: () => _deleteDirectory(directory),
+                    ),
+                  ],
                 ),
               ),
             for (final file in listing.files)
@@ -327,6 +355,19 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
                       tooltip: 'Descargar',
                       icon: const Icon(Icons.download),
                       onPressed: () => _downloadFile(file),
+                    ),
+                    IconButton(
+                      tooltip: 'Compartir',
+                      icon: const Icon(Icons.share),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (_) => SharePage(
+                            resourceId: file.id,
+                            resourceName: file.name,
+                            resourceType: ShareResourceType.file,
+                          ),
+                        ),
+                      ),
                     ),
                     IconButton(
                       tooltip: 'Historial',

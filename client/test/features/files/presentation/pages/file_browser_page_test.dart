@@ -328,4 +328,54 @@ void main() {
       expect(find.byTooltip('Historial'), findsOneWidget);
     },
   );
+
+  testWidgets(
+    'el icono de Compartir aparece tanto en filas de carpeta como de archivo',
+    (tester) async {
+      final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
+      filesRepo.listingsByPath['/'] = DirectoryListing(
+        directories: [
+          DirectoryEntry(
+            id: 'd1',
+            parentPath: '/',
+            name: 'Carpeta',
+            createdAt: DateTime.utc(2026),
+          ),
+        ],
+        files: [
+          FileEntry(
+            id: 'f1',
+            parentPath: '/',
+            name: 'archivo.txt',
+            sizeBytes: 10,
+            sha256: 'abc',
+            mimeType: 'text/plain',
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      // A diferencia de Historial (solo archivo), Compartir aparece en
+      // ambas filas -> una carpeta + un archivo = 2 iconos.
+      expect(find.byTooltip('Compartir'), findsNWidgets(2));
+      expect(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'Carpeta'),
+          matching: find.byTooltip('Compartir'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.widgetWithText(ListTile, 'archivo.txt'),
+          matching: find.byTooltip('Compartir'),
+        ),
+        findsOneWidget,
+      );
+    },
+  );
 }

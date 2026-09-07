@@ -2,6 +2,7 @@ import 'package:get_it/get_it.dart';
 
 import '../../features/auth/di/auth_dependencies.dart';
 import '../../features/files/di/files_dependencies.dart';
+import '../../features/sharing/di/sharing_dependencies.dart';
 import '../../features/sync/di/sync_dependencies.dart';
 import '../network/api_client.dart';
 import '../network/session_expiry_notifier.dart';
@@ -30,5 +31,6 @@ Future<void> setupServiceLocator() async {
 
   configureAuthDependencies(sl);
   configureFilesDependencies(sl);
+  configureSharingDependencies(sl);
   configureSyncDependencies(sl);
 }
