@@ -1,6 +1,6 @@
 # Cliente Desktop (Fase 3, slice 1 — login + explorador de solo lectura)
 
-Cliente Flutter/Dart de NexusCloud para Windows y Linux (Android, Fase 4, reutilizará este mismo código — §6). Este primer slice cubre únicamente: login, auto-login, logout, y explorar carpetas de solo lectura. Sync, subida/descarga, sharing/papelera/versiones en el cliente, bandeja del sistema, instalador y auto-actualización quedan para slices posteriores (ver `docs/architecture/decisions/ADR-009-flutter-client-foundation.md`).
+Cliente Flutter/Dart de NexusCloud para Windows y Linux (Android, Fase 4, reutilizará este mismo código — §6). Este primer slice cubre únicamente: login, auto-login, logout, y explorar carpetas de solo lectura. Sync, subida/descarga, sharing/papelera/versiones en el cliente, instalador y auto-actualización quedan para slices posteriores (ver `docs/architecture/decisions/ADR-009-flutter-client-foundation.md`); la bandeja del sistema ya se implementó (slice 9).
 
 Sigue el patrón de Clean Architecture por feature ya usado en [NexusKeys](https://github.com/porrii/NexusKeys) (vault de contraseñas del mismo ecosistema Nexus) — pero **no** todo lo que [ADR-005](../docs/architecture/decisions/ADR-005-multiplatform-strategy.md) daba por sentado resultó ser cierto al inspeccionar el código real de NexusKeys; [ADR-009](../docs/architecture/decisions/ADR-009-flutter-client-foundation.md) corrige eso:
 

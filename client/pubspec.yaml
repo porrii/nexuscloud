@@ -42,6 +42,8 @@ dependencies:
   equatable: ^2.1.0
   file_selector: ^1.1.0
   crypto: ^3.0.7
+  window_manager: ^0.5.2
+  tray_manager: ^0.5.3
 
 dev_dependencies:
   flutter_test:
@@ -64,6 +66,12 @@ flutter:
   # included with your application, so that you can use the icons in
   # the material Icons class.
   uses-material-design: true
+
+  # Icono de bandeja del sistema (slice 9) -- reutiliza el mismo .ico que ya
+  # usa el ejecutable de Windows (Runner.rc, IDI_APP_ICON) en vez de
+  # duplicarlo; un asset de Flutter puede apuntar a cualquier ruta del repo.
+  assets:
+    - windows/runner/resources/app_icon.ico
 
   # To add assets to your application, add an assets section, like this:
   # assets:

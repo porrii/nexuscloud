@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/window/app_tray_service.dart';
 import '../../domain/entities/auto_sync_settings.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_result.dart';
@@ -32,6 +33,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   final SyncConfigRepository _configRepository = sl<SyncConfigRepository>();
   final SyncEngine _syncEngine = sl<SyncEngine>();
   final AutoSyncScheduler _autoSyncScheduler = sl<AutoSyncScheduler>();
+  final AppTrayService _trayService = sl<AppTrayService>();
 
   final _remotePathController = TextEditingController(text: '/');
   String? _localPath;
@@ -44,6 +46,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   bool _autoSyncEnabled = false;
   int _autoSyncIntervalMinutes = _autoSyncIntervalOptions[1];
   ({DateTime at, String summary})? _lastAutoOutcome;
+
+  /// Instantánea de `AppTrayService.minimizeToTrayOnClose` (slice 9) --
+  /// mismo criterio que `_engineBusy`: el servicio ya lo cachea tras su
+  /// propio `init()`, así que leerlo aquí no necesita otro `await`.
+  bool _minimizeToTrayOnClose = false;
 
   /// Reflejo de `SyncEngine.onBusyChanged` -- true mientras CUALQUIER
   /// sincronización esté en curso, la haya arrancado el botón manual de
@@ -64,14 +71,17 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     // para no perder ningún evento emitido justo tras montar la página --
     // los `StreamController.broadcast()` de por debajo no repiten nada a
     // quien se suscribe tarde.
-    _autoResultSubscription =
-        _autoSyncScheduler.onResult.listen(_handleAutoResult);
-    _autoStatusSubscription =
-        _autoSyncScheduler.onStatus.listen(_handleAutoStatus);
+    _autoResultSubscription = _autoSyncScheduler.onResult.listen(
+      _handleAutoResult,
+    );
+    _autoStatusSubscription = _autoSyncScheduler.onStatus.listen(
+      _handleAutoStatus,
+    );
     _busySubscription = _syncEngine.onBusyChanged.listen(_handleBusyChanged);
     // Instantánea del estado actual -- el stream de arriba solo avisa de
     // cambios futuros, no repite el último valor a quien llega tarde.
     _engineBusy = _syncEngine.isRunning;
+    _minimizeToTrayOnClose = _trayService.minimizeToTrayOnClose;
 
     _loadSavedPair();
     _loadAutoSyncSettings();
@@ -155,6 +165,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     );
   }
 
+  Future<void> _setMinimizeToTrayOnClose(bool value) async {
+    setState(() => _minimizeToTrayOnClose = value);
+    await _trayService.updateMinimizeToTrayOnClose(value);
+  }
+
   Future<void> _syncNow() async {
     final remotePath = _remotePathController.text.trim();
     final localPath = _localPath;
@@ -207,148 +222,174 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     final syncDisabled = _syncing || _engineBusy;
     return Scaffold(
       appBar: AppBar(title: const Text('Sincronización')),
-      body: Padding(
-        padding: const EdgeInsets.all(24),
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 520),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Sincroniza una carpeta remota hacia una carpeta local. '
-                'Por ahora es de un solo sentido (servidor → local) -- no '
-                'borra ni sube nada, solo trae lo nuevo o cambiado. Puedes '
-                'activar la sincronización automática más abajo: mientras '
-                'la app esté abierta, se repetirá sola en el intervalo '
-                'elegido. Si cierras la app se detiene -- todavía no hay '
-                'forma de sincronizar en segundo plano.',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 24),
-              TextField(
-                controller: _remotePathController,
-                enabled: !syncDisabled,
-                decoration: const InputDecoration(
-                  labelText: 'Carpeta remota',
-                  hintText: '/',
-                ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      _localPath ?? 'Ninguna carpeta local elegida',
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  OutlinedButton(
-                    onPressed: syncDisabled ? null : _pickLocalFolder,
-                    child: const Text('Elegir carpeta local'),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              FilledButton(
-                onPressed: syncDisabled ? null : _syncNow,
-                child: _syncing
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Sincronizar ahora'),
-              ),
-              if (_statusMessage != null) ...[
-                const SizedBox(height: 16),
-                Text(_statusMessage!, style: Theme.of(context).textTheme.bodySmall),
-              ],
-              if (_startError != null) ...[
-                const SizedBox(height: 16),
+      // SingleChildScrollView, no Padding a secas: con auto-sync activado
+      // (desplegable de intervalo visible) y el interruptor de bandeja del
+      // slice 9 -- las dos secciones que se muestran u ocultan según
+      // estado -- el contenido puede superar la altura de una ventana de
+      // 720px real, y sin scroll eso desborda en vez de recortarse.
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 520),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
                 Text(
-                  _startError!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                  'Sincroniza una carpeta remota hacia una carpeta local. '
+                  'Por ahora es de un solo sentido (servidor → local) -- no '
+                  'borra ni sube nada, solo trae lo nuevo o cambiado. Puedes '
+                  'activar la sincronización automática más abajo: mientras '
+                  'la app esté abierta, se repetirá sola en el intervalo '
+                  'elegido. Si cierras la app se detiene -- salvo que también '
+                  'actives "Minimizar a la bandeja al cerrar" más abajo.',
+                  style: Theme.of(context).textTheme.bodyMedium,
                 ),
-              ],
-              const SizedBox(height: 24),
-              const Divider(),
-              SwitchListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('Sincronizar automáticamente'),
-                subtitle: const Text(
-                  'Repite la sincronización sola mientras la app esté abierta.',
+                const SizedBox(height: 24),
+                TextField(
+                  controller: _remotePathController,
+                  enabled: !syncDisabled,
+                  decoration: const InputDecoration(
+                    labelText: 'Carpeta remota',
+                    hintText: '/',
+                  ),
                 ),
-                value: _autoSyncEnabled,
-                onChanged: _setAutoSyncEnabled,
-              ),
-              if (_autoSyncEnabled) ...[
+                const SizedBox(height: 16),
                 Row(
                   children: [
-                    const Text('Cada'),
+                    Expanded(
+                      child: Text(
+                        _localPath ?? 'Ninguna carpeta local elegida',
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                     const SizedBox(width: 12),
-                    DropdownButton<int>(
-                      value: _autoSyncIntervalMinutes,
-                      items: [
-                        for (final minutes in _autoSyncIntervalOptions)
-                          DropdownMenuItem(
-                            value: minutes,
-                            child: Text('$minutes minutos'),
-                          ),
-                      ],
-                      onChanged: (minutes) {
-                        if (minutes != null) _setAutoSyncInterval(minutes);
-                      },
+                    OutlinedButton(
+                      onPressed: syncDisabled ? null : _pickLocalFolder,
+                      child: const Text('Elegir carpeta local'),
                     ),
                   ],
                 ),
-              ],
-              if (_lastResult != null) ...[
                 const SizedBox(height: 24),
-                const Divider(),
-                const SizedBox(height: 8),
-                Text(
-                  'Última sincronización: ${_lastResult!.finishedAt.toLocal()}\n'
-                  '${_lastResult!.downloaded} descargados, '
-                  '${_lastResult!.skipped} ya al día, '
-                  '${_lastResult!.errors.length} errores',
+                FilledButton(
+                  onPressed: syncDisabled ? null : _syncNow,
+                  child: _syncing
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Sincronizar ahora'),
                 ),
-                if (_lastResult!.errors.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 200),
-                    child: ListView(
-                      shrinkWrap: true,
-                      children: [
-                        for (final error in _lastResult!.errors)
-                          Text(
-                            '• $error',
-                            style: TextStyle(
-                              color: Theme.of(context).colorScheme.error,
-                            ),
-                          ),
-                      ],
+                if (_statusMessage != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    _statusMessage!,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+                if (_startError != null) ...[
+                  const SizedBox(height: 16),
+                  Text(
+                    _startError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
                     ),
                   ),
                 ],
-              ] else if (_lastAutoOutcome != null) ...[
-                // Sin ningún SyncResult todavía en esta sesión de la
-                // página (nunca se pulsó "Sincronizar ahora" ni corrió
-                // ningún tick mientras estaba abierta) pero sí hay un
-                // intento automático de una sesión anterior -- solo un
-                // resumen de texto (ver por qué en SyncConfigRepository),
-                // no el desglose completo de arriba.
                 const SizedBox(height: 24),
                 const Divider(),
-                const SizedBox(height: 8),
-                Text(
-                  'Última sincronización automática: '
-                  '${_lastAutoOutcome!.summary} '
-                  '(${_lastAutoOutcome!.at.toLocal()})',
-                  style: Theme.of(context).textTheme.bodySmall,
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Sincronizar automáticamente'),
+                  subtitle: const Text(
+                    'Repite la sincronización sola mientras la app esté abierta.',
+                  ),
+                  value: _autoSyncEnabled,
+                  onChanged: _setAutoSyncEnabled,
                 ),
+                if (_autoSyncEnabled) ...[
+                  Row(
+                    children: [
+                      const Text('Cada'),
+                      const SizedBox(width: 12),
+                      DropdownButton<int>(
+                        value: _autoSyncIntervalMinutes,
+                        items: [
+                          for (final minutes in _autoSyncIntervalOptions)
+                            DropdownMenuItem(
+                              value: minutes,
+                              child: Text('$minutes minutos'),
+                            ),
+                        ],
+                        onChanged: (minutes) {
+                          if (minutes != null) _setAutoSyncInterval(minutes);
+                        },
+                      ),
+                    ],
+                  ),
+                ],
+                const SizedBox(height: 8),
+                const Divider(),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Minimizar a la bandeja al cerrar'),
+                  subtitle: const Text(
+                    'La X esconde la ventana en vez de cerrar la app -- así '
+                    'la sincronización automática sigue corriendo. El icono '
+                    'de la bandeja del sistema deja volver a abrirla o salir '
+                    'de verdad.',
+                  ),
+                  value: _minimizeToTrayOnClose,
+                  onChanged: _setMinimizeToTrayOnClose,
+                ),
+                if (_lastResult != null) ...[
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Última sincronización: ${_lastResult!.finishedAt.toLocal()}\n'
+                    '${_lastResult!.downloaded} descargados, '
+                    '${_lastResult!.skipped} ya al día, '
+                    '${_lastResult!.errors.length} errores',
+                  ),
+                  if (_lastResult!.errors.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 200),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          for (final error in _lastResult!.errors)
+                            Text(
+                              '• $error',
+                              style: TextStyle(
+                                color: Theme.of(context).colorScheme.error,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ] else if (_lastAutoOutcome != null) ...[
+                  // Sin ningún SyncResult todavía en esta sesión de la
+                  // página (nunca se pulsó "Sincronizar ahora" ni corrió
+                  // ningún tick mientras estaba abierta) pero sí hay un
+                  // intento automático de una sesión anterior -- solo un
+                  // resumen de texto (ver por qué en SyncConfigRepository),
+                  // no el desglose completo de arriba.
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Última sincronización automática: '
+                    '${_lastAutoOutcome!.summary} '
+                    '(${_lastAutoOutcome!.at.toLocal()})',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       ),

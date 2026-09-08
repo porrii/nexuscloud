@@ -7,9 +7,12 @@ import '../../features/sync/di/sync_dependencies.dart';
 import '../network/api_client.dart';
 import '../network/session_expiry_notifier.dart';
 import '../storage/local_server_config_store.dart';
+import '../storage/local_window_preferences_store.dart';
 import '../storage/secure_token_store.dart';
 import '../storage/server_config_store.dart';
 import '../storage/token_store.dart';
+import '../storage/window_preferences_store.dart';
+import '../window/app_tray_service.dart';
 
 /// Localizador de dependencias único de la app, copiando literalmente el
 /// patrón de `E:\Proyectos\NexusKeys\NexusKeys\lib\core\di\service_locator.dart`:
@@ -21,12 +24,18 @@ Future<void> setupServiceLocator() async {
   sl
     ..registerLazySingleton<TokenStore>(SecureTokenStore.new)
     ..registerLazySingleton<ServerConfigStore>(LocalServerConfigStore.new)
+    ..registerLazySingleton<WindowPreferencesStore>(
+      LocalWindowPreferencesStore.new,
+    )
     ..registerLazySingleton(SessionExpiryNotifier.new)
     ..registerLazySingleton(
       () => ApiClient(
         tokenStore: sl(),
         sessionExpiryNotifier: sl(),
       ),
+    )
+    ..registerLazySingleton(
+      () => AppTrayService(preferencesStore: sl<WindowPreferencesStore>()),
     );
 
   configureAuthDependencies(sl);

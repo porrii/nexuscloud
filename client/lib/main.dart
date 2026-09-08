@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'core/di/service_locator.dart';
 import 'core/theme/app_theme.dart';
+import 'core/window/app_tray_service.dart';
 import 'features/auth/presentation/pages/auth_gate_page.dart';
 import 'features/sync/domain/services/auto_sync_scheduler.dart';
 
@@ -13,6 +14,9 @@ Future<void> main() async {
   // llamar aunque el auto-login todavía no haya terminado -- cada tick
   // comprueba la sesión antes de hacer nada (ver `AutoSyncScheduler`).
   await sl<AutoSyncScheduler>().start();
+  // Bandeja del sistema (slice 9): icono + comportamiento de cierre, antes
+  // de que la ventana pueda recibir ningún evento (ver `AppTrayService`).
+  await sl<AppTrayService>().init();
   runApp(const NexusCloudApp());
 }
 
