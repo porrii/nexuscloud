@@ -31,4 +31,31 @@ void main() {
 
     expect(await store.readMinimizeToTrayOnClose(), isFalse);
   });
+
+  test('readStartMinimized devuelve false si no hay nada guardado', () async {
+    final store = LocalWindowPreferencesStore();
+
+    expect(await store.readStartMinimized(), isFalse);
+  });
+
+  test('saveStartMinimized y readStartMinimized devuelven lo mismo', () async {
+    final store = LocalWindowPreferencesStore();
+
+    await store.saveStartMinimized(true);
+
+    expect(await store.readStartMinimized(), isTrue);
+  });
+
+  test(
+    'minimizeToTrayOnClose y startMinimized se guardan de forma independiente',
+    () async {
+      final store = LocalWindowPreferencesStore();
+
+      await store.saveMinimizeToTrayOnClose(true);
+      await store.saveStartMinimized(false);
+
+      expect(await store.readMinimizeToTrayOnClose(), isTrue);
+      expect(await store.readStartMinimized(), isFalse);
+    },
+  );
 }

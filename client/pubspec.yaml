@@ -44,6 +44,15 @@ dependencies:
   crypto: ^3.0.7
   window_manager: ^0.5.2
   tray_manager: ^0.5.3
+  # Arrancar con Windows (slice 10): sin el paquete `launch_at_startup` --
+  # su única versión publicada fija win32_registry ^2.0.0 (incompatible con
+  # el win32 ^6.0.1 que ya exige flutter_secure_storage) y forzar la
+  # versión con dependency_overrides no basta, win32_registry 3.x rediseñó
+  # por completo la API de RegistryKey (confirmado con flutter test real,
+  # no solo flutter analyze). El algoritmo (mismas dos claves de registro,
+  # mismo formato) se reimplementa directamente en
+  # core/window/launch_at_startup_service.dart contra la API 3.x real.
+  win32_registry: ^3.0.3
 
 dev_dependencies:
   flutter_test:

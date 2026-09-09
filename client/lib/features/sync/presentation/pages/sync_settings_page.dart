@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/storage/window_preferences_store.dart';
 import '../../../../core/window/app_tray_service.dart';
+import '../../../../core/window/launch_at_startup_service.dart';
 import '../../domain/entities/auto_sync_settings.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_result.dart';
@@ -34,6 +36,14 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   final SyncEngine _syncEngine = sl<SyncEngine>();
   final AutoSyncScheduler _autoSyncScheduler = sl<AutoSyncScheduler>();
   final AppTrayService _trayService = sl<AppTrayService>();
+  final LaunchAtStartupService _launchAtStartupService =
+      sl<LaunchAtStartupService>();
+  // Directo a `WindowPreferencesStore`, no a través de `AppTrayService` ni
+  // `LaunchAtStartupService`: "iniciar minimizado" no es dueño de ninguno
+  // de los dos (ver el plan de este slice sobre por qué la coordinación
+  // entre ambos vive aquí, en la página, y no dentro de un servicio).
+  final WindowPreferencesStore _windowPreferencesStore =
+      sl<WindowPreferencesStore>();
 
   final _remotePathController = TextEditingController(text: '/');
   String? _localPath;
@@ -51,6 +61,15 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   /// mismo criterio que `_engineBusy`: el servicio ya lo cachea tras su
   /// propio `init()`, así que leerlo aquí no necesita otro `await`.
   bool _minimizeToTrayOnClose = false;
+
+  /// A diferencia de `_minimizeToTrayOnClose`, no hay valor cacheado
+  /// síncrono disponible -- `launchAtStartup.isEnabled()` relee el
+  /// registro de Windows de verdad en cada llamada (es la fuente de
+  /// verdad, no `shared_preferences`), así que empieza en `false` hasta
+  /// que `_loadLaunchAtStartupSettings` resuelve.
+  bool _launchAtStartupEnabled = false;
+  bool _startMinimized = false;
+  String? _launchAtStartupError;
 
   /// Reflejo de `SyncEngine.onBusyChanged` -- true mientras CUALQUIER
   /// sincronización esté en curso, la haya arrancado el botón manual de
@@ -85,6 +104,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
     _loadSavedPair();
     _loadAutoSyncSettings();
+    _loadLaunchAtStartupSettings();
   }
 
   @override
@@ -113,6 +133,26 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       _autoSyncEnabled = settings.enabled;
       _autoSyncIntervalMinutes = settings.intervalMinutes;
       _lastAutoOutcome = outcome;
+    });
+  }
+
+  /// El invariante de "iniciar minimizado no puede quedar huérfano" se
+  /// cierra en DOS sitios (ver el plan de este slice): aquí, al cargar la
+  /// página, y en `_setLaunchAtStartupEnabled` al desactivar el interruptor
+  /// a mano. Hace falta aquí también porque `isEnabled()` puede volverse
+  /// `false` sin que esta app se entere -- p.ej. si el usuario lo
+  /// desactiva desde el Administrador de tareas → "Aplicaciones de
+  /// inicio", que no pasa por ningún código de esta app en absoluto.
+  Future<void> _loadLaunchAtStartupSettings() async {
+    final enabled = await _launchAtStartupService.isEnabled();
+    final startMinimized = await _windowPreferencesStore.readStartMinimized();
+    if (!enabled && startMinimized) {
+      await _windowPreferencesStore.saveStartMinimized(false);
+    }
+    if (!mounted) return;
+    setState(() {
+      _launchAtStartupEnabled = enabled;
+      _startMinimized = enabled && startMinimized;
     });
   }
 
@@ -168,6 +208,43 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   Future<void> _setMinimizeToTrayOnClose(bool value) async {
     setState(() => _minimizeToTrayOnClose = value);
     await _trayService.updateMinimizeToTrayOnClose(value);
+  }
+
+  /// A diferencia de los demás interruptores de esta página, envuelve la
+  /// llamada en `try/catch` (ver el plan de este slice): a diferencia de
+  /// `shared_preferences`/el scheduler en memoria que respaldan los otros,
+  /// esto son dos escrituras de registro Win32 no atómicas vía FFI cruda,
+  /// que sí pueden lanzar -- y el booleano que devolvería `enable()`/
+  /// `disable()` no serviría para detectar un fallo aunque se comprobara
+  /// (siempre `true` en Windows sin MSIX, confirmado en su código fuente).
+  Future<void> _setLaunchAtStartupEnabled(bool value) async {
+    final previous = _launchAtStartupEnabled;
+    setState(() {
+      _launchAtStartupEnabled = value;
+      _launchAtStartupError = null;
+      // Mismo invariante que en la carga: si se desactiva, "iniciar
+      // minimizado" no puede quedar activado sin que el interruptor que
+      // lo controla siga visible.
+      if (!value) _startMinimized = false;
+    });
+    try {
+      await _launchAtStartupService.setEnabled(value);
+      if (!value) {
+        await _windowPreferencesStore.saveStartMinimized(false);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _launchAtStartupEnabled = previous;
+        _launchAtStartupError =
+            'No se pudo cambiar el ajuste de arranque con Windows.';
+      });
+    }
+  }
+
+  Future<void> _setStartMinimized(bool value) async {
+    setState(() => _startMinimized = value);
+    await _windowPreferencesStore.saveStartMinimized(value);
   }
 
   Future<void> _syncNow() async {
@@ -242,7 +319,9 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                   'activar la sincronización automática más abajo: mientras '
                   'la app esté abierta, se repetirá sola en el intervalo '
                   'elegido. Si cierras la app se detiene -- salvo que también '
-                  'actives "Minimizar a la bandeja al cerrar" más abajo.',
+                  'actives "Minimizar a la bandeja al cerrar". Y si además '
+                  'activas "Arrancar con Windows", ni siquiera hace falta '
+                  'abrir NexusCloud a mano tras reiniciar el equipo.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 24),
@@ -343,6 +422,40 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                   value: _minimizeToTrayOnClose,
                   onChanged: _setMinimizeToTrayOnClose,
                 ),
+                const SizedBox(height: 8),
+                const Divider(),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Arrancar NexusCloud con Windows'),
+                  subtitle: const Text(
+                    'Se abre sola al iniciar sesión en Windows -- así la '
+                    'sincronización automática puede estar activa incluso '
+                    'tras reiniciar el equipo.',
+                  ),
+                  value: _launchAtStartupEnabled,
+                  onChanged: _setLaunchAtStartupEnabled,
+                ),
+                if (_launchAtStartupError != null) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    _launchAtStartupError!,
+                    style: TextStyle(
+                      color: Theme.of(context).colorScheme.error,
+                    ),
+                  ),
+                ],
+                if (_launchAtStartupEnabled) ...[
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Iniciar minimizado en la bandeja'),
+                    subtitle: const Text(
+                      'Al arrancar con Windows, empieza escondida en la '
+                      'bandeja del sistema en vez de mostrar la ventana.',
+                    ),
+                    value: _startMinimized,
+                    onChanged: _setStartMinimized,
+                  ),
+                ],
                 if (_lastResult != null) ...[
                   const SizedBox(height: 24),
                   const Divider(),
