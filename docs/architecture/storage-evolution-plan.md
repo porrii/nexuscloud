@@ -12,8 +12,10 @@
 > - Fase C — enumeración de discos (solo lectura): **HECHA** (commit `c1d2626`).
 > - Fase D — pools reales + refactor de `FileService`: **HECHA**
 >   (commit `8dc5e47`), junto con el endpoint HTTP admin de discos.
-> - Fase E (despliegue nativo): pendiente.
+> - Fase E — despliegue nativo (scripts + `nexuscloud service`): **HECHA**.
 > - Fase F (ganchos futuros): documentada.
+>
+> Con esto, las 6 fases del plan están completas.
 
 ---
 
@@ -312,7 +314,7 @@ existentes de `/api/v1`. Los endpoints nuevos son `admin`-only y aditivos.
 | B — `Layout` + symlink fix | bajo | C, D | **hecha** (`57a80d6`) |
 | C — gestor de discos (RO) | medio | — | **hecha** (`c1d2626`) + endpoint HTTP (`8dc5e47`) |
 | D — pools reales + `FileService` | alto | E parcial | **hecha** ([plan](storage-phase-d-plan.md), commit `8dc5e47`) |
-| E — despliegue nativo | bajo-medio | — | pendiente |
+| E — despliegue nativo | bajo-medio | — | **hecha** (`deploy/scripts/`, `nexuscloud service`, `docs/deployment.md`) |
 | F — ganchos futuros | mínimo | — | documentado arriba |
 
 **Endpoint HTTP de discos:** `GET /api/v1/storage/disks` (admin-only, bajo
@@ -320,11 +322,18 @@ existentes de `/api/v1`. Los endpoints nuevos son `admin`-only y aditivos.
 seguir la convención existente (`/users`, `/audit`, ... ya son admin-only
 sin prefijo). 501 con cuerpo claro en un SO sin adaptador de `diskinfo`.
 
-**Fase E — despliegue nativo (pendiente):** `deploy/scripts/` con
-`install.sh`/`update.sh`/`uninstall.sh` (+ `.ps1` para Windows), subcomando
-`nexuscloud service install|...` con `kardianos/service` (dependencia
-nueva), `docs/deployment.md` con la matriz de métodos. No toca la lógica de
-la app. Se puede hacer en paralelo con cualquier otra cosa.
+**Fase E — despliegue nativo (hecha):** `deploy/scripts/install.sh` /
+`update.sh` / `uninstall.sh` (systemd) + `install.ps1` / `uninstall.ps1`
+(Windows), subcomando `nexuscloud service {install,uninstall,start,stop,
+restart,status,run}` con `github.com/kardianos/service` v1.3.0 (dependencia
+nueva; ya sin CGO, cross-compila a windows/darwin), y `docs/deployment.md`
+reescrito con la matriz de métodos dejando claro que Docker es de
+conveniencia y la instalación nativa está plenamente soportada. `start.go`
+se refactorizó para extraer `RunServer(ctx, cfg, logger)`, cuerpo común de
+`start` y `service run`. Scripts `.sh` validados con `shellcheck -x`; su
+ejecución real (requiere root en un host Linux) no se ha probado. El
+adaptador de servicio de Windows cross-compila; su runtime tampoco se ha
+podido probar.
 
 ---
 

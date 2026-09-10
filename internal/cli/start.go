@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/logging"
 	"github.com/porrii/nexuscloud/internal/server"
 	"github.com/porrii/nexuscloud/internal/version"
@@ -28,59 +30,65 @@ func newStartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-
 			logger, closer, err := logging.New(cfg.Logging)
 			if err != nil {
 				return err
 			}
 			defer closer.Close()
 
-			logger.Info("arrancando NexusCloud", "version", version.Version)
-
-			srv, err := server.Build(cfg, logger)
-			if err != nil {
-				return fmt.Errorf("construyendo el servidor: %w", err)
-			}
-			defer srv.Close()
-
-			addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
-			httpServer := &http.Server{
-				Addr:              addr,
-				Handler:           srv.Handler,
-				ReadHeaderTimeout: 10 * time.Second,
-			}
-
-			errCh := make(chan error, 1)
-			go func() {
-				logger.Info("escuchando", "addr", addr, "tls", cfg.Server.TLSCertFile != "")
-				var serveErr error
-				if cfg.Server.TLSCertFile != "" {
-					serveErr = httpServer.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
-				} else {
-					serveErr = httpServer.ListenAndServe()
-				}
-				if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-					errCh <- serveErr
-				}
-			}()
-
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-
-			select {
-			case err := <-errCh:
-				return fmt.Errorf("error del servidor HTTP: %w", err)
-			case <-ctx.Done():
-				logger.Info("señal de apagado recibida, cerrando de forma ordenada")
-			}
-
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
-			if err := httpServer.Shutdown(shutdownCtx); err != nil {
-				return fmt.Errorf("apagando el servidor HTTP: %w", err)
-			}
-			logger.Info("NexusCloud detenido correctamente")
-			return nil
+			return RunServer(ctx, cfg, logger)
 		},
 	}
+}
+
+// RunServer arranca el servidor HTTP de NexusCloud y bloquea hasta que ctx
+// se cancele (señal de apagado) o el listener falle. Es el cuerpo común de
+// `nexuscloud start` y de `nexuscloud service run` (el segundo lo invoca
+// bajo el control del gestor de servicios del SO, ver service_cmd.go).
+func RunServer(ctx context.Context, cfg *config.Config, logger *slog.Logger) error {
+	logger.Info("arrancando NexusCloud", "version", version.Version)
+
+	srv, err := server.Build(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("construyendo el servidor: %w", err)
+	}
+	defer srv.Close()
+
+	addr := net.JoinHostPort(cfg.Server.Host, strconv.Itoa(cfg.Server.Port))
+	httpServer := &http.Server{
+		Addr:              addr,
+		Handler:           srv.Handler,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		logger.Info("escuchando", "addr", addr, "tls", cfg.Server.TLSCertFile != "")
+		var serveErr error
+		if cfg.Server.TLSCertFile != "" {
+			serveErr = httpServer.ListenAndServeTLS(cfg.Server.TLSCertFile, cfg.Server.TLSKeyFile)
+		} else {
+			serveErr = httpServer.ListenAndServe()
+		}
+		if serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			errCh <- serveErr
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("error del servidor HTTP: %w", err)
+	case <-ctx.Done():
+		logger.Info("señal de apagado recibida, cerrando de forma ordenada")
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("apagando el servidor HTTP: %w", err)
+	}
+	logger.Info("NexusCloud detenido correctamente")
+	return nil
 }

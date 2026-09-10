@@ -1,65 +1,147 @@
-# Despliegue
+# Despliegue de NexusCloud
 
-## Docker (recomendado)
+NexusCloud **no depende de Docker** ni de ninguna tecnología de despliegue
+concreta (requisitos 9 / 14 / 15 de la actualización de arquitectura). Toda
+la lógica de la aplicación es independiente del método con el que se
+arranque, se pare, se actualice o se configure. Elige el que mejor se
+adapte:
 
-```bash
+| Método | Cuándo | Punto de entrada |
+|--------|--------|------------------|
+| **Nativo + systemd** (Linux) | servidor Linux dedicado, control total | `deploy/scripts/install.sh` |
+| **Nativo + servicio** (Windows) | equipo Windows dedicado | `deploy/scripts/install.ps1` |
+| **Nativo en primer plano** | pruebas, u otro supervisor (runit, s6, NSSM…) | `nexuscloud start --config <ruta>` |
+| **Docker** | ya usas Docker, quieres aislamiento | `Dockerfile` |
+| **Docker Compose** | Docker + PostgreSQL / reverse-proxy juntos | `docker-compose.yml` |
+| **OCI genérico** (Podman…) | runtime compatible con OCI | la misma imagen del `Dockerfile` |
+
+Docker y Compose son métodos **de conveniencia**, no un requisito. Una
+instalación nativa es un método plenamente soportado. Ninguna funcionalidad
+de NexusCloud requiere Docker.
+
+CI compila y verifica el binario para Linux amd64/arm64 (Raspberry Pi) y
+Windows amd64 en cada push (`.github/workflows/ci.yml`).
+
+---
+
+## Configuración: la misma en todos los métodos
+
+`almacenamiento`, `puertos`, `certificados`, `base de datos`, `caché`,
+`logs`, `usuarios`, `permisos` se configuran igual sea cual sea el
+despliegue:
+
+1. `config.yaml` (ver `config.example.yaml`, o `nexuscloud config init`).
+2. Variables de entorno `NEXUSCLOUD_*` (prioridad sobre el fichero).
+3. Flags de CLI (máxima prioridad).
+
+Cada área de almacenamiento (base de datos, caché, miniaturas, versionado,
+temporales, logs, backups, config) puede vivir en un disco distinto sin
+tocar código: `storage.databaseDir`, `storage.cacheDir`, … o
+`NEXUSCLOUD_DATABASE_DIR`, `NEXUSCLOUD_CACHE_DIR`, … (ver
+`docs/architecture/storage-evolution-plan.md`).
+
+---
+
+## Primer arranque (§140)
+
+Igual con cualquier método:
+
+1. `nexuscloud config init --out <ruta>` — genera `config.yaml` con valores
+   seguros por defecto (sin web pública, sin registro público, rate
+   limiting activo).
+2. `nexuscloud --config <ruta> migrate up` — aplica el esquema.
+3. `nexuscloud --config <ruta> admin create-user --username ...` — crea el
+   primer usuario, que recibe el rol `super_admin`. Nunca se permite
+   `admin`/`admin` ni una contraseña de menos de 8 caracteres.
+4. `nexuscloud --config <ruta> doctor` — verifica configuración, base de
+   datos, almacenamiento, puerto y TLS antes de exponer la instancia.
+5. Arranca (`start`, `service start`, `systemctl start nexuscloud`, o
+   `docker compose up -d` según el método).
+
+---
+
+## Nativo + systemd (Linux)
+
+```sh
+# Con el binario 'nexuscloud' compilado (go build -o nexuscloud ./cmd/nexuscloud)
+# o descargado a mano:
+sudo ./deploy/scripts/install.sh ./nexuscloud
+# -> crea el usuario de servicio, instala el binario en /usr/local/bin,
+#    genera /etc/nexuscloud/config.yaml, aplica migraciones, hace 'enable'
+#    del servicio (NO lo arranca todavía: revisa la config primero).
+
+sudo -e /etc/nexuscloud/config.yaml
+sudo -u nexuscloud /usr/local/bin/nexuscloud \
+     --config /etc/nexuscloud/config.yaml admin create-user
+sudo systemctl start nexuscloud
+systemctl status nexuscloud
+journalctl -u nexuscloud -f
+```
+
+- Actualizar: `sudo ./deploy/scripts/update.sh ./nexuscloud-nuevo`
+  (para el servicio, guarda copia del binario anterior, migra, y revierte
+  el binario si la migración falla).
+- Desinstalar: `sudo ./deploy/scripts/uninstall.sh`
+  (conserva datos y config; `--purge` los borra también).
+- Reubicar rutas: `NX_PREFIX`, `NX_CONFIG_DIR`, `NX_DATA_DIR`, `NX_USER`.
+
+`deploy/systemd/nexuscloud.service` es la unit de referencia (hardening:
+`ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, mínimo privilegio
+§103). Si reubicas `storage.dataDir` o alguna área a otro disco, añade esa
+ruta a `ReadWritePaths=`.
+
+---
+
+## Nativo + servicio de Windows
+
+```powershell
+# En una consola de PowerShell ELEVADA, con nexuscloud.exe a mano:
+.\deploy\scripts\install.ps1 -BinPath .\nexuscloud.exe
+# -> copia a "Archivos de programa\NexusCloud", genera
+#    ProgramData\NexusCloud\config.yaml, migra y registra el servicio.
+
+& "$env:ProgramFiles\NexusCloud\nexuscloud.exe" `
+    --config "$env:ProgramData\NexusCloud\config.yaml" admin create-user
+& "$env:ProgramFiles\NexusCloud\nexuscloud.exe" service start
+```
+
+El servicio se gestiona con `nexuscloud service {start|stop|restart|status}`
+o desde `services.msc`. Desinstalar: `.\deploy\scripts\uninstall.ps1`
+(`-Purge` borra datos y config).
+
+Por debajo, `nexuscloud service …` usa `github.com/kardianos/service`, que
+habla con el SCM de Windows, systemd (Linux) o launchd (macOS) según el
+sistema. `nexuscloud start` sigue siendo válido para correr en primer plano
+bajo cualquier otro supervisor (NSSM, Tarea Programada, …).
+
+---
+
+## Docker / Compose
+
+```sh
 docker compose up -d
 docker compose exec nexuscloud nexuscloud admin create-user --username tu-usuario
 ```
 
-La imagen (`Dockerfile`) es multi-stage: build en `golang:1.25-bookworm`, runtime en `gcr.io/distroless/static-debian12:nonroot` — sin shell, sin gestor de paquetes, corre como usuario no-root (uid 65532), sin `privileged` y sin montar `/` del host (§103-104). El binario es estático (`CGO_ENABLED=0`, driver SQLite en Go puro) así que no depende de glibc/musl en runtime.
+La imagen (`Dockerfile`, multi-stage) hace el build en `golang:1.25-bookworm`
+y el runtime en `gcr.io/distroless/static-debian12:nonroot` — sin shell, sin
+gestor de paquetes, uid 65532, sin `privileged`, sin montar `/` del host
+(§103-104). El binario es estático (`CGO_ENABLED=0`, driver SQLite en Go
+puro), no depende de glibc/musl en runtime. Fija `NEXUSCLOUD_DATA_DIR=/data`
+y expone `/data` como volumen; el resto de la config va por `NEXUSCLOUD_*` o
+montando un `config.yaml`.
 
-Para usar PostgreSQL en vez de SQLite, edita `docker-compose.yml`: cambia `NEXUSCLOUD_DB_DRIVER` a `postgres`, añade `NEXUSCLOUD_DB_DSN`, y descomenta el servicio `postgres` (§8).
+Para PostgreSQL en vez de SQLite: en `docker-compose.yml` cambia
+`NEXUSCLOUD_DB_DRIVER` a `postgres`, añade `NEXUSCLOUD_DB_DSN` y descomenta
+el servicio `postgres` (§8).
 
-## Binario nativo
+---
 
-```bash
-go build -o nexuscloud ./cmd/nexuscloud   # o descarga un release cuando existan
-./nexuscloud config init
-./nexuscloud admin create-user --username tu-usuario
-./nexuscloud doctor
-./nexuscloud start
-```
+## Actualizaciones seguras (NEXUSCLOUD.md §59)
 
-CI compila y verifica el binario para Linux amd64/arm64 (Raspberry Pi) y Windows amd64 en cada push (`.github/workflows/ci.yml`).
-
-### Linux — systemd
-
-```bash
-sudo cp deploy/systemd/nexuscloud.service /etc/systemd/system/
-sudo useradd --system --home /var/lib/nexuscloud nexuscloud
-sudo mkdir -p /var/lib/nexuscloud /etc/nexuscloud
-sudo cp config.example.yaml /etc/nexuscloud/config.yaml   # y edítalo
-sudo chown -R nexuscloud:nexuscloud /var/lib/nexuscloud
-sudo systemctl daemon-reload
-sudo systemctl enable --now nexuscloud
-```
-
-La unidad (`deploy/systemd/nexuscloud.service`) aplica hardening estándar (`NoNewPrivileges`, `ProtectSystem=strict`, `ProtectHome`, `PrivateTmp`) y mínimo privilegio (§103) — ajusta `ReadWritePaths` si cambias `storage.dataDir`.
-
-### Windows
-
-Hoy el binario corre en primer plano (`nexuscloud.exe start`), con apagado ordenado ante Ctrl+C. **No hay todavía integración nativa como servicio de Windows** (se evaluó `kardianos/service` en el diseño pero no se implementó en esta fase — ver `docs/architecture.md#gaps-conocidos-dentro-de-la-propia-fase-1`). Para correrlo como servicio hoy, usa un envoltorio externo como [NSSM](https://nssm.cc/) o una Tarea Programada configurada para reiniciar ante fallo.
-
-## Primer arranque (§140)
-
-1. `nexuscloud config init` — genera `config.yaml` con valores seguros por defecto.
-2. `nexuscloud admin create-user --username ...` — crea el primer usuario, que recibe automáticamente el rol `super_admin`. Nunca se permite `admin`/`admin` ni una contraseña de menos de 8 caracteres.
-3. `nexuscloud doctor` — verifica configuración, base de datos, almacenamiento, puerto y TLS antes de exponer la instancia.
-4. `nexuscloud start`.
-
-## Exponer NexusCloud a Internet (§67)
-
-**No** abras el puerto de NexusCloud directamente a Internet. El patrón recomendado:
-
-```
-Internet → Firewall → Reverse Proxy (TLS aquí) → NexusCloud (HTTP en LAN/loopback)
-```
-
-- El reverse proxy (Nginx/Caddy/Traefik) termina TLS y reenvía a NexusCloud.
-- Configura `server.trustedProxies` con la IP/CIDR del proxy — NexusCloud no confía en `X-Forwarded-For`/`X-Forwarded-Proto` de ningún origen no listado (§50, §118).
-- Alternativa: rellenar `server.tlsCertFile`/`tlsKeyFile` para que NexusCloud sirva HTTPS directamente, sin proxy delante — razonable para LAN, no recomendado como única capa en Internet.
-
-## Variables de entorno
-
-Toda opción de `config.yaml` tiene su equivalente `NEXUSCLOUD_*` (mayor prioridad que el fichero; ver `internal/config/env.go` para la lista completa) — útil para Docker/systemd sin tocar el fichero de configuración.
+Sea cual sea el método: `nexuscloud migrate up` es no destructivo (los
+`*.up.sql` no borran datos) y `migrate status` deja comprobar la versión de
+esquema antes y después. `update.sh` automatiza el ciclo
+parar→sustituir→migrar→arrancar con reversión del binario si la migración
+falla. Haz un backup del `storage.dataDir` (o al menos de la base de datos)
+antes de una actualización importante.
