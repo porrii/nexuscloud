@@ -1,5 +1,5 @@
 name: nexuscloud_client
-description: "A new Flutter project."
+description: "Cliente de escritorio de NexusCloud."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
 publish_to: 'none' # Remove this line if you wish to publish to pub.dev
@@ -64,6 +64,39 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  # Empaqueta el build de release en un instalador MSIX (Fase 3 slice 11):
+  # `dart run msix:create` hace `flutter build windows` por su cuenta y
+  # produce build\windows\x64\runner\Release\nexuscloud_client.msix.
+  msix: ^3.18.0
+
+# Config del instalador MSIX. Sin firmar (`sign_msix: false`) a proposito,
+# para una app self-hosted de uso personal: la alternativa (certificado de
+# prueba autofirmado) obliga a confiarlo en LocalMachine\TrustedPeople, que
+# requiere permisos de administrador en cada maquina. Sin firma, con "Modo
+# de desarrollador" de Windows activado, se instala desde los archivos
+# sueltos con `Add-AppxPackage -Register <ruta>\AppxManifest.xml` sin
+# elevacion ni UAC (o desde el .msix con `Add-AppxPackage -Path <.msix>
+# -AllowUnsigned` en Windows 11 / PowerShell reciente).
+#   - display_name / publisher_display_name: nombre "bonito" del Menu Inicio
+#     y el instalador. NO se toca CompanyName/ProductName de Runner.rc:
+#     flutter_secure_storage y path_provider derivan de esos campos la
+#     carpeta %APPDATA%\<Company>\<Product>\ -- cambiarlos reubicaria en
+#     silencio la sesion y los ajustes.
+#   - publisher: obligatorio cuando `sign_msix: false` (es el valor
+#     `Publisher` del manifiesto; sin certificado ya no tiene que casar con
+#     ningun Subject).
+#   - capabilities: solo `internetClient` -- la app solo hace HTTP saliente.
+#     `runFullTrust` lo anade `msix` solo (app Win32 empaquetada).
+msix_config:
+  display_name: NexusCloud
+  publisher_display_name: Porrii
+  publisher: CN=Porrii
+  identity_name: Porrii.NexusCloud
+  msix_version: 1.0.0.0
+  logo_path: windows/runner/resources/app_icon_512.png
+  capabilities: internetClient
+  sign_msix: false
+  install_certificate: false
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec

@@ -25,6 +25,14 @@ __debug_bin*
 /client/.dart_tool/
 /client/**/pubspec.lock
 
+# Empaquetado MSIX (Fase 3 slice 11): nunca commitear una clave de firma,
+# aunque sea el certificado de prueba autofirmado que genera `msix`. El
+# .msix final cae dentro de /client/build/ (ya ignorado).
+/client/**/*.pfx
+/client/**/*.p12
+/client/**/*.cer
+/client/**/*.crt
+
 # Herramientas / IDE
 .vscode/
 .idea/
