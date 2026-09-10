@@ -9,11 +9,11 @@
 > **Progreso (2026-09-10):**
 > - Fase A — config por área: **HECHA** (commit `57a80d6`).
 > - Fase B — `Layout` + endurecimiento de symlinks: **HECHA** (commit `57a80d6`).
-> - Fase C — enumeración de discos (solo lectura): **HECHA** (commit `c1d2626`);
->   el endpoint HTTP admin equivalente queda pendiente de revisión.
-> - Fase D — pools reales + refactor de `FileService`: **pendiente de plan
->   propio aprobado** (cambia firma de constructor + migración de esquema).
-> - Fases E (despliegue nativo) y F (ganchos futuros): pendientes.
+> - Fase C — enumeración de discos (solo lectura): **HECHA** (commit `c1d2626`).
+> - Fase D — pools reales + refactor de `FileService`: **HECHA**
+>   (commit `8dc5e47`), junto con el endpoint HTTP admin de discos.
+> - Fase E (despliegue nativo): pendiente.
+> - Fase F (ganchos futuros): documentada.
 
 ---
 
@@ -310,24 +310,21 @@ existentes de `/api/v1`. Los endpoints nuevos son `admin`-only y aditivos.
 |------|--------|-------------|--------|
 | A — config por área | mínimo | — | **hecha** (`57a80d6`) |
 | B — `Layout` + symlink fix | bajo | C, D | **hecha** (`57a80d6`) |
-| C — gestor de discos (RO) | medio | — | **hecha** (`c1d2626`); falta el endpoint HTTP admin |
-| D — pools reales + `FileService` | alto | E parcial | **pendiente de plan propio aprobado** |
+| C — gestor de discos (RO) | medio | — | **hecha** (`c1d2626`) + endpoint HTTP (`8dc5e47`) |
+| D — pools reales + `FileService` | alto | E parcial | **hecha** ([plan](storage-phase-d-plan.md), commit `8dc5e47`) |
 | E — despliegue nativo | bajo-medio | — | pendiente |
 | F — ganchos futuros | mínimo | — | documentado arriba |
 
-**Pendiente de decisión (Fase C, parte 2):** endpoint `GET
-/api/v1/admin/storage/disks` que exponga `diskinfo.Enumerate` por HTTP para
-un futuro panel de administración. Es un cambio de superficie de API
-(aunque `admin`-only y aditivo); se dejó fuera del commit `c1d2626` a la
-espera de revisión.
+**Endpoint HTTP de discos:** `GET /api/v1/storage/disks` (admin-only, bajo
+`RequireAdmin`), añadido en `8dc5e47`. Ruta sin segmento `/admin/` para
+seguir la convención existente (`/users`, `/audit`, ... ya son admin-only
+sin prefijo). 501 con cuerpo claro en un SO sin adaptador de `diskinfo`.
 
-**Fase D — plan detallado redactado en
-[`storage-phase-d-plan.md`](storage-phase-d-plan.md), pendiente de
-aprobación.** Cambia la firma de `storage.NewFileService(...)` (de un
-`provider` único a un `ProviderResolver`) y añade la migración de esquema
-`0006` (`storage_pools` gana políticas). Según la regla de este proyecto
-(3+ archivos + cambio de lógica central/esquema → plan aprobado), no se
-empieza sin ese "apruebo".
+**Fase E — despliegue nativo (pendiente):** `deploy/scripts/` con
+`install.sh`/`update.sh`/`uninstall.sh` (+ `.ps1` para Windows), subcomando
+`nexuscloud service install|...` con `kardianos/service` (dependencia
+nueva), `docs/deployment.md` con la matriz de métodos. No toca la lógica de
+la app. Se puede hacer en paralelo con cualquier otra cosa.
 
 ---
 

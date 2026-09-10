@@ -2,8 +2,11 @@
 
 > Plan detallado de la Fase D del
 > [plan de evolución de almacenamiento](storage-evolution-plan.md).
-> **Pendiente de aprobación — no se ha tocado código.** Redactado el
-> 2026-09-10 tras terminar las fases A, B y C (commits `57a80d6`, `c1d2626`).
+> **HECHA** (commit `8dc5e47`), incluido el endpoint HTTP de discos que
+> quedaba pendiente de la Fase C. Redactado el 2026-09-10 tras terminar las
+> fases A, B y C (commits `57a80d6`, `c1d2626`); aprobada e implementada el
+> mismo día. Se implementó tal cual salvo un detalle: los comandos del CLI
+> aceptan también el NOMBRE del pool, no solo su id.
 
 ---
 
