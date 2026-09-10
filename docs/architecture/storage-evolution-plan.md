@@ -1,11 +1,19 @@
 # Plan de evolución de la arquitectura de almacenamiento y despliegue
 
-> **Estado: BORRADOR PARA REVISIÓN — no se ha modificado ningún archivo de código.**
-> Redactado el 2026-09-10 tras el documento "ACTUALIZACIÓN DEL PROYECTO NEXUSCLOUD"
-> (16 requisitos). Este documento es el paso 1 que ese documento exige
-> explícitamente ("analiza el estado actual… aplica los cambios de forma
-> incremental, justificando técnicamente cada refactorización importante y
-> asegurando que no se rompe la compatibilidad").
+> Redactado el 2026-09-10 tras el documento "ACTUALIZACIÓN DEL PROYECTO
+> NEXUSCLOUD" (16 requisitos). Este documento es el paso 1 que ese documento
+> exige ("analiza el estado actual… aplica los cambios de forma incremental,
+> justificando técnicamente cada refactorización importante y asegurando que
+> no se rompe la compatibilidad").
+>
+> **Progreso (2026-09-10):**
+> - Fase A — config por área: **HECHA** (commit `57a80d6`).
+> - Fase B — `Layout` + endurecimiento de symlinks: **HECHA** (commit `57a80d6`).
+> - Fase C — enumeración de discos (solo lectura): **HECHA** (commit `c1d2626`);
+>   el endpoint HTTP admin equivalente queda pendiente de revisión.
+> - Fase D — pools reales + refactor de `FileService`: **pendiente de plan
+>   propio aprobado** (cambia firma de constructor + migración de esquema).
+> - Fases E (despliegue nativo) y F (ganchos futuros): pendientes.
 
 ---
 
@@ -191,18 +199,46 @@ la lógica de la app.**
 - La config (almacenamiento/puertos/certs/BD/caché/logs/usuarios/permisos)
   ya es independiente del método de despliegue — solo hay que documentarlo.
 
-### Fase F — Ganchos para el futuro (sin implementar)
-**Riesgo: mínimo (solo interfaces/campos reservados). Documentar.**
+### Fase F — Ganchos para el futuro (documentación)
+**Riesgo: mínimo (solo interfaces/campos reservados).**
 
-- `Provider` ya permite un backend S3/remoto sin tocar `FileService` (una
-  vez hecha la Fase D). Documentar el contrato que debe cumplir un provider
-  nuevo (atomicidad de `Move`, semántica de `Write` con hash).
-- Reservar en `Pool` los campos de snapshot/replicación como nullable sin
-  lógica asociada.
-- Cifrado por volumen / compresión / dedup: anotar en este doc que el punto
-  de extensión natural es un `Provider` decorador
-  (`EncryptingProvider{inner Provider}`) — no requiere reestructurar nada
-  cuando llegue.
+#### Contrato para añadir un backend de almacenamiento
+
+`internal/storage/provider.go` define `Provider`; cualquier backend nuevo
+(S3-compatible, "NexusCloud remoto", etc.) solo tiene que implementar esa
+interfaz y registrarse en el `ProviderResolver` que introduzca la Fase D.
+No debe tocar `FileService`. Un provider nuevo tiene que cumplir:
+
+- **`Write`**: atómico visto desde fuera — un fallo a mitad no puede dejar
+  un objeto parcial visible en `relPath`. Devuelve `size` y `sha256Hex`
+  calculados sobre lo realmente escrito (no sobre el `io.Reader` de
+  entrada). `LocalFilesystemProvider` lo consigue con tmp + rename; un
+  backend de objetos usaría subida multiparte + commit.
+- **`Move`**: atómico cuando la plataforma lo permita; es la operación que
+  usa el historial de versiones para apartar contenido sin copiarlo. Si el
+  backend no tiene move atómico real (p.ej. S3), copy+delete es aceptable
+  siempre que el destino no sea visible hasta completarse.
+- **Rutas lógicas**: `relPath` siempre con `/` como separador, relativo a
+  la raíz del pool. El provider es responsable de su propia protección
+  frente a escapes (traversal y symlinks): `SafeJoinResolved` /
+  `ResolveRoot` de `path.go` son la referencia para uno local; uno remoto
+  normaliza y rechaza `..` antes de construir la clave del objeto.
+- **`ctx`**: respetar la cancelación en operaciones largas (`Write`/`Read`
+  de ficheros grandes).
+
+#### Puntos de extensión sin reestructuración
+
+- **Cifrado por volumen / compresión / deduplicación**: el sitio natural es
+  un `Provider` decorador (`EncryptingProvider{inner Provider}`,
+  `CompressingProvider{...}`) que envuelve a otro. `FileService` no se
+  entera. La clave/algoritmo saldría de la política del `Pool`.
+- **Snapshots / replicación**: columnas nullable en `storage_pools`
+  (Fase D las deja reservadas) + un servicio aparte que las lee; ninguna
+  lógica en la ruta de lectura/escritura de ficheros.
+- **Balanceo entre discos de un pool**: `Pool.utilizationPolicy` (Fase D) +
+  un `ProviderResolver` que, para un pool multi-disco, elige el disco al
+  crear cada fichero. El `pool_id` de `files` ya existe; haría falta un
+  `disk_id` (o guardar la ruta absoluta resuelta) — migración aditiva.
 
 ---
 
@@ -220,32 +256,35 @@ sqlite/postgres). Todas con `DEFAULT` = comportamiento actual. `migrate up`
 es no destructivo por diseño. `configVersion` **no** sube en ninguna fase
 (solo se añaden campos opcionales de config).
 
-### 5.3 `SafeJoin` y symlinks (requisito 10)
-`SafeJoin` neutraliza `../` y rutas absolutas pero no symlinks: un symlink
+### 5.3 `SafeJoin` y symlinks (requisito 10) — RESUELTO (Fase B, commit `57a80d6`)
+`SafeJoin` neutralizaba `../` y rutas absolutas pero no symlinks: un symlink
 creado **dentro** de la raíz de un pool y apuntando fuera escaparía en
-lectura/escritura. Arreglo propuesto (Fase B, junto con `Layout`):
-1. Al construir el provider, resolver **una vez** los symlinks de la raíz
-   con `filepath.EvalSymlinks` (permite que `storageDir` sea un symlink a
-   un disco montado — caso legítimo y común).
-2. En cada operación, tras `SafeJoin`, comprobar que el `EvalSymlinks` del
-   resultado sigue bajo la raíz resuelta; o abrir con `O_NOFOLLOW` en el
-   último componente.
-Riesgo del arreglo: si alguien tiene hoy symlinks internos "legítimos"
-dejarían de funcionar. Aceptable y deseable (es exactamente lo que el
-requisito pide bloquear); documentar en el changelog.
+lectura/escritura. Implementado:
+1. `ResolveRoot` canoniza la raíz una vez (`Abs` + `EvalSymlinks`) al
+   construir el provider — la raíz sí puede ser un symlink legítimo
+   (`storageDir` → disco montado).
+2. `SafeJoinResolved` recorre el ancestro existente más profundo del
+   resultado y comprueba que su forma canónica sigue bajo la raíz;
+   **rechaza cualquier componente symlink**, apunte dentro o fuera
+   (`FileService` nunca crea symlinks). Cubre también el caso del symlink
+   con destino inexistente (fichero nuevo tras un symlink que escapa).
+Efecto secundario esperado y deseado: symlinks internos "legítimos" dejan
+de funcionar dentro del almacenamiento; es exactamente lo que el requisito
+pide bloquear.
 
-### 5.4 Código específico de plataforma (Fase C)
-Primer `_linux.go` / `_windows.go` del proyecto. Riesgo: romper el build
-cross-platform. Mitigación: `enumerator_stub.go` con `//go:build !linux &&
-!windows` que compila siempre y devuelve "no soportado en este SO".
-Mantiene el requisito 14 (independencia de plataforma: el core no depende,
-solo un adaptador opcional).
+### 5.4 Código específico de plataforma (Fase C) — RESUELTO (commit `c1d2626`)
+Primer `_linux.go` / `_windows.go` del proyecto (`internal/storage/diskinfo`).
+`enumerate_other.go` con `//go:build !linux && !windows` compila siempre y
+devuelve `ErrUnsupported`. Verificado con `GOOS=windows go build` y
+`GOOS=darwin go build`. El core no depende de la plataforma; el adaptador
+es opcional (requisito 14).
 
-### 5.5 `x/sys/windows` como dependencia nueva
-La necesita la Fase C para las APIs de disco en Windows. Es
-`golang.org/x/sys`, mantenida por el equipo de Go, sin CGO. Bajo riesgo.
-Alternativa sin dependencia: shell-out a `wmic`/`Get-Volume` (frágil,
-`wmic` deprecado). Recomendado: `x/sys/windows`.
+### 5.5 `x/sys/windows` como dependencia — RESUELTO sin coste (commit `c1d2626`)
+`golang.org/x/sys` ya estaba en `go.sum` como dependencia indirecta (la
+trae `modernc.org/sqlite`). La Fase C solo la promociona a directa en
+`go.mod`; no se añade ningún módulo nuevo. El adaptador Windows
+cross-compila; su runtime no se ha podido probar (no hay entorno Go de
+Windows en esta máquina).
 
 ### 5.6 Interacción con el cliente Flutter
 Ninguna. El cliente habla con la API HTTP; nada de esto cambia contratos
@@ -267,20 +306,27 @@ existentes de `/api/v1`. Los endpoints nuevos son `admin`-only y aditivos.
 
 ## 7. Orden recomendado y estado
 
-| Fase | Riesgo | ¿Bloquea a? | Listo para empezar |
-|------|--------|-------------|--------------------|
-| A — config por área | mínimo | — | sí, en cuanto se apruebe |
-| B — `Layout` + symlink fix | bajo | C, D | sí |
-| C — gestor de discos (RO) | medio | — | tras B |
-| D — pools reales + `FileService` | alto | E parcial | tras B; requiere plan propio detallado |
-| E — despliegue nativo | bajo-medio | — | en paralelo con C/D |
-| F — ganchos futuros | mínimo | — | doc, cualquier momento |
+| Fase | Riesgo | ¿Bloquea a? | Estado |
+|------|--------|-------------|--------|
+| A — config por área | mínimo | — | **hecha** (`57a80d6`) |
+| B — `Layout` + symlink fix | bajo | C, D | **hecha** (`57a80d6`) |
+| C — gestor de discos (RO) | medio | — | **hecha** (`c1d2626`); falta el endpoint HTTP admin |
+| D — pools reales + `FileService` | alto | E parcial | **pendiente de plan propio aprobado** |
+| E — despliegue nativo | bajo-medio | — | pendiente |
+| F — ganchos futuros | mínimo | — | documentado arriba |
 
-**Nada de esto se ha implementado.** Cada fase con cambio de esquema o de
-firma de `FileService` (D) necesita su propio plan aprobado antes de tocar
-código, según la regla de este proyecto (3+ archivos + cambio de lógica
-central → plan aprobado). Las fases A y B son suficientemente aisladas y de
-bajo riesgo como para ejecutarse con una aprobación simple.
+**Pendiente de decisión (Fase C, parte 2):** endpoint `GET
+/api/v1/admin/storage/disks` que exponga `diskinfo.Enumerate` por HTTP para
+un futuro panel de administración. Es un cambio de superficie de API
+(aunque `admin`-only y aditivo); se dejó fuera del commit `c1d2626` a la
+espera de revisión.
+
+**Fase D — requiere su propio plan aprobado antes de tocar código:** cambia
+la firma de `storage.NewFileService(...)` (de un `provider` único a un
+`ProviderResolver`) y añade la migración de esquema `0006`
+(`storage_pools` gana políticas). Según la regla de este proyecto (3+
+archivos + cambio de lógica central/esquema → plan aprobado), no se empieza
+sin ese plan.
 
 ---
 
