@@ -12,8 +12,12 @@ ExecStart=/usr/local/bin/nexuscloud start --config /etc/nexuscloud/config.yaml
 Restart=on-failure
 RestartSec=5
 
-# Mínimo privilegio (§103) + hardening estándar de systemd. Ajusta
-# ReadWritePaths si storage.dataDir en config.yaml apunta a otro sitio.
+# Mínimo privilegio (§103) + hardening estándar de systemd. Con
+# ProtectSystem=strict el resto del disco es de solo lectura: añade a
+# ReadWritePaths cada ruta que NexusCloud deba poder escribir. Por defecto
+# todo cuelga de storage.dataDir; si en config.yaml reubicas storageDir o
+# alguna de las áreas (databaseDir, cacheDir, logsDir, backupsDir, ...) a
+# otro disco, añade también esa ruta aquí.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

@@ -31,6 +31,30 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := lookup("NEXUSCLOUD_STORAGE_DIR"); ok {
 		cfg.Storage.StorageDir = v
 	}
+	if v, ok := lookup("NEXUSCLOUD_DATABASE_DIR"); ok {
+		cfg.Storage.DatabaseDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_CACHE_DIR"); ok {
+		cfg.Storage.CacheDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_THUMBNAILS_DIR"); ok {
+		cfg.Storage.ThumbnailsDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_VERSIONS_DIR"); ok {
+		cfg.Storage.VersionsDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_TEMP_DIR"); ok {
+		cfg.Storage.TempDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_LOGS_DIR"); ok {
+		cfg.Storage.LogsDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_BACKUPS_DIR"); ok {
+		cfg.Storage.BackupsDir = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_CONFIG_DIR"); ok {
+		cfg.Storage.ConfigDir = v
+	}
 	if v, ok := lookup("NEXUSCLOUD_DB_DRIVER"); ok {
 		cfg.Database.Driver = v
 	}

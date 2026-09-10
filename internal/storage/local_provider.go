@@ -11,26 +11,28 @@ import (
 )
 
 // LocalFilesystemProvider implementa Provider sobre el filesystem local
-// bajo root. Cada operación pasa por SafeJoin: aunque el llamador ya
+// bajo root. Cada operación pasa por SafeJoinResolved: aunque el llamador ya
 // debería haber validado la ruta (FileService), este provider nunca confía
-// ciegamente en el string que recibe (§168 Zero Trust, §194).
+// ciegamente en el string que recibe (§168 Zero Trust, §194) y además
+// comprueba que ningún symlink dentro del pool haga que el destino escape.
 type LocalFilesystemProvider struct {
+	// root canónico: absoluto y con los symlinks resueltos una sola vez al
+	// construir. Permite que la propia raíz sea un symlink legítimo (p.ej.
+	// storageDir apuntando a un disco montado) sin resolver toda la ruta en
+	// cada operación.
 	root string
 }
 
 func NewLocalFilesystemProvider(root string) (*LocalFilesystemProvider, error) {
-	abs, err := filepath.Abs(root)
+	resolved, err := ResolveRoot(root)
 	if err != nil {
-		return nil, fmt.Errorf("resolviendo raíz de almacenamiento: %w", err)
+		return nil, fmt.Errorf("resolviendo raíz de almacenamiento %s: %w", root, err)
 	}
-	if err := os.MkdirAll(abs, 0o750); err != nil {
-		return nil, fmt.Errorf("creando raíz de almacenamiento %s: %w", abs, err)
-	}
-	return &LocalFilesystemProvider{root: abs}, nil
+	return &LocalFilesystemProvider{root: resolved}, nil
 }
 
 func (p *LocalFilesystemProvider) Write(ctx context.Context, relPath string, r io.Reader) (int64, string, error) {
-	full, err := SafeJoin(p.root, relPath)
+	full, err := SafeJoinResolved(p.root, relPath)
 	if err != nil {
 		return 0, "", err
 	}
@@ -73,7 +75,7 @@ func (p *LocalFilesystemProvider) Write(ctx context.Context, relPath string, r i
 }
 
 func (p *LocalFilesystemProvider) Read(ctx context.Context, relPath string) (io.ReadCloser, error) {
-	full, err := SafeJoin(p.root, relPath)
+	full, err := SafeJoinResolved(p.root, relPath)
 	if err != nil {
 		return nil, err
 	}
@@ -85,7 +87,7 @@ func (p *LocalFilesystemProvider) Read(ctx context.Context, relPath string) (io.
 }
 
 func (p *LocalFilesystemProvider) Delete(ctx context.Context, relPath string) error {
-	full, err := SafeJoin(p.root, relPath)
+	full, err := SafeJoinResolved(p.root, relPath)
 	if err != nil {
 		return err
 	}
@@ -96,7 +98,7 @@ func (p *LocalFilesystemProvider) Delete(ctx context.Context, relPath string) er
 }
 
 func (p *LocalFilesystemProvider) Exists(ctx context.Context, relPath string) (bool, error) {
-	full, err := SafeJoin(p.root, relPath)
+	full, err := SafeJoinResolved(p.root, relPath)
 	if err != nil {
 		return false, err
 	}
@@ -111,7 +113,7 @@ func (p *LocalFilesystemProvider) Exists(ctx context.Context, relPath string) (b
 }
 
 func (p *LocalFilesystemProvider) MkdirAll(ctx context.Context, relPath string) error {
-	full, err := SafeJoin(p.root, relPath)
+	full, err := SafeJoinResolved(p.root, relPath)
 	if err != nil {
 		return err
 	}
@@ -119,11 +121,11 @@ func (p *LocalFilesystemProvider) MkdirAll(ctx context.Context, relPath string) 
 }
 
 func (p *LocalFilesystemProvider) Move(ctx context.Context, fromRelPath, toRelPath string) error {
-	fromFull, err := SafeJoin(p.root, fromRelPath)
+	fromFull, err := SafeJoinResolved(p.root, fromRelPath)
 	if err != nil {
 		return err
 	}
-	toFull, err := SafeJoin(p.root, toRelPath)
+	toFull, err := SafeJoinResolved(p.root, toRelPath)
 	if err != nil {
 		return err
 	}

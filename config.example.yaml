@@ -40,6 +40,21 @@ storage:
   dataDir: ""           # vacío = valor por SO (ver defaultDataDir en internal/config)
   storageDir: ""        # vacío = <dataDir>/storage (raíz del pool "default")
 
+  # Cada área de almacenamiento puede vivir en otro disco de forma
+  # independiente. Vacío = <dataDir>/<área> (comportamiento por defecto);
+  # rellena solo el/los que quieras reubicar. También por variable de
+  # entorno: NEXUSCLOUD_DATABASE_DIR, NEXUSCLOUD_CACHE_DIR, etc.
+  # Ninguno puede caer dentro de storageDir (mezclaría datos internos con
+  # los archivos de usuario; config validate lo rechaza).
+  databaseDir: ""       # vacío = <dataDir>/database   (fichero SQLite, si driver=sqlite)
+  cacheDir: ""          # vacío = <dataDir>/cache
+  thumbnailsDir: ""     # vacío = <dataDir>/thumbnails (miniaturas, cuando se implementen)
+  versionsDir: ""       # vacío = <dataDir>/versions   (historial de versiones)
+  tempDir: ""           # vacío = <dataDir>/tmp        (temporales de uso general)
+  logsDir: ""           # vacío = <dataDir>/logs
+  backupsDir: ""        # vacío = <dataDir>/backups
+  configDir: ""         # vacío = <dataDir>/config
+
 security:
   sessionTTLHours: 720   # 30 días
   argon2:                # §25. Los mismos parámetros de referencia que NexusKeys.

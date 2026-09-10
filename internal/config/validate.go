@@ -1,6 +1,10 @@
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
 
 // Validate comprueba invariantes de seguridad y coherencia antes de que la
 // configuración se use para arrancar el servidor. Nunca debe aplicarse una
@@ -72,5 +76,42 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("versioning.maxVersionsPerFile debe ser >= 1 cuando versioning.enabled=true")
 	}
 
+	if err := validateStorageAreas(cfg); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateStorageAreas comprueba que ningún override de área de
+// infraestructura (base de datos, caché, temporales, logs, etc.) caiga
+// dentro de la raíz de datos de usuario: si lo hiciera, esos archivos
+// internos se mezclarían con los del usuario (aparecerían en el explorador,
+// entrarían en la sincronización, etc.). Casi siempre es un error de
+// configuración, así que se rechaza.
+func validateStorageAreas(cfg *Config) error {
+	if cfg.Storage.DataDir == "" {
+		return nil // ya cubierto por la comprobación anterior
+	}
+	userRoot := filepath.Clean(cfg.DefaultStorageDir())
+	areas := map[string]string{
+		"databaseDir":   cfg.DatabaseDir(),
+		"cacheDir":      cfg.CacheDir(),
+		"thumbnailsDir": cfg.ThumbnailsDir(),
+		"versionsDir":   cfg.VersionsDir(),
+		"tempDir":       cfg.TempDir(),
+		"logsDir":       cfg.LogsDir(),
+		"backupsDir":    cfg.BackupsDir(),
+		"configDir":     cfg.ConfigDir(),
+	}
+	for name, dir := range areas {
+		clean := filepath.Clean(dir)
+		if clean == userRoot || strings.HasPrefix(clean, userRoot+string(filepath.Separator)) {
+			return fmt.Errorf(
+				"storage.%s (%s) está dentro de storage.storageDir (%s): mezclaría datos internos con los archivos de usuario",
+				name, clean, userRoot,
+			)
+		}
+	}
 	return nil
 }

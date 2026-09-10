@@ -50,6 +50,25 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		return nil, fmt.Errorf("preparando directorios de datos: %w", err)
 	}
 
+	// Layout resuelve las raíces de almacenamiento (absolutas, symlinks
+	// resueltos) en un único sitio; es lo que consumen el provider y, en el
+	// futuro, los pools adicionales y las miniaturas/versionado.
+	layout, err := storage.NewLayout(storage.LayoutParams{
+		UserData:   cfg.DefaultStorageDir(),
+		Thumbnails: cfg.ThumbnailsDir(),
+		Versions:   cfg.VersionsDir(),
+		Temp:       cfg.TempDir(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo rutas de almacenamiento: %w", err)
+	}
+	logger.Info("rutas de almacenamiento",
+		"userData", layout.UserData,
+		"thumbnails", layout.Thumbnails,
+		"versions", layout.Versions,
+		"temp", layout.Temp,
+		"database", cfg.DatabaseDir())
+
 	sqlDB, err := db.Open(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("abriendo base de datos: %w", err)
@@ -70,7 +89,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	shareRepo := storage.NewSQLShareRepository(conn)
 	auditRepo := audit.NewSQLRepository(conn)
 
-	pool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, cfg.DefaultStorageDir())
+	pool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, layout.UserData)
 	if err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("preparando storage pool por defecto: %w", err)

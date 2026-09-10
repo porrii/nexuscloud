@@ -60,9 +60,24 @@ type DatabaseConfig struct {
 // StorageConfig separa el directorio de datos general de la raíz de
 // almacenamiento de archivos de usuario (§154-156); ambos son reubicables
 // de forma independiente (p.ej. a discos distintos).
+//
+// Cada área de almacenamiento (base de datos, caché, miniaturas, versionado,
+// temporales, logs, backups, config) tiene además un override opcional: si
+// está vacío se usa <DataDir>/<área>, el comportamiento histórico; si se
+// rellena, esa área concreta puede vivir en otro disco sin mover el resto.
+// Son campos nuevos opcionales: no obligan a subir configVersion.
 type StorageConfig struct {
 	DataDir    string `yaml:"dataDir"`
 	StorageDir string `yaml:"storageDir"`
+
+	DatabaseDir   string `yaml:"databaseDir,omitempty"`
+	CacheDir      string `yaml:"cacheDir,omitempty"`
+	ThumbnailsDir string `yaml:"thumbnailsDir,omitempty"`
+	VersionsDir   string `yaml:"versionsDir,omitempty"`
+	TempDir       string `yaml:"tempDir,omitempty"`
+	LogsDir       string `yaml:"logsDir,omitempty"`
+	BackupsDir    string `yaml:"backupsDir,omitempty"`
+	ConfigDir     string `yaml:"configDir,omitempty"`
 }
 
 type SecurityConfig struct {
@@ -238,13 +253,22 @@ func migrateSchema(cfg *Config) error {
 	return nil
 }
 
+// area resuelve una ruta de área de almacenamiento: devuelve el override si
+// se especificó, o <DataDir>/<name> si está vacío (comportamiento histórico).
+func (c *Config) area(override, name string) string {
+	if override != "" {
+		return override
+	}
+	return filepath.Join(c.Storage.DataDir, name)
+}
+
 // SQLiteDSN resuelve la ruta del fichero SQLite: usa database.dsn si se
-// especificó explícitamente, o <dataDir>/database/nexuscloud.db si no.
+// especificó explícitamente, o <DatabaseDir>/nexuscloud.db si no.
 func (c *Config) SQLiteDSN() string {
 	if c.Database.DSN != "" {
 		return c.Database.DSN
 	}
-	return filepath.Join(c.Storage.DataDir, "database", "nexuscloud.db")
+	return filepath.Join(c.DatabaseDir(), "nexuscloud.db")
 }
 
 // DefaultStorageDir resuelve la raíz del pool de almacenamiento por defecto.
@@ -255,11 +279,14 @@ func (c *Config) DefaultStorageDir() string {
 	return filepath.Join(c.Storage.DataDir, "storage")
 }
 
-func (c *Config) DatabaseDir() string { return filepath.Join(c.Storage.DataDir, "database") }
-func (c *Config) CacheDir() string    { return filepath.Join(c.Storage.DataDir, "cache") }
-func (c *Config) LogsDir() string     { return filepath.Join(c.Storage.DataDir, "logs") }
-func (c *Config) BackupsDir() string  { return filepath.Join(c.Storage.DataDir, "backups") }
-func (c *Config) ConfigDir() string   { return filepath.Join(c.Storage.DataDir, "config") }
+func (c *Config) DatabaseDir() string   { return c.area(c.Storage.DatabaseDir, "database") }
+func (c *Config) CacheDir() string      { return c.area(c.Storage.CacheDir, "cache") }
+func (c *Config) ThumbnailsDir() string { return c.area(c.Storage.ThumbnailsDir, "thumbnails") }
+func (c *Config) VersionsDir() string   { return c.area(c.Storage.VersionsDir, "versions") }
+func (c *Config) TempDir() string       { return c.area(c.Storage.TempDir, "tmp") }
+func (c *Config) LogsDir() string       { return c.area(c.Storage.LogsDir, "logs") }
+func (c *Config) BackupsDir() string    { return c.area(c.Storage.BackupsDir, "backups") }
+func (c *Config) ConfigDir() string     { return c.area(c.Storage.ConfigDir, "config") }
 
 // EnsureDataDirs crea el árbol de directorios de datos (§155-156) si no
 // existe. No crea el StorageDir de pools adicionales, solo la estructura base.
@@ -269,6 +296,9 @@ func (c *Config) EnsureDataDirs() error {
 		c.DatabaseDir(),
 		c.DefaultStorageDir(),
 		c.CacheDir(),
+		c.ThumbnailsDir(),
+		c.VersionsDir(),
+		c.TempDir(),
 		c.LogsDir(),
 		c.BackupsDir(),
 		c.ConfigDir(),
