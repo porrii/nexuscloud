@@ -321,12 +321,13 @@ un futuro panel de administración. Es un cambio de superficie de API
 (aunque `admin`-only y aditivo); se dejó fuera del commit `c1d2626` a la
 espera de revisión.
 
-**Fase D — requiere su propio plan aprobado antes de tocar código:** cambia
-la firma de `storage.NewFileService(...)` (de un `provider` único a un
-`ProviderResolver`) y añade la migración de esquema `0006`
-(`storage_pools` gana políticas). Según la regla de este proyecto (3+
-archivos + cambio de lógica central/esquema → plan aprobado), no se empieza
-sin ese plan.
+**Fase D — plan detallado redactado en
+[`storage-phase-d-plan.md`](storage-phase-d-plan.md), pendiente de
+aprobación.** Cambia la firma de `storage.NewFileService(...)` (de un
+`provider` único a un `ProviderResolver`) y añade la migración de esquema
+`0006` (`storage_pools` gana políticas). Según la regla de este proyecto
+(3+ archivos + cambio de lógica central/esquema → plan aprobado), no se
+empieza sin ese "apruebo".
 
 ---
 
