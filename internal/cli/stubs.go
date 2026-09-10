@@ -21,15 +21,6 @@ func notImplementedYet(use, short, phase string) *cobra.Command {
 	}
 }
 
-func newStorageCmd() *cobra.Command {
-	cmd := notImplementedYet("storage", "Gestión de Storage Pools y discos (Fase 5)", "Fase 5")
-	cmd.AddCommand(
-		notImplementedYet("list", "Lista Storage Pools", "Fase 5"),
-		notImplementedYet("add", "Añade un Storage Pool", "Fase 5"),
-	)
-	return cmd
-}
-
 func newBackupCmd() *cobra.Command {
 	cmd := notImplementedYet("backup", "Backup Manager (§18, Fase 5)", "Fase 5")
 	cmd.AddCommand(
