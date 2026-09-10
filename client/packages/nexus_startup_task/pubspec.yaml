@@ -1,0 +1,23 @@
+name: nexus_startup_task
+description: >
+  Plugin interno de NexusCloud (no publicable) para arrancar la app con
+  Windows cuando está empaquetada en MSIX, vía la API WinRT
+  Windows.ApplicationModel.StartupTask. Fuera de MSIX no aplica: ese caso
+  lo cubre core/window/launch_at_startup_service.dart escribiendo el
+  registro directamente.
+version: 0.1.0
+publish_to: 'none'
+
+environment:
+  sdk: ^3.13.1
+  flutter: ">=3.10.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: NexusStartupTaskPlugin

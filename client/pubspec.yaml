@@ -53,6 +53,14 @@ dependencies:
   # mismo formato) se reimplementa directamente en
   # core/window/launch_at_startup_service.dart contra la API 3.x real.
   win32_registry: ^3.0.3
+  # Plugin interno (slice 12): arrancar con Windows cuando la app está
+  # empaquetada en MSIX. El registro clásico (win32_registry) se virtualiza
+  # bajo MSIX y nunca llega al HKCU real -- confirmado empíricamente. El
+  # camino soportado es la StartupTask del manifiesto + la API WinRT
+  # Windows.ApplicationModel.StartupTask, que este plugin expone a Dart.
+  # LaunchAtStartupService elige registro (suelto) o StartupTask (MSIX).
+  nexus_startup_task:
+    path: packages/nexus_startup_task
 
 dev_dependencies:
   flutter_test:
@@ -97,6 +105,14 @@ msix_config:
   capabilities: internetClient
   sign_msix: false
   install_certificate: false
+  # StartupTask (slice 12): declara la extensión `windows.startupTask` en el
+  # manifiesto para poder arrancar con Windows bajo MSIX. `enabled: false` =
+  # registrada pero apagada (secure-by-default); la activa el interruptor de
+  # Ajustes vía WinRT (plugin nexus_startup_task). El task_id DEBE coincidir
+  # con kTaskId de nexus_startup_task_plugin.cpp.
+  startup_task:
+    task_id: NexusCloudAutostart
+    enabled: false
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
