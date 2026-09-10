@@ -114,6 +114,12 @@ habla con el SCM de Windows, systemd (Linux) o launchd (macOS) según el
 sistema. `nexuscloud start` sigue siendo válido para correr en primer plano
 bajo cualquier otro supervisor (NSSM, Tarea Programada, …).
 
+En Linux, `install.sh` instala la unit `deploy/systemd/nexuscloud.service`
+(con hardening: `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`…),
+que es preferible a la que genera `nexuscloud service install` (genérica de
+`kardianos`, sin ese hardening). En Windows, `nexuscloud service install`
+es el camino.
+
 ---
 
 ## Docker / Compose

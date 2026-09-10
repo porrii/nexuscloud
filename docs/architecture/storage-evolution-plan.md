@@ -322,18 +322,26 @@ existentes de `/api/v1`. Los endpoints nuevos son `admin`-only y aditivos.
 seguir la convención existente (`/users`, `/audit`, ... ya son admin-only
 sin prefijo). 501 con cuerpo claro en un SO sin adaptador de `diskinfo`.
 
-**Fase E — despliegue nativo (hecha):** `deploy/scripts/install.sh` /
-`update.sh` / `uninstall.sh` (systemd) + `install.ps1` / `uninstall.ps1`
-(Windows), subcomando `nexuscloud service {install,uninstall,start,stop,
-restart,status,run}` con `github.com/kardianos/service` v1.3.0 (dependencia
-nueva; ya sin CGO, cross-compila a windows/darwin), y `docs/deployment.md`
-reescrito con la matriz de métodos dejando claro que Docker es de
-conveniencia y la instalación nativa está plenamente soportada. `start.go`
-se refactorizó para extraer `RunServer(ctx, cfg, logger)`, cuerpo común de
-`start` y `service run`. Scripts `.sh` validados con `shellcheck -x`; su
-ejecución real (requiere root en un host Linux) no se ha probado. El
-adaptador de servicio de Windows cross-compila; su runtime tampoco se ha
-podido probar.
+**Fase E — despliegue nativo (hecha y verificada en Linux):**
+`deploy/scripts/install.sh` / `update.sh` / `uninstall.sh` (systemd) +
+`install.ps1` / `uninstall.ps1` (Windows), subcomando `nexuscloud service
+{install,uninstall,start,stop,restart,status,run}` con
+`github.com/kardianos/service` v1.3.0 (dependencia nueva; sin CGO,
+cross-compila a windows/darwin), y `docs/deployment.md` reescrito con la
+matriz de métodos dejando claro que Docker es de conveniencia y la
+instalación nativa está plenamente soportada. `start.go` se refactorizó
+para extraer `RunServer(ctx, cfg, logger)`, cuerpo común de `start` y
+`service run`.
+**Verificado end-to-end en un contenedor privilegiado con systemd 255
+real**: `install.sh` (fresco y re-instalación idempotente sobre datos
+conservados) → `systemctl start` → `/health` + `/ready` OK, DB alcanzable
+→ `admin create-user` como el usuario de servicio → login por HTTP →
+`update.sh` (con copia de seguridad del binario y reversión si `migrate up`
+falla) → `uninstall.sh` (conserva datos) → `uninstall.sh --purge` (borra
+todo). El camino `kardianos` (`nexuscloud service install/start/status/
+stop/uninstall`) también verificado bajo systemd. Sin probar todavía: los
+`.ps1` de Windows y el adaptador de servicio de Windows (cross-compilan;
+no hay entorno Windows para runtime).
 
 ---
 
