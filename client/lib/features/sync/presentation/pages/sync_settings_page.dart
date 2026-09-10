@@ -9,6 +9,7 @@ import '../../../../core/storage/window_preferences_store.dart';
 import '../../../../core/window/app_tray_service.dart';
 import '../../../../core/window/launch_at_startup_service.dart';
 import '../../domain/entities/auto_sync_settings.dart';
+import '../../domain/entities/sync_direction.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_result.dart';
 import '../../domain/repositories/sync_config_repository.dart';
@@ -47,6 +48,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
   final _remotePathController = TextEditingController(text: '/');
   String? _localPath;
+
+  /// Sentido de la sincronización (slice 13). Por defecto `download` -- una
+  /// configuración anterior a este slice sigue comportándose igual hasta
+  /// que el usuario elija otra cosa.
+  SyncDirection _direction = SyncDirection.download;
 
   bool _syncing = false;
   String? _statusMessage;
@@ -103,8 +109,15 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     _minimizeToTrayOnClose = _trayService.minimizeToTrayOnClose;
 
     _loadSavedPair();
+    _loadDirection();
     _loadAutoSyncSettings();
     _loadLaunchAtStartupSettings();
+  }
+
+  Future<void> _loadDirection() async {
+    final direction = await _configRepository.readDirection();
+    if (!mounted) return;
+    setState(() => _direction = direction);
   }
 
   @override
@@ -186,6 +199,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     final path = await getDirectoryPath(confirmButtonText: 'Elegir carpeta');
     if (path == null || !mounted) return;
     setState(() => _localPath = path);
+  }
+
+  Future<void> _setDirection(SyncDirection direction) async {
+    setState(() => _direction = direction);
+    await _configRepository.saveDirection(direction);
   }
 
   Future<void> _setAutoSyncEnabled(bool enabled) async {
@@ -270,6 +288,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     try {
       final result = await _syncEngine.syncNow(
         pair,
+        direction: _direction,
         onStatus: (status) {
           if (!mounted) return;
           setState(() => _statusMessage = status);
@@ -313,18 +332,37 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Text(
-                  'Sincroniza una carpeta remota hacia una carpeta local. '
-                  'Por ahora es de un solo sentido (servidor → local) -- no '
-                  'borra ni sube nada, solo trae lo nuevo o cambiado. Puedes '
-                  'activar la sincronización automática más abajo: mientras '
-                  'la app esté abierta, se repetirá sola en el intervalo '
-                  'elegido. Si cierras la app se detiene -- salvo que también '
-                  'actives "Minimizar a la bandeja al cerrar". Y si además '
-                  'activas "Arrancar con Windows", ni siquiera hace falta '
-                  'abrir NexusCloud a mano tras reiniciar el equipo.',
+                  'Sincroniza una carpeta remota con una carpeta local. '
+                  'Elige el sentido: "Descargar" solo trae del servidor, '
+                  '"Subir" solo envía, "Ambos" reconcilia los dos lados. '
+                  'Ningún modo borra nada todavía: un archivo que quites de '
+                  'un lado se vuelve a traer del otro. En "Ambos", si un '
+                  'archivo cambió en los dos sitios desde la última '
+                  'sincronización, no se sobrescribe nada -- se deja una '
+                  'copia "(conflicto ...)" al lado para que la revises. '
+                  'Puedes activar la sincronización automática más abajo: '
+                  'mientras la app esté abierta, se repetirá sola en el '
+                  'intervalo elegido. Si cierras la app se detiene -- salvo '
+                  'que también actives "Minimizar a la bandeja al cerrar". Y '
+                  'si además activas "Arrancar con Windows", ni siquiera hace '
+                  'falta abrir NexusCloud a mano tras reiniciar el equipo.',
                   style: Theme.of(context).textTheme.bodyMedium,
                 ),
                 const SizedBox(height: 24),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SegmentedButton<SyncDirection>(
+                    segments: [
+                      for (final d in SyncDirection.values)
+                        ButtonSegment(value: d, label: Text(d.label)),
+                    ],
+                    selected: {_direction},
+                    onSelectionChanged: syncDisabled
+                        ? null
+                        : (selection) => _setDirection(selection.first),
+                  ),
+                ),
+                const SizedBox(height: 16),
                 TextField(
                   controller: _remotePathController,
                   enabled: !syncDisabled,
@@ -463,9 +501,29 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                   Text(
                     'Última sincronización: ${_lastResult!.finishedAt.toLocal()}\n'
                     '${_lastResult!.downloaded} descargados, '
+                    '${_lastResult!.uploaded} subidos, '
                     '${_lastResult!.skipped} ya al día, '
+                    '${_lastResult!.conflicts.length} conflictos, '
                     '${_lastResult!.errors.length} errores',
                   ),
+                  if (_lastResult!.conflicts.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      'Conflictos (se dejó una copia "(conflicto ...)" al '
+                      'lado, revísala y funde los cambios a mano):',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 160),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          for (final name in _lastResult!.conflicts)
+                            Text('• $name'),
+                        ],
+                      ),
+                    ),
+                  ],
                   if (_lastResult!.errors.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     ConstrainedBox(

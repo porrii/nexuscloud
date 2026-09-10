@@ -24,6 +24,18 @@ abstract interface class FilesRepository {
     TransferProgress? onProgress,
   });
 
+  /// Crea la carpeta [name] dentro de [parentPath]. Idempotente en el
+  /// servidor (crear una que ya existe devuelve la misma, sin error). Lo
+  /// usa la sincronización bidireccional (slice 13) para materializar los
+  /// directorios padre de un archivo local nuevo antes de subirlo: subir a
+  /// un `parent_path` sin fila de carpeta deja el archivo "colgado" e
+  /// invisible en el listado del padre (confirmado contra el backend
+  /// real). No admite `/` en [name] -- hay que crear nivel a nivel.
+  Future<void> createDirectory({
+    required String parentPath,
+    required String name,
+  });
+
   /// Descarga [file] a [saveToPath] y verifica su integridad contra
   /// `file.sha256` (§41 no tiene reanudación todavía -- un corte a medias
   /// sería invisible sin esta comprobación, ADR-010).

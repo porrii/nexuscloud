@@ -1,14 +1,18 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../../core/network/api_exception.dart';
 import '../../../../core/paths/remote_path.dart';
 import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart';
+import '../entities/sync_direction.dart';
 import '../entities/sync_pair.dart';
 import '../entities/sync_result.dart';
+import '../entities/sync_state_entry.dart';
+import '../repositories/sync_state_store.dart';
 
 /// Un archivo remoto ya localizado durante el recorrido, junto a su ruta
 /// relativa a la raíz configurada (como segmentos, nunca como una sola
@@ -20,32 +24,81 @@ class _RemoteFile {
   final FileEntry file;
   final List<String> relativeSegments;
 
-  String get lowercaseKey => relativeSegments.join('/').toLowerCase();
+  /// Clave canónica para casar remoto/local/base: ruta relativa con `/` y
+  /// en minúsculas. En minúsculas porque NTFS es insensible a
+  /// mayúsculas -- `Foto.jpg` remoto y `foto.jpg` local son el MISMO
+  /// archivo en Windows (ADR-011 dec. 4 / ADR-012).
+  String get key => relativeSegments.join('/').toLowerCase();
 }
 
-/// Motor de sincronización unidireccional (servidor→local), manual, de un
-/// único par de carpetas (ADR-011). Clase concreta sin interfaz separada
-/// -- igual que `BackupService` en NexusKeys: orquesta `FilesRepository`
-/// (ya existente) más `dart:io`, no hay una segunda implementación que
-/// justifique abstraerla.
+/// Un archivo local ya localizado durante el recorrido del árbol local.
+class _LocalFile {
+  _LocalFile({
+    required this.file,
+    required this.relativeSegments,
+    required this.sizeBytes,
+    required this.modifiedUtc,
+  });
+
+  final File file;
+  final List<String> relativeSegments;
+  final int sizeBytes;
+  final DateTime modifiedUtc;
+
+  String get key => relativeSegments.join('/').toLowerCase();
+}
+
+/// Acumulador mutable de una pasada -- las tres direcciones lo rellenan
+/// igual, así que el resultado final se construye una sola vez.
+class _Tally {
+  int downloaded = 0;
+  int uploaded = 0;
+  int skipped = 0;
+  final errors = <String>[];
+  final conflicts = <String>[];
+}
+
+/// Motor de sincronización (ADR-011 slices 3/8, ADR-012 slice 13). Clase
+/// concreta sin interfaz separada -- igual que `BackupService` en
+/// NexusKeys: orquesta `FilesRepository` (ya existente) más `dart:io`, no
+/// hay una segunda implementación que justifique abstraerla.
 ///
-/// No mantiene ningún estado propio entre pasadas: cada `syncNow` decide
-/// qué descargar comparando tamaño+fecha de modificación local contra lo
-/// que el servidor ya reporta en cada listado (`sizeBytes`/`updatedAt`).
-/// Es el propio motor quien fija esa fecha local tras cada descarga
-/// (`File.setLastModified`), así que compararla en la siguiente pasada es
-/// válido -- no es una suposición sobre un reloj o herramienta ajena.
+/// Tres sentidos ([SyncDirection]):
+///  - `download`: servidor→local (comportamiento original, sin cambios).
+///  - `upload`: local→servidor.
+///  - `both`: reconcilia los dos lados en UN único recorrido -- no una
+///    bajada seguida de una subida, que dejaría que la bajada pisara una
+///    edición local antes de que la subida la viera (§40).
+///
+/// `both` usa un manifiesto de estado local ([SyncStateStore]) como base
+/// para distinguir "cambió en remoto" de "cambió en local" de "cambió en
+/// los dos" (conflicto §40 → *conflict copy*, nunca se sobrescribe en
+/// silencio). Los tres modos mantienen el manifiesto al día. **Ningún modo
+/// propaga borrados** en este slice (ADR-012): un archivo que desaparece de
+/// un lado se vuelve a traer del otro.
 class SyncEngine {
-  SyncEngine({required FilesRepository filesRepository})
-      : _filesRepository = filesRepository;
+  SyncEngine({
+    required FilesRepository filesRepository,
+    required SyncStateStore stateStore,
+  })  : _filesRepository = filesRepository,
+        _stateStore = stateStore;
 
   final FilesRepository _filesRepository;
+  final SyncStateStore _stateStore;
 
   /// Tolerancia de comparación de fecha de modificación: cubre pequeñas
   /// diferencias de redondeo entre cómo el servidor serializa
-  /// `updated_at` y la precisión que el filesystem local conserva al
-  /// hacer round-trip por `setLastModified`/`FileStat.modified`.
+  /// `updated_at`, la precisión que el filesystem local conserva al hacer
+  /// round-trip por `setLastModified`/`FileStat.modified`, y la que
+  /// sobrevive a serializar el manifiesto a ISO-8601.
   static const _mtimeTolerance = Duration(seconds: 2);
+
+  /// Nombres locales que nunca se suben: basura del SO, y las propias
+  /// *conflict copies* (si no, una se subiría como "archivo local nuevo" y
+  /// se propagaría al servidor).
+  static final _conflictCopyPattern =
+      RegExp(r' \(conflicto \d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}\)');
+  static const _osJunkNames = {'.ds_store', 'thumbs.db', 'desktop.ini'};
 
   Future<SyncResult>? _inFlight;
   final _busyController = StreamController<bool>.broadcast();
@@ -53,35 +106,23 @@ class SyncEngine {
   /// Emite `true` justo cuando arranca cualquier sincronización y `false`
   /// justo cuando termina (con éxito o error) -- sin importar si la
   /// arrancó el botón manual de `SyncSettingsPage` o `AutoSyncScheduler`.
-  /// Existe para que cualquier UI pueda deshabilitar sus propias acciones
-  /// de sync mientras haya una en curso, la haya arrancado quien la haya
-  /// arrancado -- ver [syncNow] sobre por qué esto no es opcional.
   Stream<bool> get onBusyChanged => _busyController.stream;
 
   bool get isRunning => _inFlight != null;
 
-  /// Deliberadamente NO `async`: el chequeo+asignación de [_inFlight]
-  /// tiene que ocurrir en el mismo tramo síncrono, antes de que
-  /// `_runSync` ceda el control en su primer `await` interno -- así dos
-  /// llamadas seguidas (aunque vengan del mismo evento) ven la guarda de
-  /// forma consistente, sin ninguna ventana de carrera en el propio
-  /// chequeo.
+  /// Deliberadamente NO `async`: el chequeo+asignación de [_inFlight] tiene
+  /// que ocurrir en el mismo tramo síncrono, antes de que `_runSync` ceda
+  /// el control en su primer `await` interno -- así dos llamadas seguidas
+  /// (aunque vengan del mismo evento) ven la guarda de forma consistente.
   ///
-  /// Una segunda llamada mientras la primera sigue en curso NO lanza una
-  /// excepción ni se descarta: se une a la ya-en-curso y recibe el mismo
-  /// [SyncResult] cuando termine -- ni duplica trabajo de red ni escribe
-  /// dos veces al mismo archivo local. Sin esta guarda, un disparador
-  /// automático (`AutoSyncScheduler`) solapado con un sync manual, o dos
-  /// ticks automáticos seguidos si uno tarda más que el intervalo,
-  /// recorrerían el árbol remoto por duplicado y podrían escribir al
-  /// mismo archivo local a la vez.
-  ///
-  /// Coste aceptado: quien se une no recibe los `onStatus` de la
-  /// ejecución a la que se unió (solo la primera llamada los recibe) --
-  /// razonable para un caso límite raro, no vale la pena una difusión
-  /// multi-listener para esto.
+  /// Una segunda llamada mientras la primera sigue en curso NO lanza ni se
+  /// descarta: se une a la ya-en-curso y recibe el mismo [SyncResult]. Si
+  /// esa segunda llamada pedía otra [direction], se ignora -- gana la que
+  /// arrancó; es un caso límite raro (dos disparos casi simultáneos con
+  /// distinto modo) y no vale la pena encolarlo.
   Future<SyncResult> syncNow(
     SyncPair pair, {
+    SyncDirection direction = SyncDirection.download,
     void Function(String status)? onStatus,
   }) {
     final existing = _inFlight;
@@ -91,15 +132,13 @@ class SyncEngine {
       );
       return existing;
     }
-    final future = _runSync(pair, onStatus);
+    final future = _runSync(pair, direction, onStatus);
     _inFlight = future;
     _busyController.add(true);
-    // `.whenComplete(...)` devuelve una Future NUEVA e independiente, no
-    // la misma que ya se le devuelve a quien llama -- si no se descarta
-    // con `.ignore()`, un fallo de arranque (p.ej. ruta remota
-    // inexistente) dispara un reporte de "error no capturado" de más en
-    // la zona, encima del error que sí recibe correctamente quien de
-    // verdad esperaba `syncNow`.
+    // `.whenComplete(...)` devuelve una Future NUEVA e independiente -- si
+    // no se descarta con `.ignore()`, un fallo de arranque dispara un
+    // reporte de "error no capturado" de más, encima del error que sí
+    // recibe quien de verdad esperaba `syncNow`.
     future
         .whenComplete(() {
           _inFlight = null;
@@ -113,84 +152,468 @@ class SyncEngine {
 
   Future<SyncResult> _runSync(
     SyncPair pair,
+    SyncDirection direction,
     void Function(String status)? onStatus,
   ) async {
+    final baseline = await _stateStore.read(pair);
+    final newBaseline = <String, SyncStateEntry>{};
+    final tally = _Tally();
+
+    // El árbol remoto hace falta en los tres modos: `download` para saber
+    // qué traer, `upload`/`both` para saber qué hay ya en el servidor. Una
+    // raíz remota inexistente propaga la `ApiException` tal cual -- es un
+    // fallo de arranque, no un error por archivo.
     final remoteFiles = await _walkRemote(pair.remotePath, onStatus);
+    final remoteByKey = <String, _RemoteFile>{};
+    final collisionKeys = <String>{};
+    _indexRemote(remoteFiles, remoteByKey, collisionKeys, tally);
 
-    final groups = <String, List<_RemoteFile>>{};
-    for (final remoteFile in remoteFiles) {
-      groups.putIfAbsent(remoteFile.lowercaseKey, () => []).add(remoteFile);
+    switch (direction) {
+      case SyncDirection.download:
+        await _downloadPass(pair, remoteByKey, newBaseline, tally, onStatus);
+      case SyncDirection.upload:
+        final localFiles = await _walkLocal(pair.localPath, onStatus);
+        await _uploadPass(
+          pair,
+          localFiles,
+          remoteByKey,
+          collisionKeys,
+          baseline,
+          newBaseline,
+          tally,
+          onStatus,
+        );
+      case SyncDirection.both:
+        final localFiles = await _walkLocal(pair.localPath, onStatus);
+        await _reconcilePass(
+          pair,
+          remoteByKey,
+          localFiles,
+          collisionKeys,
+          baseline,
+          newBaseline,
+          tally,
+          onStatus,
+        );
     }
 
-    var downloaded = 0;
-    var skipped = 0;
-    final errors = <String>[];
-
-    for (final group in groups.values) {
-      if (group.length > 1) {
-        final names = group.map((f) => f.file.name).join(', ');
-        errors.add(
-          'Conflicto de mayúsculas/minúsculas entre: $names '
-          '(el servidor los trata como archivos distintos, pero en este '
-          'sistema local mapearían al mismo archivo -- ninguno se descargó)',
-        );
-        continue;
-      }
-
-      final remoteFile = group.single;
-      final localPath = p.joinAll([pair.localPath, ...remoteFile.relativeSegments]);
-
-      try {
-        if (!_needsDownload(remoteFile.file, localPath)) {
-          skipped++;
-          continue;
-        }
-        onStatus?.call('Descargando ${remoteFile.file.name}...');
-        await Directory(p.dirname(localPath)).create(recursive: true);
-        await _filesRepository.downloadFile(
-          file: remoteFile.file,
-          saveToPath: localPath,
-        );
-        await File(localPath).setLastModified(remoteFile.file.updatedAt);
-        downloaded++;
-      } on ApiException catch (e) {
-        errors.add('${remoteFile.file.name}: ${e.message}');
-      } on FileSystemException catch (e) {
-        // Cubre, entre otros casos, nombres reservados de Windows (CON,
-        // PRN...) que el servidor no rechaza (su validación es más
-        // estrecha que "caracteres inválidos de Windows", §179) -- el SO
-        // local lanza aquí con un mensaje menos amable, pero no aborta
-        // el resto de la sincronización (ADR-011, gap aceptado).
-        errors.add('${remoteFile.file.name}: ${e.message}');
-      }
-    }
+    await _stateStore.write(pair, newBaseline);
 
     return SyncResult(
-      downloaded: downloaded,
-      skipped: skipped,
-      errors: errors,
+      downloaded: tally.downloaded,
+      uploaded: tally.uploaded,
+      skipped: tally.skipped,
+      errors: tally.errors,
+      conflicts: tally.conflicts,
       finishedAt: DateTime.now().toUtc(),
     );
   }
+
+  // --- indexado + colisiones de mayúsculas/minúsculas -----------------
+
+  void _indexRemote(
+    List<_RemoteFile> remoteFiles,
+    Map<String, _RemoteFile> remoteByKey,
+    Set<String> collisionKeys,
+    _Tally tally,
+  ) {
+    final groups = <String, List<_RemoteFile>>{};
+    for (final f in remoteFiles) {
+      groups.putIfAbsent(f.key, () => []).add(f);
+    }
+    for (final entry in groups.entries) {
+      if (entry.value.length > 1) {
+        final names = entry.value.map((f) => f.file.name).join(', ');
+        collisionKeys.add(entry.key);
+        tally.errors.add(
+          'Conflicto de mayúsculas/minúsculas entre: $names '
+          '(el servidor los trata como archivos distintos, pero en este '
+          'sistema local mapearían al mismo archivo -- ninguno se sincronizó)',
+        );
+      } else {
+        remoteByKey[entry.key] = entry.value.single;
+      }
+    }
+  }
+
+  // --- pasada: solo descarga (servidor→local) ------------------------
+
+  Future<void> _downloadPass(
+    SyncPair pair,
+    Map<String, _RemoteFile> remoteByKey,
+    Map<String, SyncStateEntry> newBaseline,
+    _Tally tally,
+    void Function(String status)? onStatus,
+  ) async {
+    for (final remote in remoteByKey.values) {
+      final localPath = p.joinAll([pair.localPath, ...remote.relativeSegments]);
+      try {
+        if (_needsDownload(remote.file, localPath)) {
+          onStatus?.call('Descargando ${remote.file.name}...');
+          await _download(remote, localPath);
+          tally.downloaded++;
+        } else {
+          tally.skipped++;
+        }
+        newBaseline[remote.key] = _entryAfterDownload(remote, localPath);
+      } on ApiException catch (e) {
+        tally.errors.add('${remote.file.name}: ${e.message}');
+      } on FileSystemException catch (e) {
+        tally.errors.add('${remote.file.name}: ${e.message}');
+      }
+    }
+  }
+
+  // --- pasada: solo subida (local→servidor) -------------------------
+
+  Future<void> _uploadPass(
+    SyncPair pair,
+    List<_LocalFile> localFiles,
+    Map<String, _RemoteFile> remoteByKey,
+    Set<String> collisionKeys,
+    Map<String, SyncStateEntry> baseline,
+    Map<String, SyncStateEntry> newBaseline,
+    _Tally tally,
+    void Function(String status)? onStatus,
+  ) async {
+    final ensuredDirs = <String>{};
+    for (final local in localFiles) {
+      final key = local.key;
+      if (collisionKeys.contains(key)) continue;
+      final name = local.relativeSegments.last;
+      final remote = remoteByKey[key];
+      final base = baseline[key];
+      try {
+        if (remote == null) {
+          onStatus?.call('Subiendo $name...');
+          final entry = await _upload(pair, local, ensuredDirs);
+          newBaseline[key] = _entryAfterUpload(entry);
+          tally.uploaded++;
+          continue;
+        }
+        if (_matchesBase(base, local) && _remoteMatchesBase(base, remote.file)) {
+          newBaseline[key] = base!;
+          tally.skipped++;
+          continue;
+        }
+        if (await _sha(local.file) == remote.file.sha256) {
+          newBaseline[key] = _entryInSync(local, remote.file);
+          tally.skipped++;
+          continue;
+        }
+        onStatus?.call('Subiendo $name...');
+        final entry = await _upload(pair, local, ensuredDirs);
+        newBaseline[key] = _entryAfterUpload(entry);
+        tally.uploaded++;
+      } on ApiException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      } on FileSystemException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      }
+    }
+  }
+
+  // --- pasada: reconciliación de tres vías (both) -------------------
+
+  Future<void> _reconcilePass(
+    SyncPair pair,
+    Map<String, _RemoteFile> remoteByKey,
+    List<_LocalFile> localFiles,
+    Set<String> collisionKeys,
+    Map<String, SyncStateEntry> baseline,
+    Map<String, SyncStateEntry> newBaseline,
+    _Tally tally,
+    void Function(String status)? onStatus,
+  ) async {
+    final localByKey = {for (final f in localFiles) f.key: f};
+    final allKeys = <String>{
+      ...remoteByKey.keys,
+      ...localByKey.keys,
+      ...baseline.keys,
+    };
+    final ensuredDirs = <String>{};
+
+    for (final key in allKeys) {
+      if (collisionKeys.contains(key)) continue;
+      final remote = remoteByKey[key];
+      final local = localByKey[key];
+
+      if (remote == null && local == null) {
+        // Solo estaba en la base: borrado en los dos lados -> se deja caer
+        // la entrada del manifiesto (no se copia a newBaseline) y nada más.
+        continue;
+      }
+
+      final base = baseline[key];
+      final segments = local?.relativeSegments ?? remote!.relativeSegments;
+      final localPath = p.joinAll([pair.localPath, ...segments]);
+      final name = segments.last;
+
+      try {
+        if (remote != null && local == null) {
+          // Nuevo en remoto, o borrado en local y NO se propaga (ADR-012):
+          // se vuelve a bajar.
+          onStatus?.call('Descargando $name...');
+          await _download(remote, localPath);
+          newBaseline[key] = _entryAfterDownload(remote, localPath);
+          tally.downloaded++;
+        } else if (remote == null && local != null) {
+          // Nuevo en local, o borrado en remoto y NO se propaga: se vuelve
+          // a subir.
+          onStatus?.call('Subiendo $name...');
+          final entry = await _upload(pair, local, ensuredDirs);
+          newBaseline[key] = _entryAfterUpload(entry);
+          tally.uploaded++;
+        } else if (remote != null && local != null) {
+          await _reconcileBothPresent(
+            pair: pair,
+            key: key,
+            name: name,
+            localPath: localPath,
+            remote: remote,
+            local: local,
+            base: base,
+            newBaseline: newBaseline,
+            tally: tally,
+            ensuredDirs: ensuredDirs,
+            onStatus: onStatus,
+          );
+        }
+      } on ApiException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      } on FileSystemException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      }
+    }
+  }
+
+  Future<void> _reconcileBothPresent({
+    required SyncPair pair,
+    required String key,
+    required String name,
+    required String localPath,
+    required _RemoteFile remote,
+    required _LocalFile local,
+    required SyncStateEntry? base,
+    required Map<String, SyncStateEntry> newBaseline,
+    required _Tally tally,
+    required Set<String> ensuredDirs,
+    required void Function(String status)? onStatus,
+  }) async {
+    if (base == null) {
+      // Primera vez que se ven los dos y no hay base: si el contenido ya
+      // coincide, solo se registra; si no, no hay forma de saber quién
+      // manda -> conflicto.
+      if (await _sha(local.file) == remote.file.sha256) {
+        newBaseline[key] = _entryInSync(local, remote.file);
+        tally.skipped++;
+      } else {
+        await _writeConflictCopy(remote, localPath, tally, name);
+        newBaseline[key] = _entryConflictResolved(local, remote.file);
+      }
+      return;
+    }
+
+    final rChanged = !_close(remote.file.updatedAt, base.remoteUpdatedAt) ||
+        remote.file.sizeBytes != base.remoteSizeBytes;
+    final lChanged = !_close(local.modifiedUtc, base.localModifiedAt) ||
+        local.sizeBytes != base.localSizeBytes;
+
+    if (!rChanged && !lChanged) {
+      newBaseline[key] = base;
+      tally.skipped++;
+      return;
+    }
+    if (rChanged && !lChanged) {
+      onStatus?.call('Descargando $name...');
+      await _download(remote, localPath);
+      newBaseline[key] = _entryAfterDownload(remote, localPath);
+      tally.downloaded++;
+      return;
+    }
+    if (!rChanged && lChanged) {
+      onStatus?.call('Subiendo $name...');
+      final entry = await _upload(pair, local, ensuredDirs);
+      newBaseline[key] = _entryAfterUpload(entry);
+      tally.uploaded++;
+      return;
+    }
+    // Cambió en los dos lados desde la última sincronización.
+    if (await _sha(local.file) == remote.file.sha256) {
+      // Convergieron al mismo contenido por su cuenta -- no es conflicto.
+      newBaseline[key] = _entryInSync(local, remote.file);
+      tally.skipped++;
+      return;
+    }
+    await _writeConflictCopy(remote, localPath, tally, name);
+    // Se avanza la base a (remoto actual, local actual): el conflicto se
+    // notifica UNA vez y no se re-dispara en cada tick salvo que un lado
+    // vuelva a cambiar de verdad. La conflict copy queda como artefacto
+    // para que el usuario la funda a mano.
+    newBaseline[key] = _entryConflictResolved(local, remote.file);
+  }
+
+  // --- operaciones de transferencia --------------------------------
+
+  Future<void> _download(_RemoteFile remote, String localPath) async {
+    await Directory(p.dirname(localPath)).create(recursive: true);
+    await _filesRepository.downloadFile(
+      file: remote.file,
+      saveToPath: localPath,
+    );
+    await File(localPath).setLastModified(remote.file.updatedAt);
+  }
+
+  Future<FileEntry> _upload(
+    SyncPair pair,
+    _LocalFile local,
+    Set<String> ensuredDirs,
+  ) async {
+    final segments = local.relativeSegments;
+    await _ensureRemoteDirs(pair.remotePath, segments, ensuredDirs);
+    var parentPath = pair.remotePath;
+    for (final s in segments.sublist(0, segments.length - 1)) {
+      parentPath = RemotePath.join(parentPath, s);
+    }
+    final entry = await _filesRepository.uploadFile(
+      parentPath: parentPath,
+      localFilePath: local.file.path,
+      fileName: segments.last,
+    );
+    // Alinea la fecha local con la que el servidor acaba de fijar, para que
+    // el atajo tamaño+fecha vuelva a valer en la siguiente pasada.
+    await local.file.setLastModified(entry.updatedAt);
+    return entry;
+  }
+
+  /// Crea las carpetas padre que falten en el servidor, nivel a nivel
+  /// (`createDirectory` no admite `/` en el nombre). Idempotente en el
+  /// servidor; además se cachea lo ya creado en esta pasada para no
+  /// repetir la llamada por cada archivo de una misma carpeta.
+  Future<void> _ensureRemoteDirs(
+    String rootPath,
+    List<String> segments,
+    Set<String> ensuredDirs,
+  ) async {
+    var parent = rootPath;
+    for (final dirName in segments.sublist(0, segments.length - 1)) {
+      final full = RemotePath.join(parent, dirName);
+      if (ensuredDirs.add(full)) {
+        await _filesRepository.createDirectory(
+          parentPath: parent,
+          name: dirName,
+        );
+      }
+      parent = full;
+    }
+  }
+
+  Future<void> _writeConflictCopy(
+    _RemoteFile remote,
+    String localPath,
+    _Tally tally,
+    String name,
+  ) async {
+    final dir = p.dirname(localPath);
+    final stem = p.basenameWithoutExtension(localPath);
+    final ext = p.extension(localPath);
+    final stamp = _conflictStamp(remote.file.updatedAt.toLocal());
+    final copyPath = p.join(dir, '$stem (conflicto $stamp)$ext');
+
+    // Si ya se generó esta misma conflict copy (mismo timestamp remoto), no
+    // se vuelve a descargar ni se reescribe.
+    if (!File(copyPath).existsSync()) {
+      await Directory(dir).create(recursive: true);
+      await _filesRepository.downloadFile(
+        file: remote.file,
+        saveToPath: copyPath,
+      );
+    }
+    tally.conflicts.add(name);
+  }
+
+  // --- construcción de entradas de manifiesto ----------------------
+
+  SyncStateEntry _entryAfterDownload(_RemoteFile remote, String localPath) {
+    final localStat = File(localPath).statSync();
+    return SyncStateEntry(
+      remoteSizeBytes: remote.file.sizeBytes,
+      localSizeBytes: localStat.size,
+      sha256: remote.file.sha256,
+      remoteUpdatedAt: remote.file.updatedAt,
+      localModifiedAt: localStat.modified.toUtc(),
+    );
+  }
+
+  SyncStateEntry _entryAfterUpload(FileEntry entry) => SyncStateEntry(
+        remoteSizeBytes: entry.sizeBytes,
+        localSizeBytes: entry.sizeBytes,
+        sha256: entry.sha256,
+        remoteUpdatedAt: entry.updatedAt,
+        // `_upload` acaba de fijar la fecha local a `entry.updatedAt`.
+        localModifiedAt: entry.updatedAt.toUtc(),
+      );
+
+  SyncStateEntry _entryInSync(_LocalFile local, FileEntry remote) =>
+      SyncStateEntry(
+        remoteSizeBytes: remote.sizeBytes,
+        localSizeBytes: local.sizeBytes,
+        sha256: remote.sha256,
+        remoteUpdatedAt: remote.updatedAt,
+        localModifiedAt: local.modifiedUtc,
+      );
+
+  /// Tras dejar una conflict copy: la base pasa a reflejar el estado ACTUAL
+  /// de los dos lados (con sus tamaños distintos), para que el conflicto no
+  /// se repita en cada pasada mientras ninguno vuelva a cambiar.
+  SyncStateEntry _entryConflictResolved(_LocalFile local, FileEntry remote) =>
+      SyncStateEntry(
+        remoteSizeBytes: remote.sizeBytes,
+        localSizeBytes: local.sizeBytes,
+        sha256: remote.sha256,
+        remoteUpdatedAt: remote.updatedAt,
+        localModifiedAt: local.modifiedUtc,
+      );
+
+  // --- helpers de comparación -------------------------------------
 
   bool _needsDownload(FileEntry file, String localPath) {
     final localFile = File(localPath);
     if (!localFile.existsSync()) return true;
     final stat = localFile.statSync();
     final sizeMatches = stat.size == file.sizeBytes;
-    final mtimeMatches =
-        stat.modified.difference(file.updatedAt).abs() <= _mtimeTolerance;
+    final mtimeMatches = _close(stat.modified.toUtc(), file.updatedAt);
     return !(sizeMatches && mtimeMatches);
   }
 
+  bool _matchesBase(SyncStateEntry? base, _LocalFile local) =>
+      base != null &&
+      local.sizeBytes == base.localSizeBytes &&
+      _close(local.modifiedUtc, base.localModifiedAt);
+
+  bool _remoteMatchesBase(SyncStateEntry? base, FileEntry remote) =>
+      base != null &&
+      remote.sizeBytes == base.remoteSizeBytes &&
+      _close(remote.updatedAt, base.remoteUpdatedAt);
+
+  bool _close(DateTime a, DateTime b) =>
+      a.difference(b).abs() <= _mtimeTolerance;
+
+  Future<String> _sha(File file) async =>
+      (await sha256.bind(file.openRead()).first).toString();
+
+  String _conflictStamp(DateTime local) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${local.year}-${two(local.month)}-${two(local.day)} '
+        '${two(local.hour)}.${two(local.minute)}.${two(local.second)}';
+  }
+
+  // --- recorridos ------------------------------------------------
+
   /// Recorre el árbol remoto desde [rootPath] llamando a
-  /// `FilesRepository.list` una vez por carpeta (secuencial -- mismo
-  /// criterio que la subida por lotes del slice 2, ADR-010: el rate
-  /// limit del servidor tiene margen de sobra a la escala de §160, así
-  /// que no hay razón técnica real para paralelizar). Un directorio
-  /// inexistente en la raíz configurada propaga la `ApiException` tal
-  /// cual -- eso es un fallo de arranque, no un error por archivo, y
-  /// quien llama a `syncNow` debe tratarlo aparte del `SyncResult`.
+  /// `FilesRepository.list` una vez por carpeta (secuencial -- ADR-011
+  /// dec. 5). Un directorio inexistente en la raíz propaga la
+  /// `ApiException` tal cual (fallo de arranque).
   Future<List<_RemoteFile>> _walkRemote(
     String rootPath,
     void Function(String status)? onStatus,
@@ -224,5 +647,43 @@ class SyncEngine {
 
     await walk(rootPath);
     return result;
+  }
+
+  /// Recorre el árbol local bajo [rootPath]. Carpeta local inexistente ⇒
+  /// lista vacía (no hay nada que subir; en `both`, lo que hubiera en
+  /// remoto se vuelve a bajar). Salta basura del SO y conflict copies.
+  Future<List<_LocalFile>> _walkLocal(
+    String rootPath,
+    void Function(String status)? onStatus,
+  ) async {
+    final root = Directory(rootPath);
+    if (!root.existsSync()) return const [];
+
+    final result = <_LocalFile>[];
+    var seen = 0;
+    await for (final entity
+        in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final segments = p.split(p.relative(entity.path, from: rootPath));
+      if (_isIgnoredLocalName(segments.last)) continue;
+      final stat = entity.statSync();
+      result.add(
+        _LocalFile(
+          file: entity,
+          relativeSegments: segments,
+          sizeBytes: stat.size,
+          modifiedUtc: stat.modified.toUtc(),
+        ),
+      );
+      seen++;
+      onStatus?.call('Explorando archivos locales... $seen encontrados');
+    }
+    return result;
+  }
+
+  bool _isIgnoredLocalName(String name) {
+    if (_osJunkNames.contains(name.toLowerCase())) return true;
+    if (_conflictCopyPattern.hasMatch(name)) return true;
+    return false;
   }
 }

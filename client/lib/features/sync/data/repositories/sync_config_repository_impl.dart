@@ -1,6 +1,7 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../domain/entities/auto_sync_settings.dart';
+import '../../domain/entities/sync_direction.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/repositories/sync_config_repository.dart';
 
@@ -13,6 +14,7 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
   static const _autoIntervalKey = 'nexuscloud.sync.auto_interval_minutes';
   static const _autoLastAtKey = 'nexuscloud.sync.auto_last_at';
   static const _autoLastSummaryKey = 'nexuscloud.sync.auto_last_summary';
+  static const _directionKey = 'nexuscloud.sync.direction';
 
   @override
   Future<void> save(SyncPair pair) async {
@@ -35,6 +37,18 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_remoteKey);
     await prefs.remove(_localKey);
+  }
+
+  @override
+  Future<void> saveDirection(SyncDirection direction) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_directionKey, direction.storageValue);
+  }
+
+  @override
+  Future<SyncDirection> readDirection() async {
+    final prefs = await SharedPreferences.getInstance();
+    return SyncDirection.fromStorage(prefs.getString(_directionKey));
   }
 
   @override

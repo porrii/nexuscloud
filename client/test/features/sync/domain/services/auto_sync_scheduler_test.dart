@@ -11,9 +11,12 @@ import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/auto_sync_settings.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_result.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/sync_state_entry.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_config_repository.dart';
+import 'package:nexuscloud_client/features/sync/domain/repositories/sync_state_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/auto_sync_scheduler.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/sync_engine.dart';
 
@@ -119,6 +122,15 @@ class _FakeSyncConfigRepository implements SyncConfigRepository {
   @override
   Future<AutoSyncSettings> readAutoSync() async => autoSync;
 
+  SyncDirection direction = SyncDirection.download;
+
+  @override
+  Future<void> saveDirection(SyncDirection direction) async =>
+      this.direction = direction;
+
+  @override
+  Future<SyncDirection> readDirection() async => direction;
+
   @override
   Future<void> saveLastAutoSyncOutcome({
     required DateTime at,
@@ -154,6 +166,13 @@ class _FakeFilesRepository implements FilesRepository {
     required String localFilePath,
     required String fileName,
     TransferProgress? onProgress,
+  }) =>
+      throw UnimplementedError();
+
+  @override
+  Future<void> createDirectory({
+    required String parentPath,
+    required String name,
   }) =>
       throw UnimplementedError();
 
@@ -203,6 +222,23 @@ class _FakeFilesRepository implements FilesRepository {
       throw UnimplementedError();
 }
 
+/// El manifiesto de estado no aporta nada a los escenarios de este archivo
+/// (listado vacío / ruta inexistente), pero `SyncEngine` lo exige -- un
+/// almacén en memoria basta.
+class _InMemorySyncStateStore implements SyncStateStore {
+  final Map<String, Map<String, SyncStateEntry>> _byPair = {};
+
+  String _key(SyncPair pair) => '${pair.remotePath}|${pair.localPath}';
+
+  @override
+  Future<Map<String, SyncStateEntry>> read(SyncPair pair) async =>
+      Map.of(_byPair[_key(pair)] ?? const {});
+
+  @override
+  Future<void> write(SyncPair pair, Map<String, SyncStateEntry> entries) async =>
+      _byPair[_key(pair)] = Map.of(entries);
+}
+
 const _someUser = AppUser(
   id: 'u-1',
   username: 'ivan',
@@ -223,7 +259,10 @@ void main() {
     fakeAuth = _FakeAuthRepository();
     fakeConfigRepo = _FakeSyncConfigRepository();
     fakeFilesRepository = _FakeFilesRepository();
-    syncEngine = SyncEngine(filesRepository: fakeFilesRepository);
+    syncEngine = SyncEngine(
+      filesRepository: fakeFilesRepository,
+      stateStore: _InMemorySyncStateStore(),
+    );
     scheduler = AutoSyncScheduler(
       syncEngine: syncEngine,
       configRepository: fakeConfigRepo,

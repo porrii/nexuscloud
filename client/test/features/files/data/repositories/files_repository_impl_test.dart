@@ -40,6 +40,16 @@ class _FakeFilesRemoteDataSource implements FilesRemoteDataSource {
     return uploadResult!;
   }
 
+  final List<String> createdDirectories = [];
+
+  @override
+  Future<void> createDirectory({
+    required String parentPath,
+    required String name,
+  }) async {
+    createdDirectories.add('$parentPath::$name');
+  }
+
   @override
   Future<void> downloadFile({
     required FileEntry file,
@@ -181,6 +191,15 @@ void main() {
 
     expect(result, testFile);
     expect(fake.uploadedFileNames, ['foto.jpg']);
+  });
+
+  test('createDirectory delega en el data source', () async {
+    final fake = _FakeFilesRemoteDataSource();
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.createDirectory(parentPath: '/Documentos', name: 'Fotos');
+
+    expect(fake.createdDirectories, ['/Documentos::Fotos']);
   });
 
   test('una ApiException de uploadFile (p.ej. 409) se propaga sin cambios', () async {

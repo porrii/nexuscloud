@@ -28,6 +28,13 @@ class FilesRepositoryImpl implements FilesRepository {
       );
 
   @override
+  Future<void> createDirectory({
+    required String parentPath,
+    required String name,
+  }) =>
+      _remoteDataSource.createDirectory(parentPath: parentPath, name: name);
+
+  @override
   Future<void> downloadFile({
     required FileEntry file,
     required String saveToPath,

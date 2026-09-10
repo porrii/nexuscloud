@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/features/sync/data/repositories/sync_config_repository_impl.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/auto_sync_settings.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -69,5 +70,29 @@ void main() {
     expect(outcome, isNotNull);
     expect(outcome!.at, at);
     expect(outcome.summary, '3 descargados, 0 errores');
+  });
+
+  test('readDirection devuelve download si no hay nada guardado todavía', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    expect(await repo.readDirection(), SyncDirection.download);
+  });
+
+  test('saveDirection y readDirection hacen round-trip para los tres modos', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    for (final direction in SyncDirection.values) {
+      await repo.saveDirection(direction);
+      expect(await repo.readDirection(), direction);
+    }
+  });
+
+  test('readDirection cae a download ante un valor persistido desconocido', () async {
+    SharedPreferences.setMockInitialValues(
+      {'nexuscloud.sync.direction': 'modo-de-una-version-futura'},
+    );
+    final repo = SyncConfigRepositoryImpl();
+
+    expect(await repo.readDirection(), SyncDirection.download);
   });
 }

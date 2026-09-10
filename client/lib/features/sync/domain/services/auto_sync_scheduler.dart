@@ -94,6 +94,8 @@ class AutoSyncScheduler {
     final pair = await _configRepository.read();
     if (pair == null) return;
 
+    final direction = await _configRepository.readDirection();
+
     // La guarda de reentrancia de `SyncEngine.syncNow` protege esta
     // llamada automáticamente frente a solapamientos con un sync manual
     // o con otro tick que todavía siga en curso -- no hay nada especial
@@ -101,12 +103,15 @@ class AutoSyncScheduler {
     try {
       final result = await _syncEngine.syncNow(
         pair,
+        direction: direction,
         onStatus: _statusController.add,
       );
       await _configRepository.saveLastAutoSyncOutcome(
         at: result.finishedAt,
-        summary:
-            '${result.downloaded} descargados, ${result.errors.length} errores',
+        summary: '${result.downloaded} descargados, '
+            '${result.uploaded} subidos, '
+            '${result.conflicts.length} conflictos, '
+            '${result.errors.length} errores',
       );
       _resultController.add(result);
     } on ApiException catch (e) {

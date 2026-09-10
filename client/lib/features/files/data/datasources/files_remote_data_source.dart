@@ -109,6 +109,22 @@ class FilesRemoteDataSource {
     }
   }
 
+  /// `POST /directories` con `{parent_path, name}`. El servidor es
+  /// idempotente (crear una carpeta ya existente responde `201` con el
+  /// mismo id), así que no hace falta comprobar antes si existe ni
+  /// interpretar un conflicto -- basta con llamarlo.
+  Future<void> createDirectory({
+    required String parentPath,
+    required String name,
+  }) {
+    return _apiClient.request(
+      (dio) => dio.post<void>(
+        '/directories',
+        data: {'parent_path': parentPath, 'name': name},
+      ),
+    );
+  }
+
   /// El parámetro `permanent` solo se manda cuando es `true` -- igual que
   /// el cliente web, que nunca lo incluye para un borrado normal. El
   /// servidor compara la query string como string exacta (`"true"`), así
