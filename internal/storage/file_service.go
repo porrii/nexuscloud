@@ -33,7 +33,7 @@ type FileService struct {
 	versions           VersionRepository
 	shares             ShareRepository
 	pools              PoolRepository
-	provider           Provider
+	providers          ProviderResolver
 	hasher             PasswordHasher
 	trashEnabled       bool
 	versioningEnabled  bool
@@ -44,13 +44,13 @@ type FileService struct {
 
 func NewFileService(
 	files FileRepository, directories DirectoryRepository, versions VersionRepository, shares ShareRepository,
-	pools PoolRepository, provider Provider, hasher PasswordHasher,
+	pools PoolRepository, providers ProviderResolver, hasher PasswordHasher,
 	trashEnabled, versioningEnabled bool, maxVersionsPerFile int,
 	sharingEnabled, publicLinksEnabled bool,
 ) *FileService {
 	return &FileService{
 		files: files, directories: directories, versions: versions, shares: shares,
-		pools: pools, provider: provider, hasher: hasher,
+		pools: pools, providers: providers, hasher: hasher,
 		trashEnabled: trashEnabled, versioningEnabled: versioningEnabled, maxVersionsPerFile: maxVersionsPerFile,
 		sharingEnabled: sharingEnabled, publicLinksEnabled: publicLinksEnabled,
 	}
@@ -116,20 +116,24 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 	if err != nil {
 		return nil, fmt.Errorf("resolviendo storage pool por defecto: %w", err)
 	}
+	prov, err := s.providers.For(ctx, pool.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 
 	if err := s.rejectIfTrashOccupiesName(ctx, pool.ID, in.OwnerID, parent, in.Name); err != nil {
 		return nil, err
 	}
 
 	staging := stagingPath(in.OwnerID)
-	size, sha, err := s.provider.Write(ctx, staging, in.Content)
+	size, sha, err := prov.Write(ctx, staging, in.Content)
 	if err != nil {
 		return nil, fmt.Errorf("escribiendo archivo: %w", err)
 	}
 	movedToFinal := false
 	defer func() {
 		if !movedToFinal {
-			_ = s.provider.Delete(ctx, staging) // best-effort: limpia el staging si algo falló después
+			_ = prov.Delete(ctx, staging) // best-effort: limpia el staging si algo falló después
 		}
 	}()
 
@@ -143,7 +147,7 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 		}
 	}
 
-	if err := s.provider.Move(ctx, staging, rel); err != nil {
+	if err := prov.Move(ctx, staging, rel); err != nil {
 		return nil, fmt.Errorf("moviendo archivo a destino final: %w", err)
 	}
 	movedToFinal = true
@@ -172,6 +176,10 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 // Upload lo sobrescriba. CreatedAt de la versión es existing.UpdatedAt: el
 // momento en que ESE contenido pasó a ser la versión vigente, no "ahora".
 func (s *FileService) snapshotVersion(ctx context.Context, existing *FileMeta) error {
+	prov, err := s.providers.For(ctx, existing.PoolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	nextNum, err := s.versions.LatestVersionNum(ctx, existing.ID)
 	if err != nil {
 		return err
@@ -180,7 +188,7 @@ func (s *FileService) snapshotVersion(ctx context.Context, existing *FileMeta) e
 
 	oldRel := physicalPath(existing.OwnerID, existing.ParentPath, existing.Name)
 	versionKey := versionStoragePath(existing.OwnerID, existing.ID, nextNum)
-	if err := s.provider.Move(ctx, oldRel, versionKey); err != nil {
+	if err := prov.Move(ctx, oldRel, versionKey); err != nil {
 		return fmt.Errorf("apartando contenido anterior: %w", err)
 	}
 
@@ -198,14 +206,19 @@ func (s *FileService) snapshotVersion(ctx context.Context, existing *FileMeta) e
 		return err
 	}
 
-	return s.enforceMaxVersions(ctx, existing.ID)
+	return s.enforceMaxVersions(ctx, existing.PoolID, existing.ID)
 }
 
 // enforceMaxVersions purga la versión más antigua mientras se exceda el
-// límite configurado (§15 "política automática de limpieza").
-func (s *FileService) enforceMaxVersions(ctx context.Context, fileID string) error {
+// límite configurado (§15 "política automática de limpieza"). El contenido
+// de las versiones vive en el mismo pool que el fichero.
+func (s *FileService) enforceMaxVersions(ctx context.Context, poolID, fileID string) error {
 	if s.maxVersionsPerFile <= 0 {
 		return nil
+	}
+	prov, err := s.providers.For(ctx, poolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
 	}
 	versions, err := s.versions.ListVersions(ctx, fileID) // ya viene ordenado version_num DESC
 	if err != nil {
@@ -213,7 +226,7 @@ func (s *FileService) enforceMaxVersions(ctx context.Context, fileID string) err
 	}
 	for len(versions) > s.maxVersionsPerFile {
 		oldest := versions[len(versions)-1]
-		if err := s.provider.Delete(ctx, oldest.StorageKey); err != nil {
+		if err := prov.Delete(ctx, oldest.StorageKey); err != nil {
 			return fmt.Errorf("purgando contenido de versión antigua: %w", err)
 		}
 		if err := s.versions.DeleteVersion(ctx, oldest.ID); err != nil {
@@ -250,7 +263,11 @@ func (s *FileService) DownloadVersion(ctx context.Context, requesterID, fileID s
 	if err != nil {
 		return nil, nil, err
 	}
-	rc, err := s.provider.Read(ctx, v.StorageKey)
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
+	rc, err := prov.Read(ctx, v.StorageKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("leyendo versión: %w", err)
 	}
@@ -273,6 +290,10 @@ func (s *FileService) RestoreVersion(ctx context.Context, requesterID, fileID st
 	if err != nil {
 		return nil, err
 	}
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 
 	if s.versioningEnabled {
 		if err := s.snapshotVersion(ctx, meta); err != nil {
@@ -280,13 +301,13 @@ func (s *FileService) RestoreVersion(ctx context.Context, requesterID, fileID st
 		}
 	} else {
 		rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
-		if err := s.provider.Delete(ctx, rel); err != nil {
+		if err := prov.Delete(ctx, rel); err != nil {
 			return nil, fmt.Errorf("descartando contenido actual: %w", err)
 		}
 	}
 
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
-	if err := s.provider.Move(ctx, target.StorageKey, rel); err != nil {
+	if err := prov.Move(ctx, target.StorageKey, rel); err != nil {
 		return nil, fmt.Errorf("restaurando versión: %w", err)
 	}
 	if err := s.versions.DeleteVersion(ctx, target.ID); err != nil {
@@ -332,8 +353,12 @@ func (s *FileService) Download(ctx context.Context, requesterID, fileID string) 
 			return nil, nil, ErrForbidden
 		}
 	}
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
-	rc, err := s.provider.Read(ctx, rel)
+	rc, err := prov.Read(ctx, rel)
 	if err != nil {
 		return nil, nil, fmt.Errorf("leyendo archivo: %w", err)
 	}
@@ -374,8 +399,12 @@ func (s *FileService) PermanentlyDeleteFile(ctx context.Context, requesterID, fi
 // permanentlyDeleteFile también purga el historial de versiones (§15): no
 // tiene sentido conservarlo cuando el archivo al que pertenece ya no existe.
 func (s *FileService) permanentlyDeleteFile(ctx context.Context, meta *FileMeta) error {
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
-	if err := s.provider.Delete(ctx, rel); err != nil {
+	if err := prov.Delete(ctx, rel); err != nil {
 		return fmt.Errorf("eliminando contenido: %w", err)
 	}
 
@@ -384,7 +413,7 @@ func (s *FileService) permanentlyDeleteFile(ctx context.Context, meta *FileMeta)
 		return fmt.Errorf("listando versiones a purgar: %w", err)
 	}
 	for _, v := range versions {
-		if err := s.provider.Delete(ctx, v.StorageKey); err != nil {
+		if err := prov.Delete(ctx, v.StorageKey); err != nil {
 			return fmt.Errorf("eliminando contenido de versión %d: %w", v.VersionNum, err)
 		}
 	}
@@ -469,12 +498,16 @@ func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name strin
 	if err != nil {
 		return nil, fmt.Errorf("resolviendo storage pool por defecto: %w", err)
 	}
+	prov, err := s.providers.For(ctx, pool.ID)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	if err := s.rejectIfTrashOccupiesName(ctx, pool.ID, ownerID, parent, name); err != nil {
 		return nil, err
 	}
 
 	rel := physicalPath(ownerID, parent, name)
-	if err := s.provider.MkdirAll(ctx, rel); err != nil {
+	if err := prov.MkdirAll(ctx, rel); err != nil {
 		return nil, fmt.Errorf("creando carpeta física: %w", err)
 	}
 
@@ -518,8 +551,12 @@ func (s *FileService) DeleteDirectory(ctx context.Context, requesterID, dirID st
 		return s.permanentlyDeleteDirectory(ctx, target)
 	}
 
+	prov, err := s.providers.For(ctx, target.PoolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
-	if err := s.provider.Delete(ctx, rel); err != nil {
+	if err := prov.Delete(ctx, rel); err != nil {
 		return fmt.Errorf("eliminando carpeta física: %w", err)
 	}
 	return s.directories.SoftDeleteDirectory(ctx, target.ID, time.Now().UTC())
@@ -546,8 +583,12 @@ func (s *FileService) permanentlyDeleteDirectory(ctx context.Context, target *Di
 		// Si estaba activa (papelera desactivada), el marcador físico
 		// todavía existe y hay que retirarlo; si ya estaba en la papelera,
 		// DeleteDirectory ya lo hizo al trashearla.
+		prov, err := s.providers.For(ctx, target.PoolID)
+		if err != nil {
+			return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+		}
 		rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
-		if err := s.provider.Delete(ctx, rel); err != nil {
+		if err := prov.Delete(ctx, rel); err != nil {
 			return fmt.Errorf("eliminando carpeta física: %w", err)
 		}
 	}
@@ -587,8 +628,12 @@ func (s *FileService) RestoreDirectory(ctx context.Context, requesterID, dirID s
 		}
 		return err
 	}
+	prov, err := s.providers.For(ctx, target.PoolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
-	return s.provider.MkdirAll(ctx, rel)
+	return prov.MkdirAll(ctx, rel)
 }
 
 // PurgeExpiredTrash elimina para siempre cualquier archivo/carpeta que

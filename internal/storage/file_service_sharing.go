@@ -417,8 +417,12 @@ func (s *FileService) DownloadViaPublicShare(ctx context.Context, token, passwor
 		return nil, nil, ErrShareExhausted
 	}
 
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
 	rel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
-	rc, err := s.provider.Read(ctx, rel)
+	rc, err := prov.Read(ctx, rel)
 	if err != nil {
 		return nil, nil, fmt.Errorf("leyendo archivo compartido: %w", err)
 	}

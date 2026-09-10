@@ -25,6 +25,8 @@ type testEnv struct {
 	directories DirectoryRepository
 	versions    VersionRepository
 	shares      ShareRepository
+	pools       *SQLPoolRepository
+	poolDir     string
 	provider    *LocalFilesystemProvider
 	userSvc     *users.Service
 	userRepo    users.Repository
@@ -55,15 +57,20 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	}
 	conn := db.Wrap(cfg.Database.Driver, sqlDB)
 
+	poolDir := t.TempDir()
 	pools := NewSQLPoolRepository(conn)
-	if _, err := EnsureDefaultPool(context.Background(), pools, t.TempDir()); err != nil {
+	if _, err := EnsureDefaultPool(context.Background(), pools, poolDir); err != nil {
 		t.Fatalf("EnsureDefaultPool falló: %v", err)
 	}
 
-	provider, err := NewLocalFilesystemProvider(t.TempDir())
+	// provider de inspección directa del filesystem, sobre la MISMA ruta que
+	// el pool por defecto: el ProviderResolver del servicio resuelve ese
+	// mismo poolDir, así que lo que escribe el servicio se ve por aquí.
+	provider, err := NewLocalFilesystemProvider(poolDir)
 	if err != nil {
 		t.Fatalf("NewLocalFilesystemProvider falló: %v", err)
 	}
+	resolver := NewPoolProviderResolver(pools)
 	files := NewSQLFileRepository(conn)
 	directories := NewSQLDirectoryRepository(conn)
 	versions := NewSQLVersionRepository(conn)
@@ -71,13 +78,15 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	userRepo := users.NewSQLRepository(conn)
 
 	return &testEnv{
-		svc: NewFileService(files, directories, versions, shares, pools, provider, &testPasswordHasher{},
+		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
 			trashEnabled, versioningEnabled, maxVersionsPerFile,
 			sharingEnabled, publicLinksEnabled),
 		files:       files,
 		directories: directories,
 		versions:    versions,
 		shares:      shares,
+		pools:       pools,
+		poolDir:     poolDir,
 		provider:    provider,
 		userSvc:     users.NewService(userRepo),
 		userRepo:    userRepo,

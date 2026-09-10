@@ -273,6 +273,27 @@ func TestFullHappyPathFlow(t *testing.T) {
 		}
 	})
 
+	t.Run("GET /storage/disks es admin-only y devuelve una lista", func(t *testing.T) {
+		resp := c.do(http.MethodGet, "/api/v1/storage/disks", nil, attackerToken)
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("un usuario normal: status = %d, esperado 403", resp.StatusCode)
+		}
+		resp.Body.Close()
+
+		resp = c.do(http.MethodGet, "/api/v1/storage/disks", nil, adminToken)
+		defer resp.Body.Close()
+		// En un SO soportado: 200 + array JSON. En uno sin adaptador: 501.
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNotImplemented {
+			t.Fatalf("admin: status = %d, esperado 200 o 501", resp.StatusCode)
+		}
+		if resp.StatusCode == http.StatusOK {
+			var disks []map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&disks); err != nil {
+				t.Fatalf("el cuerpo debería ser un array JSON de discos: %v", err)
+			}
+		}
+	})
+
 	t.Run("borrar archivo lo mueve a la papelera, restaurar y purgar para siempre", func(t *testing.T) {
 		// Delete por defecto es soft-delete (§16): el archivo sigue
 		// existiendo (y siendo descargable por su dueño) pero desaparece

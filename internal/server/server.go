@@ -89,22 +89,23 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	shareRepo := storage.NewSQLShareRepository(conn)
 	auditRepo := audit.NewSQLRepository(conn)
 
-	pool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, layout.UserData)
+	defaultPool, err := storage.EnsureDefaultPool(context.Background(), poolRepo, layout.UserData)
 	if err != nil {
 		sqlDB.Close()
 		return nil, fmt.Errorf("preparando storage pool por defecto: %w", err)
 	}
-	provider, err := storage.NewLocalFilesystemProvider(pool.Path)
-	if err != nil {
-		sqlDB.Close()
-		return nil, fmt.Errorf("preparando proveedor de almacenamiento: %w", err)
-	}
+	logger.Info("storage pool por defecto", "id", defaultPool.ID, "name", defaultPool.Name, "path", defaultPool.Path)
+
+	// El I/O físico de cada fichero va al Provider de SU pool (files.pool_id),
+	// resuelto y cacheado por poolID. Con un solo pool el comportamiento es
+	// idéntico al anterior (un único Provider).
+	providers := storage.NewPoolProviderResolver(poolRepo)
 
 	hasher := auth.NewHasher(cfg.Security.Argon2)
 	userSvc := users.NewService(userRepo)
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
-	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, provider, hasher,
+	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)

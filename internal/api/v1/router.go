@@ -83,6 +83,8 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Delete("/invitations/{id}", h.RevokeInvitation)
 
 			r.Get("/audit", h.ListAuditEvents)
+
+			r.Get("/storage/disks", h.ListDisks)
 		})
 	})
 

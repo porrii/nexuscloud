@@ -18,7 +18,7 @@ func testConfig(t *testing.T) *config.Config {
 // currentSchemaVersion es la versión de esquema más alta esperada tras
 // aplicar todas las migraciones embebidas. Actualízala al añadir una nueva
 // migración (§8: cada una suma, nunca se reescribe una ya aplicada).
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 func TestMigrateAppliesFullSchema(t *testing.T) {
 	cfg := testConfig(t)
@@ -84,6 +84,13 @@ func TestMigrateAppliesFullSchema(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("shares = %d filas, esperado 0 en un esquema recién migrado", count)
+	}
+
+	// storage_pools gana las columnas de política (0006).
+	if err := conn.QueryRow(
+		"SELECT COUNT(*) FROM storage_pools WHERE utilization_policy = 'fill' AND backup_policy = 'inherit' AND versioning_policy = 'inherit' AND snapshot_policy = 'none'",
+	).Scan(&count); err != nil {
+		t.Fatalf("las columnas de política de storage_pools deberían existir tras la migración 0006: %v", err)
 	}
 }
 
