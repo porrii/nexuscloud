@@ -9,6 +9,7 @@ import '../domain/repositories/local_trash_store.dart';
 import '../domain/repositories/sync_config_repository.dart';
 import '../domain/repositories/sync_state_store.dart';
 import '../domain/services/auto_sync_scheduler.dart';
+import '../domain/services/multi_pair_sync_coordinator.dart';
 import '../domain/services/sync_engine.dart';
 
 void configureSyncDependencies(GetIt sl) {
@@ -24,8 +25,11 @@ void configureSyncDependencies(GetIt sl) {
       ),
     )
     ..registerLazySingleton(
+      () => MultiPairSyncCoordinator(syncEngine: sl<SyncEngine>()),
+    )
+    ..registerLazySingleton(
       () => AutoSyncScheduler(
-        syncEngine: sl<SyncEngine>(),
+        coordinator: sl<MultiPairSyncCoordinator>(),
         configRepository: sl<SyncConfigRepository>(),
         authRepository: sl<AuthRepository>(),
       ),

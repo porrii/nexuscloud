@@ -12,14 +12,16 @@ import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/auto_sync_settings.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/pair_sync_outcome.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
-import 'package:nexuscloud_client/features/sync/domain/entities/sync_result.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair_config.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_state_entry.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/local_trash_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_config_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_state_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/auto_sync_scheduler.dart';
+import 'package:nexuscloud_client/features/sync/domain/services/multi_pair_sync_coordinator.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/sync_engine.dart';
 
 /// A propósito NO es un `Timer` real (ni siquiera `Timer(Duration.zero, ...)`):
@@ -101,37 +103,25 @@ class _FakeAuthRepository implements AuthRepository {
 }
 
 class _FakeSyncConfigRepository implements SyncConfigRepository {
-  SyncPair? pair;
+  List<SyncPairConfig> pairs = [];
   AutoSyncSettings autoSync = AutoSyncSettings.disabled;
   ({DateTime at, String summary})? lastOutcome;
   int readCallCount = 0;
 
   @override
-  Future<void> save(SyncPair pair) async => this.pair = pair;
+  Future<void> savePairs(List<SyncPairConfig> pairs) async => this.pairs = pairs;
 
   @override
-  Future<SyncPair?> read() async {
+  Future<List<SyncPairConfig>> readPairs() async {
     readCallCount++;
-    return pair;
+    return pairs;
   }
-
-  @override
-  Future<void> clear() async => pair = null;
 
   @override
   Future<void> saveAutoSync(AutoSyncSettings settings) async => autoSync = settings;
 
   @override
   Future<AutoSyncSettings> readAutoSync() async => autoSync;
-
-  SyncDirection direction = SyncDirection.download;
-
-  @override
-  Future<void> saveDirection(SyncDirection direction) async =>
-      this.direction = direction;
-
-  @override
-  Future<SyncDirection> readDirection() async => direction;
 
   @override
   Future<void> saveLastAutoSyncOutcome({
@@ -280,7 +270,7 @@ void main() {
       trashStore: _InMemoryLocalTrashStore(),
     );
     scheduler = AutoSyncScheduler(
-      syncEngine: syncEngine,
+      coordinator: MultiPairSyncCoordinator(syncEngine: syncEngine),
       configRepository: fakeConfigRepo,
       authRepository: fakeAuth,
       createTimer: timerFactory.call,
@@ -317,10 +307,15 @@ void main() {
   });
 
   test(
-    'un tick sin sesión activa no hace nada, ni siquiera lee el par configurado',
+    'un tick sin sesión activa no hace nada, ni siquiera lee los pares configurados',
     () async {
       fakeAuth.currentUser = null;
-      fakeConfigRepo.pair = const SyncPair(remotePath: '/x', localPath: '/y');
+      fakeConfigRepo.pairs = [
+        const SyncPairConfig(
+          pair: SyncPair(remotePath: '/x', localPath: '/y'),
+          direction: SyncDirection.download,
+        ),
+      ];
       await scheduler.updateSettings(
         const AutoSyncSettings(enabled: true, intervalMinutes: 5),
       );
@@ -334,10 +329,10 @@ void main() {
   );
 
   test(
-    'un tick con sesión pero sin par configurado no llama a syncNow',
+    'un tick con sesión pero sin pares configurados no sincroniza nada',
     () async {
       fakeAuth.currentUser = _someUser;
-      fakeConfigRepo.pair = null;
+      fakeConfigRepo.pairs = [];
       await scheduler.updateSettings(
         const AutoSyncSettings(enabled: true, intervalMinutes: 5),
       );
@@ -352,27 +347,30 @@ void main() {
   );
 
   test(
-    'un tick con sesión y par configurado sincroniza y persiste el resultado',
+    'un tick con sesión y un par configurado sincroniza y persiste el resultado',
     () async {
       fakeAuth.currentUser = _someUser;
-      fakeConfigRepo.pair = const SyncPair(
-        remotePath: '/sync-root',
-        localPath: '/no-se-toca-en-este-test',
-      );
+      fakeConfigRepo.pairs = [
+        const SyncPairConfig(
+          pair: SyncPair(remotePath: '/sync-root', localPath: '/no-se-toca-en-este-test'),
+          direction: SyncDirection.download,
+        ),
+      ];
       fakeFilesRepository.listingsByPath['/sync-root'] =
           const DirectoryListing(directories: [], files: []);
       await scheduler.updateSettings(
         const AutoSyncSettings(enabled: true, intervalMinutes: 5),
       );
 
-      final results = <SyncResult>[];
+      final results = <List<PairSyncOutcome>>[];
       final subscription = scheduler.onResult.listen(results.add);
 
       timerFactory.fire();
       await pumpEventQueue();
 
       expect(results, hasLength(1));
-      expect(results.single.downloaded, 0);
+      expect(results.single, hasLength(1));
+      expect(results.single.single.result?.downloaded, 0);
       expect(fakeConfigRepo.lastOutcome, isNotNull);
       expect(fakeConfigRepo.lastOutcome!.summary, contains('0 descargados'));
       await subscription.cancel();
@@ -380,26 +378,73 @@ void main() {
   );
 
   test(
-    'un tick que falla en el arranque persiste un resumen de error en vez de nada',
+    'un tick sincroniza VARIOS pares configurados en la misma pasada',
     () async {
       fakeAuth.currentUser = _someUser;
-      fakeConfigRepo.pair = const SyncPair(
-        remotePath: '/no-existe',
-        localPath: '/no-se-toca-en-este-test',
-      );
-      // No se registra ningún listado para '/no-existe' -> `list()` lanza.
+      fakeConfigRepo.pairs = const [
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/root-a', localPath: '/local-a'),
+          direction: SyncDirection.download,
+        ),
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/root-b', localPath: '/local-b'),
+          direction: SyncDirection.download,
+        ),
+      ];
+      fakeFilesRepository.listingsByPath['/root-a'] =
+          const DirectoryListing(directories: [], files: []);
+      fakeFilesRepository.listingsByPath['/root-b'] =
+          const DirectoryListing(directories: [], files: []);
       await scheduler.updateSettings(
         const AutoSyncSettings(enabled: true, intervalMinutes: 5),
       );
 
-      final results = <SyncResult>[];
+      final results = <List<PairSyncOutcome>>[];
       final subscription = scheduler.onResult.listen(results.add);
 
       timerFactory.fire();
       await pumpEventQueue();
 
-      expect(results, isEmpty);
-      expect(fakeConfigRepo.lastOutcome, isNotNull);
+      expect(results, hasLength(1));
+      expect(results.single, hasLength(2));
+      expect(results.single.map((o) => o.pair.remotePath), ['/root-a', '/root-b']);
+      expect(fakeConfigRepo.lastOutcome!.summary, contains('local-a'));
+      expect(fakeConfigRepo.lastOutcome!.summary, contains('local-b'));
+      await subscription.cancel();
+    },
+  );
+
+  test(
+    'un tick que falla en el arranque de un par persiste su error sin bloquear el resto',
+    () async {
+      fakeAuth.currentUser = _someUser;
+      fakeConfigRepo.pairs = const [
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/no-existe', localPath: '/no-se-toca-en-este-test'),
+          direction: SyncDirection.download,
+        ),
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/root-b', localPath: '/local-b'),
+          direction: SyncDirection.download,
+        ),
+      ];
+      // No se registra ningún listado para '/no-existe' -> `list()` lanza.
+      fakeFilesRepository.listingsByPath['/root-b'] =
+          const DirectoryListing(directories: [], files: []);
+      await scheduler.updateSettings(
+        const AutoSyncSettings(enabled: true, intervalMinutes: 5),
+      );
+
+      final results = <List<PairSyncOutcome>>[];
+      final subscription = scheduler.onResult.listen(results.add);
+
+      timerFactory.fire();
+      await pumpEventQueue();
+
+      expect(results, hasLength(1));
+      final outcomes = results.single;
+      expect(outcomes[0].startupError, isNotNull);
+      expect(outcomes[1].result?.downloaded, 0);
       expect(fakeConfigRepo.lastOutcome!.summary, contains('Error'));
       await subscription.cancel();
     },

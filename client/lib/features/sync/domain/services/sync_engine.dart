@@ -162,41 +162,55 @@ class SyncEngine {
       RegExp(r' \(conflicto \d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2}\)');
   static const _osJunkNames = {'.ds_store', 'thumbs.db', 'desktop.ini'};
 
-  Future<SyncResult>? _inFlight;
+  /// Una entrada por CADA par con una sincronización en curso, indexada por
+  /// `pair.stableKey` (slice 15, ADR-014). Antes de esto era un único
+  /// `Future<SyncResult>?` que asumía que solo existía un par -- con varios
+  /// pares, eso habría hecho que una llamada para el par B mientras el par
+  /// A seguía en curso se uniera POR ERROR a la Future de A y devolviera su
+  /// resultado: el par B nunca se sincronizaría de verdad, en silencio. Con
+  /// la guarda por par, dos pares distintos pueden estar en curso a la vez
+  /// sin pisarse -- lo que sí sigue compartiéndose es una segunda llamada
+  /// para el MISMO par (ver más abajo, comportamiento sin cambios).
+  final _inFlightByPairKey = <String, Future<SyncResult>>{};
   final _busyController = StreamController<bool>.broadcast();
 
-  /// Emite `true` justo cuando arranca cualquier sincronización y `false`
-  /// justo cuando termina (con éxito o error) -- sin importar si la
-  /// arrancó el botón manual de `SyncSettingsPage` o `AutoSyncScheduler`.
+  /// Emite `true` en cuanto CUALQUIER par empieza a sincronizarse y `false`
+  /// solo cuando ya no queda ninguno en curso -- sin importar si lo arrancó
+  /// el botón manual de `SyncSettingsPage` o un tick de
+  /// `AutoSyncScheduler`/`MultiPairSyncCoordinator`.
   Stream<bool> get onBusyChanged => _busyController.stream;
 
-  bool get isRunning => _inFlight != null;
+  bool get isRunning => _inFlightByPairKey.isNotEmpty;
 
-  /// Deliberadamente NO `async`: el chequeo+asignación de [_inFlight] tiene
-  /// que ocurrir en el mismo tramo síncrono, antes de que `_runSync` ceda
-  /// el control en su primer `await` interno -- así dos llamadas seguidas
-  /// (aunque vengan del mismo evento) ven la guarda de forma consistente.
+  /// Deliberadamente NO `async`: el chequeo+asignación en
+  /// [_inFlightByPairKey] tiene que ocurrir en el mismo tramo síncrono,
+  /// antes de que `_runSync` ceda el control en su primer `await` interno --
+  /// así dos llamadas seguidas para el mismo par (aunque vengan del mismo
+  /// evento) ven la guarda de forma consistente.
   ///
-  /// Una segunda llamada mientras la primera sigue en curso NO lanza ni se
-  /// descarta: se une a la ya-en-curso y recibe el mismo [SyncResult]. Si
-  /// esa segunda llamada pedía otra [direction] o [confirmedDeletePaths],
-  /// se ignora -- gana la que arrancó; es un caso límite raro y no vale la
-  /// pena encolarlo.
+  /// Una segunda llamada para el MISMO [pair] mientras la primera sigue en
+  /// curso NO lanza ni se descarta: se une a la ya-en-curso y recibe el
+  /// mismo [SyncResult]. Si esa segunda llamada pedía otra [direction] o
+  /// [confirmedDeletePaths], se ignora -- gana la que arrancó; es un caso
+  /// límite raro y no vale la pena encolarlo. Una llamada para un par
+  /// DISTINTO nunca se une a esta -- ver la nota de [_inFlightByPairKey].
   ///
   /// [confirmedDeletePaths] son claves (`PendingDelete.key`) que el usuario
   /// ya confirmó explícitamente en una llamada anterior cuyo resultado trajo
   /// `pendingDeletes` no vacío -- esos borrados se ejecutan sin importar el
-  /// tamaño del lote. `AutoSyncScheduler` nunca lo rellena.
+  /// tamaño del lote. `AutoSyncScheduler`/`MultiPairSyncCoordinator` nunca
+  /// lo rellenan.
   Future<SyncResult> syncNow(
     SyncPair pair, {
     SyncDirection direction = SyncDirection.download,
     void Function(String status)? onStatus,
     Set<String>? confirmedDeletePaths,
   }) {
-    final existing = _inFlight;
+    final key = pair.stableKey;
+    final existing = _inFlightByPairKey[key];
     if (existing != null) {
       onStatus?.call(
-        'Ya hay una sincronización en curso; esperando a que termine...',
+        'Ya hay una sincronización en curso para este par; esperando a que termine...',
       );
       return existing;
     }
@@ -206,16 +220,17 @@ class SyncEngine {
       confirmedDeletePaths ?? const {},
       onStatus,
     );
-    _inFlight = future;
-    _busyController.add(true);
+    final wasIdle = _inFlightByPairKey.isEmpty;
+    _inFlightByPairKey[key] = future;
+    if (wasIdle) _busyController.add(true);
     // `.whenComplete(...)` devuelve una Future NUEVA e independiente -- si
     // no se descarta con `.ignore()`, un fallo de arranque dispara un
     // reporte de "error no capturado" de más, encima del error que sí
     // recibe quien de verdad esperaba `syncNow`.
     future
         .whenComplete(() {
-          _inFlight = null;
-          _busyController.add(false);
+          _inFlightByPairKey.remove(key);
+          if (_inFlightByPairKey.isEmpty) _busyController.add(false);
         })
         .ignore();
     return future;

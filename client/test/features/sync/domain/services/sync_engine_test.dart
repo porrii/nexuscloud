@@ -461,6 +461,45 @@ void main() {
   );
 
   test(
+    'dos pares DISTINTOS con syncNow solapado se sincronizan los dos de verdad (slice 15, ADR-014)',
+    () async {
+      // Antes de la reentrancia por par, un único campo `_inFlight` habría
+      // fusionado esta segunda llamada con la primera -- el par B nunca se
+      // sincronizaría de verdad, en silencio (ver ADR-014).
+      fake.listingsByPath['/root-a'] = DirectoryListing(
+        directories: const [],
+        files: [_file(id: 'f-a', parentPath: '/root-a', name: 'a.txt', sizeBytes: 3)],
+      );
+      fake.listingsByPath['/root-b'] = DirectoryListing(
+        directories: const [],
+        files: [_file(id: 'f-b', parentPath: '/root-b', name: 'b.txt', sizeBytes: 5)],
+      );
+      fake.listGate = Completer<void>();
+
+      final pairA = SyncPair(remotePath: '/root-a', localPath: '${tempDir.path}/a');
+      final pairB = SyncPair(remotePath: '/root-b', localPath: '${tempDir.path}/b');
+
+      final futureA = engine.syncNow(pairA);
+      final futureB = engine.syncNow(pairB);
+
+      // Futures DISTINTAS -- la guarda antigua las habría fusionado en una.
+      expect(identical(futureA, futureB), isFalse);
+      expect(engine.isRunning, isTrue);
+
+      fake.listGate!.complete();
+      final resultA = await futureA;
+      final resultB = await futureB;
+
+      expect(resultA.downloaded, 1);
+      expect(resultB.downloaded, 1);
+      expect(fake.listCallCount, 2);
+      expect(File('${tempDir.path}/a/a.txt').existsSync(), isTrue);
+      expect(File('${tempDir.path}/b/b.txt').existsSync(), isTrue);
+      expect(engine.isRunning, isFalse);
+    },
+  );
+
+  test(
     'onBusyChanged emite true al arrancar y false al terminar, incluso en error',
     () async {
       final events = <bool>[];

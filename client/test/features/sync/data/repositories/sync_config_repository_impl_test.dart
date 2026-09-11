@@ -3,6 +3,7 @@ import 'package:nexuscloud_client/features/sync/data/repositories/sync_config_re
 import 'package:nexuscloud_client/features/sync/domain/entities/auto_sync_settings.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair_config.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
@@ -12,31 +13,93 @@ void main() {
     SharedPreferences.setMockInitialValues({});
   });
 
-  test('read devuelve null si no hay nada guardado todavía', () async {
+  test('readPairs devuelve una lista vacía si no hay nada guardado', () async {
     final repo = SyncConfigRepositoryImpl();
 
-    expect(await repo.read(), isNull);
+    expect(await repo.readPairs(), isEmpty);
   });
 
-  test('save y read devuelven el mismo par', () async {
+  test('savePairs y readPairs hacen round-trip con varios pares y direcciones', () async {
     final repo = SyncConfigRepositoryImpl();
-    const pair = SyncPair(
-      remotePath: '/Documentos',
-      localPath: r'C:\Users\ivan\NexusCloud',
-    );
+    const pairs = [
+      SyncPairConfig(
+        pair: SyncPair(remotePath: '/Documentos', localPath: r'C:\Users\ivan\Documentos'),
+        direction: SyncDirection.both,
+      ),
+      SyncPairConfig(
+        pair: SyncPair(remotePath: '/Fotos', localPath: r'C:\Users\ivan\Fotos'),
+        direction: SyncDirection.upload,
+      ),
+    ];
 
-    await repo.save(pair);
+    await repo.savePairs(pairs);
 
-    expect(await repo.read(), pair);
+    expect(await repo.readPairs(), pairs);
   });
 
-  test('clear borra el par guardado', () async {
+  test('savePairs con una lista vacía deja readPairs en vacío', () async {
     final repo = SyncConfigRepositoryImpl();
-    await repo.save(const SyncPair(remotePath: '/', localPath: '/tmp'));
+    await repo.savePairs(const [
+      SyncPairConfig(
+        pair: SyncPair(remotePath: '/', localPath: '/tmp'),
+        direction: SyncDirection.download,
+      ),
+    ]);
 
-    await repo.clear();
+    await repo.savePairs(const []);
 
-    expect(await repo.read(), isNull);
+    expect(await repo.readPairs(), isEmpty);
+  });
+
+  group('migración desde el único par de antes del slice 15', () {
+    test('con remote_path/local_path/direction antiguos, migra a una lista de un elemento', () async {
+      SharedPreferences.setMockInitialValues({
+        'nexuscloud.sync.remote_path': '/Documentos',
+        'nexuscloud.sync.local_path': r'C:\local',
+        'nexuscloud.sync.direction': 'both',
+      });
+      final repo = SyncConfigRepositoryImpl();
+
+      final pairs = await repo.readPairs();
+
+      expect(pairs, [
+        const SyncPairConfig(
+          pair: SyncPair(remotePath: '/Documentos', localPath: r'C:\local'),
+          direction: SyncDirection.both,
+        ),
+      ]);
+    });
+
+    test('sin direction antiguo (de antes del slice 13), usa download por defecto', () async {
+      SharedPreferences.setMockInitialValues({
+        'nexuscloud.sync.remote_path': '/',
+        'nexuscloud.sync.local_path': r'C:\local',
+      });
+      final repo = SyncConfigRepositoryImpl();
+
+      final pairs = await repo.readPairs();
+
+      expect(pairs.single.direction, SyncDirection.download);
+    });
+
+    test('la migración se persiste y las claves antiguas desaparecen -- no se repite', () async {
+      SharedPreferences.setMockInitialValues({
+        'nexuscloud.sync.remote_path': '/',
+        'nexuscloud.sync.local_path': r'C:\local',
+      });
+      final repo = SyncConfigRepositoryImpl();
+
+      final first = await repo.readPairs();
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.containsKey('nexuscloud.sync.remote_path'), isFalse);
+      expect(prefs.containsKey('nexuscloud.sync.local_path'), isFalse);
+      expect(prefs.containsKey('nexuscloud.sync.direction'), isFalse);
+
+      // Segunda lectura: entra directa por la lista ya persistida, no por
+      // la migración (que ya no tiene nada que mirar).
+      final second = await repo.readPairs();
+      expect(second, first);
+    });
   });
 
   test('readAutoSync devuelve AutoSyncSettings.disabled si no hay nada guardado', () async {
@@ -70,29 +133,5 @@ void main() {
     expect(outcome, isNotNull);
     expect(outcome!.at, at);
     expect(outcome.summary, '3 descargados, 0 errores');
-  });
-
-  test('readDirection devuelve download si no hay nada guardado todavía', () async {
-    final repo = SyncConfigRepositoryImpl();
-
-    expect(await repo.readDirection(), SyncDirection.download);
-  });
-
-  test('saveDirection y readDirection hacen round-trip para los tres modos', () async {
-    final repo = SyncConfigRepositoryImpl();
-
-    for (final direction in SyncDirection.values) {
-      await repo.saveDirection(direction);
-      expect(await repo.readDirection(), direction);
-    }
-  });
-
-  test('readDirection cae a download ante un valor persistido desconocido', () async {
-    SharedPreferences.setMockInitialValues(
-      {'nexuscloud.sync.direction': 'modo-de-una-version-futura'},
-    );
-    final repo = SyncConfigRepositoryImpl();
-
-    expect(await repo.readDirection(), SyncDirection.download);
   });
 }
