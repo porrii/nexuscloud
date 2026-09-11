@@ -1,5 +1,7 @@
 import 'package:equatable/equatable.dart';
 
+import 'pending_delete.dart';
+
 /// Resultado de una pasada de `SyncEngine.syncNow`.
 ///
 /// Desde el slice 13 el motor puede ir en tres sentidos
@@ -10,6 +12,14 @@ import 'package:equatable/equatable.dart';
 /// archivos que cambiaron en los DOS lados desde la última sincronización:
 /// para esos no se sobrescribe nada (§40), se deja una *conflict copy*
 /// junto al archivo local y se listan aquí.
+///
+/// Desde el slice 14 (ADR-013), en modo `Ambos`: [deletedRemote] cuenta los
+/// archivos borrados localmente y propagados a la papelera del servidor,
+/// [deletedLocal] los borrados en remoto y propagados a la papelera local.
+/// [pendingDeletes] lista los borrados detectados que NO se ejecutaron
+/// porque el lote superaba el umbral anti-"borrado masivo" -- quien llama
+/// debe mostrarlos al usuario y, si los confirma, invocar `syncNow` de
+/// nuevo con sus claves en `confirmedDeletePaths`.
 class SyncResult extends Equatable {
   const SyncResult({
     required this.downloaded,
@@ -17,6 +27,9 @@ class SyncResult extends Equatable {
     required this.skipped,
     required this.errors,
     required this.conflicts,
+    required this.deletedRemote,
+    required this.deletedLocal,
+    required this.pendingDeletes,
     required this.finishedAt,
   });
 
@@ -25,6 +38,9 @@ class SyncResult extends Equatable {
   final int skipped;
   final List<String> errors;
   final List<String> conflicts;
+  final int deletedRemote;
+  final int deletedLocal;
+  final List<PendingDelete> pendingDeletes;
   final DateTime finishedAt;
 
   @override
@@ -34,6 +50,9 @@ class SyncResult extends Equatable {
         skipped,
         errors,
         conflicts,
+        deletedRemote,
+        deletedLocal,
+        pendingDeletes,
         finishedAt,
       ];
 }

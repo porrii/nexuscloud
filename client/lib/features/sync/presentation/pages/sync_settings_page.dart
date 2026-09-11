@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/network/api_exception.dart';
 import '../../../../core/storage/window_preferences_store.dart';
+import '../../../../core/widgets/confirm_dialog.dart';
 import '../../../../core/window/app_tray_service.dart';
 import '../../../../core/window/launch_at_startup_service.dart';
 import '../../domain/entities/auto_sync_settings.dart';
+import '../../domain/entities/pending_delete.dart';
 import '../../domain/entities/sync_direction.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_result.dart';
@@ -277,7 +279,14 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
     final pair = SyncPair(remotePath: remotePath, localPath: localPath);
     await _configRepository.save(pair);
+    await _runSync(pair);
+  }
 
+  /// Compartido entre el botón "Sincronizar ahora" y la re-sincronización
+  /// que dispara `_confirmPendingDeletes` tras confirmar un lote de
+  /// borrados -- mismo flujo, la única diferencia es si se pasan
+  /// [confirmedDeletePaths] (ADR-013).
+  Future<void> _runSync(SyncPair pair, {Set<String>? confirmedDeletePaths}) async {
     setState(() {
       _syncing = true;
       _startError = null;
@@ -289,6 +298,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       final result = await _syncEngine.syncNow(
         pair,
         direction: _direction,
+        confirmedDeletePaths: confirmedDeletePaths,
         onStatus: (status) {
           if (!mounted) return;
           setState(() => _statusMessage = status);
@@ -300,6 +310,13 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         _statusMessage = null;
         _lastResult = result;
       });
+      // Solo un lote NUEVO dispara el diálogo aquí, justo tras un sync
+      // manual -- ver el botón "Revisar y confirmar borrados" más abajo
+      // para el caso de un lote que llegó de un tick automático con la
+      // página ya abierta (ADR-013: nunca se confirma solo).
+      if (result.pendingDeletes.isNotEmpty) {
+        await _confirmPendingDeletes(result.pendingDeletes);
+      }
     } on ApiException catch (e) {
       // Fallo de arranque (p.ej. la carpeta remota configurada ya no
       // existe) -- distinto de los errores por archivo, que van dentro
@@ -311,6 +328,40 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
         _startError = e.message;
       });
     }
+  }
+
+  /// Muestra la lista real de borrados detectados (nunca solo una cifra) y,
+  /// si el usuario confirma, vuelve a sincronizar pasando sus claves --
+  /// ADR-013, guarda anti-"borrado masivo". Cancelar no hace nada más: el
+  /// mismo lote reaparecerá como pendiente en la próxima sincronización.
+  Future<void> _confirmPendingDeletes(List<PendingDelete> pending) async {
+    if (!mounted || pending.isEmpty) return;
+    final remotePath = _remotePathController.text.trim();
+    final localPath = _localPath;
+    if (remotePath.isEmpty || localPath == null) return;
+
+    final details = pending
+        .map((p) {
+          final hint = p.direction == DeleteDirection.toRemote
+              ? 'se borraría en el servidor (papelera)'
+              : 'se movería a la papelera local';
+          return '${p.displayPath} -- $hint';
+        })
+        .join('\n');
+
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Confirmar ${pending.length} borrados',
+      message: 'Estos archivos desaparecieron de un lado desde la última '
+          'sincronización. Nada se borra para siempre -- van a una '
+          'papelera, recuperable. Revísalos antes de confirmar:\n\n$details',
+      confirmLabel: 'Borrar ${pending.length}',
+      danger: true,
+    );
+    if (!confirmed || !mounted) return;
+
+    final pair = SyncPair(remotePath: remotePath, localPath: localPath);
+    await _runSync(pair, confirmedDeletePaths: {for (final p in pending) p.key});
   }
 
   @override
@@ -334,13 +385,17 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                 Text(
                   'Sincroniza una carpeta remota con una carpeta local. '
                   'Elige el sentido: "Descargar" solo trae del servidor, '
-                  '"Subir" solo envía, "Ambos" reconcilia los dos lados. '
-                  'Ningún modo borra nada todavía: un archivo que quites de '
-                  'un lado se vuelve a traer del otro. En "Ambos", si un '
-                  'archivo cambió en los dos sitios desde la última '
-                  'sincronización, no se sobrescribe nada -- se deja una '
-                  'copia "(conflicto ...)" al lado para que la revises. '
-                  'Puedes activar la sincronización automática más abajo: '
+                  '"Subir" solo envía, "Ambos" reconcilia los dos lados. En '
+                  '"Descargar"/"Subir" nada se borra nunca: un archivo que '
+                  'falte en el lado no tocado se vuelve a traer del otro. '
+                  'En "Ambos", si un archivo cambió en los dos sitios desde '
+                  'la última sincronización, no se sobrescribe nada -- se '
+                  'deja una copia "(conflicto ...)" al lado para que la '
+                  'revises; y si lo borras en un lado, se borra también en '
+                  'el otro (a una papelera, recuperable) -- salvo que sean '
+                  'muchos de golpe, en cuyo caso se te pide confirmar antes '
+                  'viendo la lista real. Puedes activar la sincronización '
+                  'automática más abajo: '
                   'mientras la app esté abierta, se repetirá sola en el '
                   'intervalo elegido. Si cierras la app se detiene -- salvo '
                   'que también actives "Minimizar a la bandeja al cerrar". Y '
@@ -503,9 +558,36 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                     '${_lastResult!.downloaded} descargados, '
                     '${_lastResult!.uploaded} subidos, '
                     '${_lastResult!.skipped} ya al día, '
+                    '${_lastResult!.deletedRemote + _lastResult!.deletedLocal} borrados, '
                     '${_lastResult!.conflicts.length} conflictos, '
                     '${_lastResult!.errors.length} errores',
                   ),
+                  if (_lastResult!.pendingDeletes.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '${_lastResult!.pendingDeletes.length} borrados '
+                      'detectados no se ejecutaron todavía (lote grande, '
+                      'hace falta tu confirmación):',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 160),
+                      child: ListView(
+                        shrinkWrap: true,
+                        children: [
+                          for (final pending in _lastResult!.pendingDeletes)
+                            Text('• ${pending.displayPath}'),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton(
+                      onPressed: syncDisabled
+                          ? null
+                          : () => _confirmPendingDeletes(_lastResult!.pendingDeletes),
+                      child: const Text('Revisar y confirmar borrados'),
+                    ),
+                  ],
                   if (_lastResult!.conflicts.isNotEmpty) ...[
                     const SizedBox(height: 8),
                     Text(

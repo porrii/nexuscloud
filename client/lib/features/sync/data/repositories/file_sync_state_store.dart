@@ -1,7 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
@@ -35,15 +34,10 @@ class FileSyncStateStore implements SyncStateStore {
     return Directory(p.join(base.path, 'sync_state'));
   }
 
-  /// Nombre de fichero derivado del par -- hash para no meter rutas (que
-  /// pueden llevar caracteres inválidos para un nombre de fichero, o ser
-  /// larguísimas) en el nombre. Cambiar de carpeta remota o local ⇒ hash
-  /// distinto ⇒ manifiesto nuevo, empezando de cero.
-  String _fileNameFor(SyncPair pair) {
-    final raw = '${pair.remotePath}|${pair.localPath}';
-    final digest = sha256.convert(utf8.encode(raw)).toString();
-    return '${digest.substring(0, 16)}.json';
-  }
+  /// Nombre de fichero derivado del par -- ver `SyncPair.stableKey` (ADR-013
+  /// lo movió ahí para que `FileLocalTrashStore` reutilice el mismo hash sin
+  /// duplicar la lógica).
+  String _fileNameFor(SyncPair pair) => '${pair.stableKey}.json';
 
   Future<File> _fileFor(SyncPair pair) async =>
       File(p.join((await _stateDir()).path, _fileNameFor(pair)));

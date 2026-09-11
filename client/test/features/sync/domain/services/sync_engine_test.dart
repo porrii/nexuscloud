@@ -10,11 +10,13 @@ import 'package:nexuscloud_client/features/files/domain/entities/directory_listi
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
+import 'package:nexuscloud_client/features/sync/data/repositories/file_local_trash_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_state_entry.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_state_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/sync_engine.dart';
+import 'package:path/path.dart' as p;
 
 /// Fake con un árbol remoto MUTABLE: `uploadFile`/`createDirectory` lo
 /// modifican igual que haría el servidor real, para poder encadenar dos
@@ -182,9 +184,26 @@ class _FakeFilesRepository implements FilesRepository {
     await File(saveToPath).writeAsBytes(content);
   }
 
+  /// `(fileId, permanent)` de cada llamada -- los tests de borrados
+  /// comprueban que la propagación siempre usa la papelera (`permanent:
+  /// false`, ADR-013), nunca un borrado definitivo directo.
+  final List<(String, bool)> deleteFileCalls = [];
+
   @override
-  Future<void> deleteFile(String fileId, {bool permanent = false}) =>
-      throw UnimplementedError();
+  Future<void> deleteFile(String fileId, {bool permanent = false}) async {
+    deleteFileCalls.add((fileId, permanent));
+    // Igual que haría el servidor real tras mover a la papelera: un
+    // recorrido remoto posterior ya no debe volver a ver este archivo.
+    for (final path in listingsByPath.keys.toList()) {
+      final listing = listingsByPath[path]!;
+      if (listing.files.any((f) => f.id == fileId)) {
+        listingsByPath[path] = DirectoryListing(
+          directories: listing.directories,
+          files: listing.files.where((f) => f.id != fileId).toList(),
+        );
+      }
+    }
+  }
 
   @override
   Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
@@ -259,19 +278,24 @@ String _sha(List<int> bytes) => sha256.convert(bytes).toString();
 
 void main() {
   late Directory tempDir;
+  late Directory trashDir;
   late _FakeFilesRepository fake;
   late _InMemorySyncStateStore stateStore;
+  late FileLocalTrashStore trashStore;
   late SyncEngine engine;
 
   setUp(() {
     tempDir = Directory.systemTemp.createTempSync('nexuscloud_sync_');
+    trashDir = Directory.systemTemp.createTempSync('nexuscloud_trash_');
     fake = _FakeFilesRepository();
     stateStore = _InMemorySyncStateStore();
-    engine = SyncEngine(filesRepository: fake, stateStore: stateStore);
+    trashStore = FileLocalTrashStore(baseDirectoryOverride: trashDir);
+    engine = SyncEngine(filesRepository: fake, stateStore: stateStore, trashStore: trashStore);
   });
 
   tearDown(() {
     if (tempDir.existsSync()) tempDir.deleteSync(recursive: true);
+    if (trashDir.existsSync()) trashDir.deleteSync(recursive: true);
   });
 
   // ------------------------------------------------------------------
@@ -729,26 +753,63 @@ void main() {
       expect(result.conflicts, ['a.txt']);
     });
 
-    test('borrado no propagado: estaba en base y en remoto, falta en local -> se vuelve a bajar', () async {
-      await seedInSync('vivo');
-      File('${tempDir.path}/a.txt').deleteSync();
+    test(
+      'borrado local (con base) se propaga: se borra también en el servidor, a la papelera',
+      () async {
+        await seedInSync('vivo');
 
-      final result = await engine.syncNow(pair, direction: SyncDirection.both);
+        File('${tempDir.path}/a.txt').deleteSync();
 
-      expect(result.downloaded, 1);
-      expect(File('${tempDir.path}/a.txt').existsSync(), isTrue);
-    });
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
 
-    test('borrado no propagado: estaba en base y en local, falta en remoto -> se vuelve a subir', () async {
-      await seedInSync('vivo');
-      fake.listingsByPath['/root'] =
-          const DirectoryListing(directories: [], files: []);
+        expect(result.downloaded, 0);
+        expect(result.deletedRemote, 1);
+        expect(result.pendingDeletes, isEmpty);
+        expect(fake.deleteFileCalls, hasLength(1));
+        expect(fake.deleteFileCalls.single.$2, isFalse); // permanent: false
+        expect((await stateStore.read(pair)).containsKey('a.txt'), isFalse);
+      },
+    );
 
-      final result = await engine.syncNow(pair, direction: SyncDirection.both);
+    test(
+      'borrado remoto (con base) se propaga: el archivo local se mueve a la papelera local',
+      () async {
+        await seedInSync('vivo');
 
-      expect(result.uploaded, 1);
-      expect(fake.uploadedPaths, ['/root/a.txt']);
-    });
+        fake.listingsByPath['/root'] =
+            const DirectoryListing(directories: [], files: []);
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.uploaded, 0);
+        expect(result.deletedLocal, 1);
+        expect(result.pendingDeletes, isEmpty);
+        expect(File('${tempDir.path}/a.txt').existsSync(), isFalse);
+        final trashRoot =
+            Directory(p.join(trashDir.path, 'local_trash', pair.stableKey));
+        final trashed = trashRoot.listSync().whereType<File>().toList();
+        expect(trashed, hasLength(1));
+        expect(await trashed.single.readAsString(), 'vivo');
+        expect((await stateStore.read(pair)).containsKey('a.txt'), isFalse);
+      },
+    );
+
+    test(
+      'sin base, ausente en un lado -> sigue siendo "nuevo" (nunca candidato a borrado)',
+      () async {
+        fake.listingsByPath['/root'] = DirectoryListing(
+          directories: const [],
+          files: [_file(id: 'r-new', parentPath: '/root', name: 'nuevo.txt', sizeBytes: 4)],
+        );
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.downloaded, 1);
+        expect(result.deletedRemote, 0);
+        expect(result.pendingDeletes, isEmpty);
+        expect(File('${tempDir.path}/nuevo.txt').existsSync(), isTrue);
+      },
+    );
 
     test('entrada solo en la base (borrada en los dos lados) se suelta sin fallar', () async {
       await stateStore.write(pair, {
@@ -783,5 +844,168 @@ void main() {
       expect(second.conflicts, isEmpty);
       expect(second.skipped, 1);
     });
+  });
+
+  group('modo both -- guarda anti-"borrado masivo" (ADR-013)', () {
+    late SyncPair pair;
+
+    setUp(() {
+      pair = SyncPair(remotePath: '/root', localPath: tempDir.path);
+      fake.listingsByPath['/root'] =
+          const DirectoryListing(directories: [], files: []);
+    });
+
+    /// Deja `n0.txt`..`n{count-1}.txt` sincronizados en los dos lados
+    /// (remoto real vía el fake + local real en disco + base sembrada).
+    Future<void> seedManyInSync(int count) async {
+      final ts = DateTime.utc(2026, 5, 1, 12);
+      final entries = <String, SyncStateEntry>{};
+      final files = <FileEntry>[];
+      for (var i = 0; i < count; i++) {
+        final name = 'n$i.txt';
+        final bytes = utf8.encode('contenido $i');
+        final localFile = File(p.join(tempDir.path, name));
+        await localFile.writeAsBytes(bytes);
+        await localFile.setLastModified(ts);
+        files.add(_file(
+          id: 'r-$i',
+          parentPath: '/root',
+          name: name,
+          sizeBytes: bytes.length,
+          sha256: _sha(bytes),
+          updatedAt: ts,
+        ));
+        entries[name] = SyncStateEntry(
+          remoteSizeBytes: bytes.length,
+          localSizeBytes: bytes.length,
+          sha256: _sha(bytes),
+          remoteUpdatedAt: ts,
+          localModifiedAt: ts,
+        );
+      }
+      fake.listingsByPath['/root'] =
+          DirectoryListing(directories: const [], files: files);
+      await stateStore.write(pair, entries);
+    }
+
+    test(
+      'un lote de más de 10 borrados no se ejecuta sin confirmar, y es idempotente',
+      () async {
+        await seedManyInSync(12);
+        for (var i = 0; i < 12; i++) {
+          File(p.join(tempDir.path, 'n$i.txt')).deleteSync();
+        }
+
+        final first = await engine.syncNow(pair, direction: SyncDirection.both);
+        expect(first.deletedRemote, 0);
+        expect(first.deletedLocal, 0);
+        expect(first.pendingDeletes, hasLength(12));
+        expect(fake.deleteFileCalls, isEmpty);
+
+        // Repetir sin confirmar reproduce el mismo resultado -- el candidato
+        // sigue ahí porque la base no se tocó.
+        final second = await engine.syncNow(pair, direction: SyncDirection.both);
+        expect(second.pendingDeletes, hasLength(12));
+      },
+    );
+
+    test(
+      'confirmar un subconjunto ejecuta solo esos; el resto sigue pendiente',
+      () async {
+        await seedManyInSync(12);
+        for (var i = 0; i < 12; i++) {
+          File(p.join(tempDir.path, 'n$i.txt')).deleteSync();
+        }
+        final first = await engine.syncNow(pair, direction: SyncDirection.both);
+        final toConfirm = first.pendingDeletes.take(3).map((d) => d.key).toSet();
+
+        final second = await engine.syncNow(
+          pair,
+          direction: SyncDirection.both,
+          confirmedDeletePaths: toConfirm,
+        );
+
+        expect(second.deletedRemote, 3);
+        expect(second.pendingDeletes, hasLength(9));
+        expect(fake.deleteFileCalls, hasLength(3));
+      },
+    );
+
+    test(
+      'exactamente en el umbral (10) se ejecuta sin pedir confirmación',
+      () async {
+        await seedManyInSync(10);
+        for (var i = 0; i < 10; i++) {
+          File(p.join(tempDir.path, 'n$i.txt')).deleteSync();
+        }
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.deletedRemote, 10);
+        expect(result.pendingDeletes, isEmpty);
+      },
+    );
+
+    test(
+      'carpeta local inexistente con manifiesto no vacío: no borra nada y conserva la base tal cual',
+      () async {
+        await seedManyInSync(3);
+        final baselineBefore = await stateStore.read(pair);
+
+        tempDir.deleteSync(recursive: true);
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.deletedRemote, 0);
+        expect(result.deletedLocal, 0);
+        expect(result.errors, isNotEmpty);
+        expect(fake.deleteFileCalls, isEmpty);
+        expect(await stateStore.read(pair), baselineBefore);
+      },
+    );
+  });
+
+  group('alcance: Descargar/Subir nunca propagan borrados (ADR-013)', () {
+    test(
+      'download: un archivo que desaparece del remoto no toca la copia local ya descargada',
+      () async {
+        final pair = SyncPair(remotePath: '/root', localPath: tempDir.path);
+        fake.listingsByPath['/root'] = DirectoryListing(
+          directories: const [],
+          files: [_file(id: 'r-a', parentPath: '/root', name: 'a.txt', sizeBytes: 5)],
+        );
+        await engine.syncNow(pair, direction: SyncDirection.download);
+        expect(File('${tempDir.path}/a.txt').existsSync(), isTrue);
+
+        // Simula que se borró en el servidor.
+        fake.listingsByPath['/root'] =
+            const DirectoryListing(directories: [], files: []);
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.download);
+
+        expect(result.deletedLocal, 0);
+        expect(File('${tempDir.path}/a.txt').existsSync(), isTrue);
+      },
+    );
+
+    test(
+      'upload: un archivo que se borra en local no toca la copia ya subida al servidor',
+      () async {
+        final pair = SyncPair(remotePath: '/root', localPath: tempDir.path);
+        fake.listingsByPath['/root'] =
+            const DirectoryListing(directories: [], files: []);
+        await File('${tempDir.path}/a.txt').writeAsString('hola');
+        await engine.syncNow(pair, direction: SyncDirection.upload);
+        expect(fake.uploadedPaths, ['/root/a.txt']);
+
+        File('${tempDir.path}/a.txt').deleteSync();
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.upload);
+
+        expect(result.deletedRemote, 0);
+        expect(fake.deleteFileCalls, isEmpty);
+        expect(fake.listingsByPath['/root']!.files, hasLength(1));
+      },
+    );
   });
 }

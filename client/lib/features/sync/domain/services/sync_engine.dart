@@ -8,10 +8,12 @@ import '../../../../core/network/api_exception.dart';
 import '../../../../core/paths/remote_path.dart';
 import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart';
+import '../entities/pending_delete.dart';
 import '../entities/sync_direction.dart';
 import '../entities/sync_pair.dart';
 import '../entities/sync_result.dart';
 import '../entities/sync_state_entry.dart';
+import '../repositories/local_trash_store.dart';
 import '../repositories/sync_state_store.dart';
 
 /// Un archivo remoto ya localizado durante el recorrido, junto a su ruta
@@ -48,20 +50,62 @@ class _LocalFile {
   String get key => relativeSegments.join('/').toLowerCase();
 }
 
+/// Un borrado detectado durante `_reconcilePass` (ADR-013), recolectado en
+/// vez de ejecutado al vuelo -- la guarda anti-"borrado masivo" necesita ver
+/// el lote completo antes de decidir si se ejecuta o queda pendiente de
+/// confirmación.
+class _DeleteCandidate {
+  _DeleteCandidate({
+    required this.key,
+    required this.name,
+    required this.relPath,
+    required this.direction,
+    required this.base,
+    this.remote,
+    this.local,
+  });
+
+  final String key;
+
+  /// Último segmento -- para mensajes de `onStatus`, mismo criterio que el
+  /// resto del motor.
+  final String name;
+
+  /// Ruta relativa completa, con la capitalización real -- para mostrar en
+  /// la confirmación de la UI sin ambigüedad entre archivos del mismo
+  /// nombre en carpetas distintas.
+  final String relPath;
+
+  final DeleteDirection direction;
+  final SyncStateEntry base;
+
+  /// Poblado cuando [direction] es [DeleteDirection.toRemote] (hay que
+  /// borrar ESTE remoto).
+  final _RemoteFile? remote;
+
+  /// Poblado cuando [direction] es [DeleteDirection.toLocal] (hay que
+  /// mover ESTE archivo local a la papelera local).
+  final _LocalFile? local;
+}
+
 /// Acumulador mutable de una pasada -- las tres direcciones lo rellenan
 /// igual, así que el resultado final se construye una sola vez.
 class _Tally {
   int downloaded = 0;
   int uploaded = 0;
   int skipped = 0;
+  int deletedRemote = 0;
+  int deletedLocal = 0;
   final errors = <String>[];
   final conflicts = <String>[];
+  final pendingDeletes = <PendingDelete>[];
 }
 
-/// Motor de sincronización (ADR-011 slices 3/8, ADR-012 slice 13). Clase
-/// concreta sin interfaz separada -- igual que `BackupService` en
-/// NexusKeys: orquesta `FilesRepository` (ya existente) más `dart:io`, no
-/// hay una segunda implementación que justifique abstraerla.
+/// Motor de sincronización (ADR-011 slices 3/8, ADR-012 slice 13, ADR-013
+/// slice 14). Clase concreta sin interfaz separada -- igual que
+/// `BackupService` en NexusKeys: orquesta `FilesRepository` (ya existente)
+/// más `dart:io`, no hay una segunda implementación que justifique
+/// abstraerla.
 ///
 /// Tres sentidos ([SyncDirection]):
 ///  - `download`: servidor→local (comportamiento original, sin cambios).
@@ -73,18 +117,27 @@ class _Tally {
 /// `both` usa un manifiesto de estado local ([SyncStateStore]) como base
 /// para distinguir "cambió en remoto" de "cambió en local" de "cambió en
 /// los dos" (conflicto §40 → *conflict copy*, nunca se sobrescribe en
-/// silencio). Los tres modos mantienen el manifiesto al día. **Ningún modo
-/// propaga borrados** en este slice (ADR-012): un archivo que desaparece de
-/// un lado se vuelve a traer del otro.
+/// silencio). Los tres modos mantienen el manifiesto al día.
+///
+/// **Borrados (ADR-013, solo en `both`)**: un archivo que SÍ tenía base y
+/// desaparece de un lado se propaga al otro -- a la papelera del servidor
+/// (ADR-006) o a la papelera local ([LocalTrashStore]), nunca a un borrado
+/// definitivo directo. Un lote de más de [_maxAutoDeleteBatch] borrados en
+/// una misma pasada NO se ejecuta sin que quien llama a [syncNow] confirme
+/// explícitamente (`confirmedDeletePaths`) -- guarda anti-"borrado masivo".
+/// `download`/`upload` siguen sin propagar borrados en ningún caso.
 class SyncEngine {
   SyncEngine({
     required FilesRepository filesRepository,
     required SyncStateStore stateStore,
+    required LocalTrashStore trashStore,
   })  : _filesRepository = filesRepository,
-        _stateStore = stateStore;
+        _stateStore = stateStore,
+        _trashStore = trashStore;
 
   final FilesRepository _filesRepository;
   final SyncStateStore _stateStore;
+  final LocalTrashStore _trashStore;
 
   /// Tolerancia de comparación de fecha de modificación: cubre pequeñas
   /// diferencias de redondeo entre cómo el servidor serializa
@@ -92,6 +145,15 @@ class SyncEngine {
   /// round-trip por `setLastModified`/`FileStat.modified`, y la que
   /// sobrevive a serializar el manifiesto a ISO-8601.
   static const _mtimeTolerance = Duration(seconds: 2);
+
+  /// Guarda anti-"borrado masivo" (ADR-013): si una pasada de `both`
+  /// detecta más borrados que esto (sumando los dos sentidos), NINGUNO se
+  /// ejecuta sin confirmación explícita -- se listan en
+  /// `SyncResult.pendingDeletes`. Diez es deliberadamente conservador para
+  /// uso personal (§160): un borrado suelto o unos pocos son gestos
+  /// normales del usuario; un lote grande de golpe huele más a carpeta mal
+  /// apuntada o unidad desconectada que a intención real.
+  static const _maxAutoDeleteBatch = 10;
 
   /// Nombres locales que nunca se suben: basura del SO, y las propias
   /// *conflict copies* (si no, una se subiría como "archivo local nuevo" y
@@ -117,13 +179,19 @@ class SyncEngine {
   ///
   /// Una segunda llamada mientras la primera sigue en curso NO lanza ni se
   /// descarta: se une a la ya-en-curso y recibe el mismo [SyncResult]. Si
-  /// esa segunda llamada pedía otra [direction], se ignora -- gana la que
-  /// arrancó; es un caso límite raro (dos disparos casi simultáneos con
-  /// distinto modo) y no vale la pena encolarlo.
+  /// esa segunda llamada pedía otra [direction] o [confirmedDeletePaths],
+  /// se ignora -- gana la que arrancó; es un caso límite raro y no vale la
+  /// pena encolarlo.
+  ///
+  /// [confirmedDeletePaths] son claves (`PendingDelete.key`) que el usuario
+  /// ya confirmó explícitamente en una llamada anterior cuyo resultado trajo
+  /// `pendingDeletes` no vacío -- esos borrados se ejecutan sin importar el
+  /// tamaño del lote. `AutoSyncScheduler` nunca lo rellena.
   Future<SyncResult> syncNow(
     SyncPair pair, {
     SyncDirection direction = SyncDirection.download,
     void Function(String status)? onStatus,
+    Set<String>? confirmedDeletePaths,
   }) {
     final existing = _inFlight;
     if (existing != null) {
@@ -132,7 +200,12 @@ class SyncEngine {
       );
       return existing;
     }
-    final future = _runSync(pair, direction, onStatus);
+    final future = _runSync(
+      pair,
+      direction,
+      confirmedDeletePaths ?? const {},
+      onStatus,
+    );
     _inFlight = future;
     _busyController.add(true);
     // `.whenComplete(...)` devuelve una Future NUEVA e independiente -- si
@@ -153,6 +226,7 @@ class SyncEngine {
   Future<SyncResult> _runSync(
     SyncPair pair,
     SyncDirection direction,
+    Set<String> confirmedDeletePaths,
     void Function(String status)? onStatus,
   ) async {
     final baseline = await _stateStore.read(pair);
@@ -184,17 +258,32 @@ class SyncEngine {
           onStatus,
         );
       case SyncDirection.both:
-        final localFiles = await _walkLocal(pair.localPath, onStatus);
-        await _reconcilePass(
-          pair,
-          remoteByKey,
-          localFiles,
-          collisionKeys,
-          baseline,
-          newBaseline,
-          tally,
-          onStatus,
-        );
+        // Carpeta local inexistente/inaccesible (ADR-013): con borrados ya
+        // activos, tratar "no veo nada en local" como "se borró todo" sería
+        // catastrófico (unidad desconectada, ruta mal apuntada...). Se
+        // aborta la reconciliación sin tocar nada y se conserva el
+        // manifiesto tal cual -- ni se sube ni se baja ni se borra.
+        if (!Directory(pair.localPath).existsSync()) {
+          tally.errors.add(
+            'La carpeta local no existe o no está accesible ahora mismo -- '
+            'no se sincroniza en modo Ambos para evitar interpretar esto '
+            'como que se borró todo el árbol y propagarlo al servidor.',
+          );
+          newBaseline.addAll(baseline);
+        } else {
+          final localFiles = await _walkLocal(pair.localPath, onStatus);
+          await _reconcilePass(
+            pair,
+            remoteByKey,
+            localFiles,
+            collisionKeys,
+            baseline,
+            newBaseline,
+            tally,
+            confirmedDeletePaths,
+            onStatus,
+          );
+        }
     }
 
     await _stateStore.write(pair, newBaseline);
@@ -205,6 +294,9 @@ class SyncEngine {
       skipped: tally.skipped,
       errors: tally.errors,
       conflicts: tally.conflicts,
+      deletedRemote: tally.deletedRemote,
+      deletedLocal: tally.deletedLocal,
+      pendingDeletes: tally.pendingDeletes,
       finishedAt: DateTime.now().toUtc(),
     );
   }
@@ -323,6 +415,7 @@ class SyncEngine {
     Map<String, SyncStateEntry> baseline,
     Map<String, SyncStateEntry> newBaseline,
     _Tally tally,
+    Set<String> confirmedDeletePaths,
     void Function(String status)? onStatus,
   ) async {
     final localByKey = {for (final f in localFiles) f.key: f};
@@ -332,6 +425,7 @@ class SyncEngine {
       ...baseline.keys,
     };
     final ensuredDirs = <String>{};
+    final deleteCandidates = <_DeleteCandidate>[];
 
     for (final key in allKeys) {
       if (collisionKeys.contains(key)) continue;
@@ -351,19 +445,44 @@ class SyncEngine {
 
       try {
         if (remote != null && local == null) {
-          // Nuevo en remoto, o borrado en local y NO se propaga (ADR-012):
-          // se vuelve a bajar.
-          onStatus?.call('Descargando $name...');
-          await _download(remote, localPath);
-          newBaseline[key] = _entryAfterDownload(remote, localPath);
-          tally.downloaded++;
+          if (base == null) {
+            // Nuevo en remoto -> descargar.
+            onStatus?.call('Descargando $name...');
+            await _download(remote, localPath);
+            newBaseline[key] = _entryAfterDownload(remote, localPath);
+            tally.downloaded++;
+          } else {
+            // Estaba sincronizado y ya no está en local (ADR-013): borrado
+            // local que se propaga -> candidato a borrar también en
+            // remoto. Se recolecta, no se ejecuta todavía.
+            deleteCandidates.add(_DeleteCandidate(
+              key: key,
+              name: name,
+              relPath: segments.join('/'),
+              direction: DeleteDirection.toRemote,
+              base: base,
+              remote: remote,
+            ));
+          }
         } else if (remote == null && local != null) {
-          // Nuevo en local, o borrado en remoto y NO se propaga: se vuelve
-          // a subir.
-          onStatus?.call('Subiendo $name...');
-          final entry = await _upload(pair, local, ensuredDirs);
-          newBaseline[key] = _entryAfterUpload(entry);
-          tally.uploaded++;
+          if (base == null) {
+            // Nuevo en local -> subir.
+            onStatus?.call('Subiendo $name...');
+            final entry = await _upload(pair, local, ensuredDirs);
+            newBaseline[key] = _entryAfterUpload(entry);
+            tally.uploaded++;
+          } else {
+            // Estaba sincronizado y ya no está en remoto: candidato a
+            // borrar también en local.
+            deleteCandidates.add(_DeleteCandidate(
+              key: key,
+              name: name,
+              relPath: segments.join('/'),
+              direction: DeleteDirection.toLocal,
+              base: base,
+              local: local,
+            ));
+          }
         } else if (remote != null && local != null) {
           await _reconcileBothPresent(
             pair: pair,
@@ -385,6 +504,15 @@ class SyncEngine {
         tally.errors.add('$name: ${e.message}');
       }
     }
+
+    await _resolveDeletes(
+      pair,
+      deleteCandidates,
+      confirmedDeletePaths,
+      newBaseline,
+      tally,
+      onStatus,
+    );
   }
 
   Future<void> _reconcileBothPresent({
@@ -451,6 +579,74 @@ class SyncEngine {
     // vuelva a cambiar de verdad. La conflict copy queda como artefacto
     // para que el usuario la funda a mano.
     newBaseline[key] = _entryConflictResolved(local, remote.file);
+  }
+
+  // --- borrados (ADR-013) -------------------------------------------
+
+  /// Decide, para el lote completo de [candidates], cuáles se ejecutan y
+  /// cuáles quedan pendientes de confirmación. La comparación con
+  /// [_maxAutoDeleteBatch] es sobre el TAMAÑO TOTAL del lote de esta
+  /// pasada, no sobre lo que quede después de descontar lo ya confirmado
+  /// -- si no, confirmar solo 3 de un lote de 12 dejaría que los 9
+  /// restantes se colaran igualmente por quedar "bajo el umbral" ellos
+  /// solos. Con el lote entero por encima del umbral, SOLO se ejecuta lo
+  /// que esté explícitamente en [confirmedDeletePaths]; el resto queda
+  /// pendiente sin importar cuántos sean. Un candidato pendiente conserva
+  /// su entrada de manifiesto tal cual -- ni se borra ni se resucita --
+  /// para que la próxima pasada lo reconozca otra vez como el mismo
+  /// candidato.
+  Future<void> _resolveDeletes(
+    SyncPair pair,
+    List<_DeleteCandidate> candidates,
+    Set<String> confirmedDeletePaths,
+    Map<String, SyncStateEntry> newBaseline,
+    _Tally tally,
+    void Function(String status)? onStatus,
+  ) async {
+    if (candidates.isEmpty) return;
+
+    final toExecute = <_DeleteCandidate>[];
+    if (candidates.length <= _maxAutoDeleteBatch) {
+      toExecute.addAll(candidates);
+    } else {
+      for (final c in candidates) {
+        if (confirmedDeletePaths.contains(c.key)) {
+          toExecute.add(c);
+        } else {
+          newBaseline[c.key] = c.base;
+          tally.pendingDeletes.add(
+            PendingDelete(key: c.key, displayPath: c.relPath, direction: c.direction),
+          );
+        }
+      }
+    }
+
+    for (final c in toExecute) {
+      try {
+        if (c.direction == DeleteDirection.toRemote) {
+          onStatus?.call('Borrando ${c.name} en el servidor...');
+          await _filesRepository.deleteFile(c.remote!.file.id, permanent: false);
+          tally.deletedRemote++;
+        } else {
+          onStatus?.call('Moviendo ${c.name} a la papelera local...');
+          await _trashStore.moveToTrash(
+            pair: pair,
+            relativeSegments: c.local!.relativeSegments,
+            file: c.local!.file,
+          );
+          tally.deletedLocal++;
+        }
+        // No se copia a newBaseline -- ahora los dos lados están
+        // genuinamente ausentes, igual que el caso "borrado en los dos
+        // lados" de arriba.
+      } on ApiException catch (e) {
+        tally.errors.add('${c.name}: ${e.message}');
+        newBaseline[c.key] = c.base;
+      } on FileSystemException catch (e) {
+        tally.errors.add('${c.name}: ${e.message}');
+        newBaseline[c.key] = c.base;
+      }
+    }
   }
 
   // --- operaciones de transferencia --------------------------------
@@ -650,8 +846,9 @@ class SyncEngine {
   }
 
   /// Recorre el árbol local bajo [rootPath]. Carpeta local inexistente ⇒
-  /// lista vacía (no hay nada que subir; en `both`, lo que hubiera en
-  /// remoto se vuelve a bajar). Salta basura del SO y conflict copies.
+  /// lista vacía. En `download`/`upload` eso es inofensivo (nada que
+  /// subir); en `both` ya no se llega aquí con la raíz ausente -- ver la
+  /// guarda en `_runSync` (ADR-013). Salta basura del SO y conflict copies.
   Future<List<_LocalFile>> _walkLocal(
     String rootPath,
     void Function(String status)? onStatus,

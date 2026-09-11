@@ -101,15 +101,22 @@ class AutoSyncScheduler {
     // o con otro tick que todavía siga en curso -- no hay nada especial
     // que hacer aquí para eso.
     try {
+      // `confirmedDeletePaths` nunca se rellena aquí (ADR-013): un tick
+      // automático sin nadie delante jamás confirma un borrado masivo -- si
+      // `syncNow` devuelve `pendingDeletes`, se quedan pendientes hasta que
+      // el usuario los revise a mano en Ajustes.
       final result = await _syncEngine.syncNow(
         pair,
         direction: direction,
         onStatus: _statusController.add,
       );
+      final deleted = result.deletedRemote + result.deletedLocal;
       await _configRepository.saveLastAutoSyncOutcome(
         at: result.finishedAt,
         summary: '${result.downloaded} descargados, '
             '${result.uploaded} subidos, '
+            '$deleted borrados, '
+            '${result.pendingDeletes.length} borrados pendientes de confirmar, '
             '${result.conflicts.length} conflictos, '
             '${result.errors.length} errores',
       );

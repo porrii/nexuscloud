@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
@@ -15,6 +16,7 @@ import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.d
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_result.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_state_entry.dart';
+import 'package:nexuscloud_client/features/sync/domain/repositories/local_trash_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_config_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/repositories/sync_state_store.dart';
 import 'package:nexuscloud_client/features/sync/domain/services/auto_sync_scheduler.dart';
@@ -239,6 +241,19 @@ class _InMemorySyncStateStore implements SyncStateStore {
       _byPair[_key(pair)] = Map.of(entries);
 }
 
+/// Ningún escenario de este archivo llega a borrar nada (listado vacío /
+/// ruta inexistente), pero `SyncEngine` exige un `LocalTrashStore` -- un
+/// fake que nunca debería llamarse basta.
+class _InMemoryLocalTrashStore implements LocalTrashStore {
+  @override
+  Future<void> moveToTrash({
+    required SyncPair pair,
+    required List<String> relativeSegments,
+    required File file,
+  }) =>
+      throw UnimplementedError('este archivo no ejercita borrados');
+}
+
 const _someUser = AppUser(
   id: 'u-1',
   username: 'ivan',
@@ -262,6 +277,7 @@ void main() {
     syncEngine = SyncEngine(
       filesRepository: fakeFilesRepository,
       stateStore: _InMemorySyncStateStore(),
+      trashStore: _InMemoryLocalTrashStore(),
     );
     scheduler = AutoSyncScheduler(
       syncEngine: syncEngine,
