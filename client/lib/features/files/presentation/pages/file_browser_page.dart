@@ -14,6 +14,7 @@ import '../../../sharing/domain/entities/share.dart';
 import '../../../sharing/presentation/pages/my_shares_page.dart';
 import '../../../sharing/presentation/pages/share_page.dart';
 import '../../../sharing/presentation/pages/shared_with_me_page.dart';
+import '../../../sync/presentation/pages/local_trash_page.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
 import '../widgets/breadcrumb_bar.dart';
 import 'file_versions_page.dart';
@@ -209,6 +210,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             icon: const Icon(Icons.sync),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SyncSettingsPage()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Papelera local',
+            icon: const Icon(Icons.restore_from_trash),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const LocalTrashPage()),
             ),
           ),
           IconButton(

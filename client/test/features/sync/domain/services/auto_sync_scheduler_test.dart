@@ -12,6 +12,7 @@ import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/auto_sync_settings.dart';
+import 'package:nexuscloud_client/features/sync/domain/entities/local_trash_entry.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/pair_sync_outcome.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_direction.dart';
 import 'package:nexuscloud_client/features/sync/domain/entities/sync_pair.dart';
@@ -134,6 +135,15 @@ class _FakeSyncConfigRepository implements SyncConfigRepository {
   @override
   Future<({DateTime at, String summary})?> readLastAutoSyncOutcome() async =>
       lastOutcome;
+
+  bool watchLocalChanges = false;
+
+  @override
+  Future<void> saveWatchLocalChanges(bool enabled) async =>
+      watchLocalChanges = enabled;
+
+  @override
+  Future<bool> readWatchLocalChanges() async => watchLocalChanges;
 }
 
 /// Solo implementa `list` -- las únicas rutas de este archivo son
@@ -242,6 +252,21 @@ class _InMemoryLocalTrashStore implements LocalTrashStore {
     required File file,
   }) =>
       throw UnimplementedError('este archivo no ejercita borrados');
+
+  @override
+  Future<List<LocalTrashEntry>> listAll() =>
+      throw UnimplementedError('este archivo no ejercita la papelera local');
+
+  @override
+  Future<void> restore({
+    required LocalTrashEntry entry,
+    required String destinationLocalPath,
+  }) =>
+      throw UnimplementedError('este archivo no ejercita la papelera local');
+
+  @override
+  Future<void> deleteForever(LocalTrashEntry entry) =>
+      throw UnimplementedError('este archivo no ejercita la papelera local');
 }
 
 const _someUser = AppUser(

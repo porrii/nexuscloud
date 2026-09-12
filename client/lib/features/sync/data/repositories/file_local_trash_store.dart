@@ -3,8 +3,16 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
+import '../../domain/entities/local_trash_entry.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/repositories/local_trash_store.dart';
+
+/// `moveToTrash` escribe `<microsegundos>_<nombre original>` -- este patrón
+/// separa las dos partes al listar. Un nombre que no encaje (nunca debería
+/// pasar con archivos que esta clase escribió, pero un usuario podría dejar
+/// algo raro a mano dentro del directorio de datos) se descarta en vez de
+/// romper el listado completo.
+final _stampedNamePattern = RegExp(r'^(\d+)_(.+)$');
 
 /// Mueve archivos a `getApplicationSupportDirectory()/local_trash/`, dentro
 /// de una subcarpeta con la clave del par (`SyncPair.stableKey`), las
@@ -51,5 +59,91 @@ class FileLocalTrashStore implements LocalTrashStore {
       await file.copy(destPath);
       await file.delete();
     }
+  }
+
+  Future<Directory> _trashBase() async =>
+      Directory(p.join(
+        (_baseDirectoryOverride ?? await getApplicationSupportDirectory()).path,
+        'local_trash',
+      ));
+
+  @override
+  Future<List<LocalTrashEntry>> listAll() async {
+    final root = await _trashBase();
+    if (!root.existsSync()) return [];
+
+    final entries = <LocalTrashEntry>[];
+    await for (final entity in root.list(recursive: true, followLinks: false)) {
+      if (entity is! File) continue;
+      final entry = _tryParseEntry(root, entity);
+      if (entry != null) entries.add(entry);
+    }
+    return entries;
+  }
+
+  /// `null` -> se descarta silenciosamente (ver la nota de
+  /// `_stampedNamePattern`); nunca lanza.
+  LocalTrashEntry? _tryParseEntry(Directory root, File file) {
+    try {
+      final relPath = p.relative(file.path, from: root.path);
+      final segments = p.split(relPath);
+      // Hace falta al menos <pairKey>/<archivo> -- cualquier cosa suelta
+      // directamente bajo la raíz de la papelera no encaja en el formato.
+      if (segments.length < 2) return null;
+
+      final pairKey = segments.first;
+      final match = _stampedNamePattern.firstMatch(segments.last);
+      if (match == null) return null;
+      final stampMicros = int.tryParse(match.group(1)!);
+      if (stampMicros == null) return null;
+      final originalName = match.group(2)!;
+
+      final relativeSegments = [
+        ...segments.sublist(1, segments.length - 1),
+        originalName,
+      ];
+      final sizeBytes = file.lengthSync();
+
+      return LocalTrashEntry(
+        pairKey: pairKey,
+        relativeSegments: relativeSegments,
+        deletedAt: DateTime.fromMicrosecondsSinceEpoch(stampMicros, isUtc: true),
+        sizeBytes: sizeBytes,
+        absolutePath: file.path,
+      );
+    } on FileSystemException {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> restore({
+    required LocalTrashEntry entry,
+    required String destinationLocalPath,
+  }) async {
+    final destPath = p.joinAll([destinationLocalPath, ...entry.relativeSegments]);
+    final destFile = File(destPath);
+    if (await destFile.exists()) {
+      throw LocalTrashRestoreConflict(
+        'Ya existe un archivo en "${entry.displayPath}" -- muévelo o '
+        'renómbralo antes de restaurar.',
+      );
+    }
+
+    await destFile.parent.create(recursive: true);
+    final source = File(entry.absolutePath);
+    try {
+      await source.rename(destPath);
+    } on FileSystemException {
+      // Mismo motivo que en `moveToTrash`: origen y destino pueden estar en
+      // volúmenes distintos.
+      await source.copy(destPath);
+      await source.delete();
+    }
+  }
+
+  @override
+  Future<void> deleteForever(LocalTrashEntry entry) async {
+    await File(entry.absolutePath).delete();
   }
 }
