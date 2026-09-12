@@ -158,7 +158,14 @@ class ApiClient {
         statusCode: response.statusCode,
       );
     }
-    return ApiException.unknown();
+    // `data` no es un Map (p.ej. `ResponseType.stream` de `dio.download()`
+    // -- el cuerpo de error todavía no se ha podido leer/parsear en este
+    // punto, ver ApiException.unknown) -- el status HTTP crudo sigue
+    // siendo información real, se conserva aunque no haya `code`.
+    return ApiException.unknown(
+      'No se pudo completar la operación.',
+      response.statusCode,
+    );
   }
 
   void dispose() => _dio.close();

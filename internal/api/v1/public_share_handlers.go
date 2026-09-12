@@ -2,10 +2,7 @@ package apiv1
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -92,18 +89,11 @@ func (h *Handlers) DownloadPublicShare(w http.ResponseWriter, r *http.Request) {
 		writePublicShareError(w, err)
 		return
 	}
-	defer rc.Close()
 
 	h.AuditLog.Record(r.Context(), audit.EventDownload, "", "file", meta.ID,
 		security.ClientIP(r, h.TrustedProxies), map[string]any{"via": "public_share"})
 
-	w.Header().Set("Content-Type", meta.MimeType)
-	w.Header().Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", meta.Name))
-	w.Header().Set("X-Content-SHA256", meta.SHA256)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if _, err := io.Copy(w, rc); err != nil {
+	if err := serveFileContent(w, r, meta.Name, meta.MimeType, meta.SHA256, meta.SizeBytes, rc); err != nil {
 		h.Logger.Warn("interrumpida la descarga vía enlace público", "file_id", meta.ID, "error", err)
 	}
 }

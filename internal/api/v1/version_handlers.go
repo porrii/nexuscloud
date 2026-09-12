@@ -3,7 +3,6 @@ package apiv1
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 
@@ -50,15 +49,9 @@ func (h *Handlers) DownloadFileVersion(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, err)
 		return
 	}
-	defer rc.Close()
 
-	w.Header().Set("Content-Type", v.MimeType)
-	w.Header().Set("Content-Length", strconv.FormatInt(v.SizeBytes, 10))
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"v%d\"", v.VersionNum))
-	w.Header().Set("X-Content-SHA256", v.SHA256)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if _, err := io.Copy(w, rc); err != nil {
+	name := fmt.Sprintf("v%d", v.VersionNum)
+	if err := serveFileContent(w, r, name, v.MimeType, v.SHA256, v.SizeBytes, rc); err != nil {
 		h.Logger.Warn("interrumpida la descarga de una versión", "file_id", id, "version", versionNum, "error", err)
 	}
 }

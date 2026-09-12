@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -203,6 +204,62 @@ func TestFullHappyPathFlow(t *testing.T) {
 		}
 		if cd := resp.Header.Get("Content-Disposition"); cd == "" {
 			t.Error("falta Content-Disposition en la descarga (§192)")
+		}
+	})
+
+	t.Run("descarga con Range reanuda desde el offset pedido (§41)", func(t *testing.T) {
+		const fullContent = "contenido con ñ y áéíóú"
+		fullSize := int64(len(fullContent))
+
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/files/"+fileID, nil)
+		req.Header.Set("Authorization", "Bearer "+adminToken)
+		req.Header.Set("Range", fmt.Sprintf("bytes=%d-", fullSize-5))
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("petición con Range falló: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusPartialContent {
+			t.Fatalf("status = %d, esperado 206", resp.StatusCode)
+		}
+		if got, want := resp.Header.Get("Content-Range"), fmt.Sprintf("bytes %d-%d/%d", fullSize-5, fullSize-1, fullSize); got != want {
+			t.Errorf("Content-Range = %q, esperado %q", got, want)
+		}
+		if got := resp.Header.Get("Accept-Ranges"); got != "bytes" {
+			t.Errorf("Accept-Ranges = %q, esperado \"bytes\"", got)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		if want := fullContent[fullSize-5:]; string(got) != want {
+			t.Errorf("cuerpo parcial = %q, esperado %q (últimos 5 bytes)", got, want)
+		}
+
+		// Range fuera de rango -> 416, sin cuerpo.
+		req2, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/v1/files/"+fileID, nil)
+		req2.Header.Set("Authorization", "Bearer "+adminToken)
+		req2.Header.Set("Range", "bytes=999999-")
+		resp2, err := ts.Client().Do(req2)
+		if err != nil {
+			t.Fatalf("petición con Range fuera de rango falló: %v", err)
+		}
+		defer resp2.Body.Close()
+		if resp2.StatusCode != http.StatusRequestedRangeNotSatisfiable {
+			t.Errorf("status = %d, esperado 416", resp2.StatusCode)
+		}
+
+		// Sin Range, sigue dando el archivo completo -- regresión explícita
+		// de que añadir soporte de Range no cambia el contrato existente
+		// (ADR-010/storage.md ya lo prometían).
+		resp3 := c.do(http.MethodGet, "/api/v1/files/"+fileID, nil, adminToken)
+		defer resp3.Body.Close()
+		if resp3.StatusCode != http.StatusOK {
+			t.Fatalf("status sin Range = %d, esperado 200", resp3.StatusCode)
+		}
+		if got := resp3.Header.Get("Accept-Ranges"); got != "bytes" {
+			t.Errorf("Accept-Ranges (sin Range) = %q, esperado \"bytes\"", got)
+		}
+		got3, _ := io.ReadAll(resp3.Body)
+		if string(got3) != fullContent {
+			t.Errorf("cuerpo completo = %q, esperado %q", got3, fullContent)
 		}
 	})
 

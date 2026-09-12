@@ -2,10 +2,7 @@ package apiv1
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -81,19 +78,13 @@ func (h *Handlers) DownloadFile(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, err)
 		return
 	}
-	defer rc.Close()
 
 	h.AuditLog.Record(r.Context(), audit.EventDownload, u.ID, "file", meta.ID, security.ClientIP(r, h.TrustedProxies), nil)
 
 	// Content-Disposition/Content-Type explícitos, nunca servidos "tal
-	// cual" desde el filesystem (§192-194).
-	w.Header().Set("Content-Type", meta.MimeType)
-	w.Header().Set("Content-Length", strconv.FormatInt(meta.SizeBytes, 10))
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", meta.Name))
-	w.Header().Set("X-Content-SHA256", meta.SHA256)
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-
-	if _, err := io.Copy(w, rc); err != nil {
+	// cual" desde el filesystem (§192-194). serveFileContent añade soporte
+	// de Range/reanudación (ADR-010, §41).
+	if err := serveFileContent(w, r, meta.Name, meta.MimeType, meta.SHA256, meta.SizeBytes, rc); err != nil {
 		h.Logger.Warn("interrumpida la descarga de archivo", "file_id", meta.ID, "error", err)
 	}
 }

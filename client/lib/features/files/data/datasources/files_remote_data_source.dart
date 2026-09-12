@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
+import 'package:path/path.dart' as p;
 
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/api_exception.dart';
@@ -75,38 +76,120 @@ class FilesRemoteDataSource {
     return FileEntryModel.fromJson(response.data!);
   }
 
-  /// `dio.download` escribe directo a disco (nunca carga el archivo
-  /// completo en memoria) y ya borra el archivo parcial si algo falla
-  /// (`deleteOnError: true` es su valor por defecto -- no hace falta
-  /// reimplementarlo aquí).
+  /// Descarga con reanudación transparente (ADR-010, §41): escribe SIEMPRE
+  /// a un fichero temporal `<saveToPath>.<hash8>.part` -- nunca directo al
+  /// destino final -- y solo lo renombra a [saveToPath] tras verificar su
+  /// integridad completa. Si ya existe un `.part` con el MISMO hash
+  /// esperado (de un intento anterior cortado por red o cierre de la
+  /// app), reanuda pidiendo `Range: bytes=<tamaño actual>-`
+  /// (`fileAccessMode: append`, ambos ya soportados por Dio 5.11.1 sin
+  /// dependencia nueva); si existe uno con OTRO hash (el remoto cambió de
+  /// contenido mientras tanto), lo descarta y empieza de cero. Usado por
+  /// [downloadFile]/[downloadVersion] -- comparten exactamente este
+  /// mecanismo, solo cambian la URL y el hash esperado.
   ///
-  /// Tras completar, verifica integridad contra `X-Content-SHA256` (o
-  /// `file.sha256` si la cabecera faltara) -- no hay `Range`/reanudación
-  /// todavía (§41), así que un corte a medias sería invisible sin esto.
-  Future<void> downloadFile({
-    required FileEntry file,
+  /// A diferencia de antes de este slice, [expectedHash] es el que YA se
+  /// conocía antes de empezar (de `file.sha256`/`version.sha256`), no el
+  /// de la cabecera `X-Content-SHA256` de la respuesta -- hace falta
+  /// saberlo de antemano para poder nombrar el `.part` y decidir si
+  /// reanudar. La verificación de integridad final sigue atrapando
+  /// cualquier corrupción real igual que antes, sea cual sea la causa.
+  Future<void> _downloadResumable({
+    required String url,
     required String saveToPath,
+    required String expectedHash,
     TransferProgress? onProgress,
   }) async {
-    final response = await _apiClient.request(
-      (dio) => dio.download(
-        '/files/${file.id}',
-        saveToPath,
-        onReceiveProgress: onProgress,
-      ),
-    );
+    final hash8 =
+        expectedHash.length >= 8 ? expectedHash.substring(0, 8) : expectedHash;
+    final partPath = '$saveToPath.$hash8.part';
+    await _discardStalePartFiles(saveToPath: saveToPath, keepName: p.basename(partPath));
 
-    final expectedHash =
-        response.headers.value('x-content-sha256') ?? file.sha256;
-    final downloaded = File(saveToPath);
-    final digest = await sha256.bind(downloaded.openRead()).first;
+    Future<void> attempt({required bool retryOnRangeError}) async {
+      final partFile = File(partPath);
+      final alreadyHave = await partFile.exists() ? await partFile.length() : 0;
+      try {
+        await _apiClient.request(
+          (dio) => dio.download(
+            url,
+            partPath,
+            onReceiveProgress: onProgress,
+            // A diferencia de antes: un corte de red deja el `.part` tal
+            // cual, con el progreso hecho hasta ese punto, en vez de
+            // borrarlo -- ahora SÍ hay algo que reanudar la próxima vez.
+            deleteOnError: false,
+            fileAccessMode:
+                alreadyHave > 0 ? FileAccessMode.append : FileAccessMode.write,
+            options: alreadyHave > 0
+                ? Options(headers: {'range': 'bytes=$alreadyHave-'})
+                : null,
+          ),
+        );
+      } on ApiException catch (e) {
+        // Por `statusCode`, no por `code`: una petición `dio.download()`
+        // (`ResponseType.stream`) nunca llega a exponer el `code` real
+        // del sobre de error del servidor (ver ApiException.unknown) --
+        // el status HTTP crudo sigue siendo fiable.
+        //
+        // El offset que teníamos guardado ya no es válido (el remoto
+        // encogió/cambió) -- descarta el .part y reintenta UNA vez desde
+        // cero, sin que quien llama vea este error intermedio.
+        if (e.statusCode == 416 && retryOnRangeError) {
+          if (await partFile.exists()) await partFile.delete();
+          await attempt(retryOnRangeError: false);
+          return;
+        }
+        rethrow;
+      }
+    }
+
+    await attempt(retryOnRangeError: true);
+
+    final partFile = File(partPath);
+    final digest = await sha256.bind(partFile.openRead()).first;
     if (digest.toString() != expectedHash) {
-      await downloaded.delete();
+      await partFile.delete();
       throw const ApiException(
         code: 'integrity_mismatch',
         message: 'El archivo descargado no coincide con el original.',
       );
     }
+    await partFile.rename(saveToPath);
+  }
+
+  /// Borra cualquier `.part` de un intento anterior para [saveToPath]
+  /// salvo el que corresponde al hash que se va a descargar ahora
+  /// ([keepName]) -- si el archivo remoto cambió de contenido entre un
+  /// corte y este intento, nunca se reanuda con un offset que ya no
+  /// corresponde a lo que hay que descargar.
+  Future<void> _discardStalePartFiles({
+    required String saveToPath,
+    required String keepName,
+  }) async {
+    final dir = Directory(p.dirname(saveToPath));
+    if (!await dir.exists()) return;
+    final baseName = p.basename(saveToPath);
+    await for (final entity in dir.list()) {
+      if (entity is! File) continue;
+      final name = p.basename(entity.path);
+      if (name == keepName) continue;
+      if (name.startsWith('$baseName.') && name.endsWith('.part')) {
+        await entity.delete();
+      }
+    }
+  }
+
+  Future<void> downloadFile({
+    required FileEntry file,
+    required String saveToPath,
+    TransferProgress? onProgress,
+  }) {
+    return _downloadResumable(
+      url: '/files/${file.id}',
+      saveToPath: saveToPath,
+      expectedHash: file.sha256,
+      onProgress: onProgress,
+    );
   }
 
   /// `POST /directories` con `{parent_path, name}`. El servidor es
@@ -186,34 +269,21 @@ class FilesRemoteDataSource {
         .toList();
   }
 
-  /// Misma lógica exacta que [downloadFile] (mismo `deleteOnError`
-  /// implícito de `dio.download`, misma verificación de integridad), pero
-  /// contra el contenido de una versión concreta en vez del actual.
+  /// Misma lógica exacta que [downloadFile] (mismo mecanismo de
+  /// reanudación vía [_downloadResumable]), pero contra el contenido de
+  /// una versión concreta en vez del actual.
   Future<void> downloadVersion({
     required String fileId,
     required FileVersion version,
     required String saveToPath,
     TransferProgress? onProgress,
-  }) async {
-    final response = await _apiClient.request(
-      (dio) => dio.download(
-        '/files/$fileId/versions/${version.versionNum}',
-        saveToPath,
-        onReceiveProgress: onProgress,
-      ),
+  }) {
+    return _downloadResumable(
+      url: '/files/$fileId/versions/${version.versionNum}',
+      saveToPath: saveToPath,
+      expectedHash: version.sha256,
+      onProgress: onProgress,
     );
-
-    final expectedHash =
-        response.headers.value('x-content-sha256') ?? version.sha256;
-    final downloaded = File(saveToPath);
-    final digest = await sha256.bind(downloaded.openRead()).first;
-    if (digest.toString() != expectedHash) {
-      await downloaded.delete();
-      throw const ApiException(
-        code: 'integrity_mismatch',
-        message: 'El archivo descargado no coincide con el original.',
-      );
-    }
   }
 
   /// A diferencia de `restoreFile`/`restoreDirectory` (`204` sin cuerpo),

@@ -34,10 +34,20 @@ class ApiException implements Exception {
   /// Respuesta que no encaja en el sobre de error esperado
   /// (`{"error":{"code","message"}}`) — no debería ocurrir contra un
   /// servidor NexusCloud real, pero cubre el caso con seguridad.
+  ///
+  /// [statusCode] permite a quien llama ramificar por status HTTP incluso
+  /// aquí -- caso real: una petición `dio.download()` (`ResponseType.
+  /// stream`, ADR-010) nunca llega a tener `code` reconocible, porque
+  /// Dio solo re-parsea un cuerpo de error a JSON DENTRO de su propio
+  /// `download()`, después de que el interceptor de [ApiClient] ya haya
+  /// decidido este `ApiException` sobre el stream crudo -- `statusCode`
+  /// sigue siendo fiable en ese caso porque viene de la respuesta HTTP en
+  /// sí, no de un cuerpo que aún no se ha podido leer.
   factory ApiException.unknown([
     String message = 'No se pudo completar la operación.',
+    int? statusCode,
   ]) =>
-      ApiException(code: 'unknown_error', message: message);
+      ApiException(code: 'unknown_error', message: message, statusCode: statusCode);
 
   @override
   String toString() => 'ApiException($code: $message)';
