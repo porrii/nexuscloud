@@ -439,6 +439,114 @@ func TestRestoreDetectsBitrotInBackupDestination(t *testing.T) {
 	}
 }
 
+// --- Verify -----------------------------------------------------------
+
+func TestVerifyReportsOKForIntactBackup(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("quinn")
+	env.upload(owner, "/", "uno.txt", "contenido uno")
+	env.upload(owner, "/", "dos.txt", "contenido dos")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	result, err := env.manager.Verify(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Verify falló: %v", err)
+	}
+	if !result.OK {
+		t.Errorf("result.OK = false, esperado true para un backup intacto: %+v", result.Files)
+	}
+	if len(result.Files) != 2 {
+		t.Fatalf("len(result.Files) = %d, esperado 2", len(result.Files))
+	}
+	for _, fr := range result.Files {
+		if !fr.OK || fr.Error != "" {
+			t.Errorf("fichero %s no reportó OK: %+v", fr.Name, fr)
+		}
+	}
+
+	// Verify es de solo lectura: no debe tocar el backup ni la BD.
+	if _, err := os.Stat(filepath.Join(env.destDir, job.ID, "manifest.json")); err != nil {
+		t.Errorf("manifest.json no debía tocarse: %v", err)
+	}
+	if job2, err := env.manager.repo.GetJobByID(context.Background(), job.ID); err != nil || job2.Status != StatusCompleted {
+		t.Errorf("el job no debía cambiar de estado tras Verify: %v, %+v", err, job2)
+	}
+}
+
+func TestVerifyDetectsCorruptedFileWithoutAbortingTheRest(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("rosa")
+	env.upload(owner, "/", "bueno.txt", "intacto")
+	env.upload(owner, "/", "afectado.txt", "contenido original")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+	backedUpPath := filepath.Join(env.destDir, job.ID, "data", env.defaultPoolID(), owner, "afectado.txt")
+	if err := os.WriteFile(backedUpPath, []byte("bytes distintos tras el backup"), 0o600); err != nil {
+		t.Fatalf("corrompiendo la copia de backup: %v", err)
+	}
+
+	result, err := env.manager.Verify(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("Verify (la llamada en sí) no debía fallar, solo reportar el problema: %v", err)
+	}
+	if result.OK {
+		t.Fatal("result.OK = true, esperado false: hay un fichero corrompido")
+	}
+	var sawGood, sawBad bool
+	for _, fr := range result.Files {
+		switch fr.Name {
+		case "bueno.txt":
+			sawGood = true
+			if !fr.OK {
+				t.Errorf("bueno.txt debía reportar OK: %+v", fr)
+			}
+		case "afectado.txt":
+			sawBad = true
+			if fr.OK || fr.Error == "" {
+				t.Errorf("afectado.txt debía reportar el error de integridad: %+v", fr)
+			}
+		}
+	}
+	if !sawGood || !sawBad {
+		t.Fatalf("esperaba resultados para ambos ficheros: %+v", result.Files)
+	}
+}
+
+func TestVerifyRejectsNonCompletedJob(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("sam")
+	env.upload(owner, "/", "roto.txt", "original")
+	onDisk := filepath.Join(env.poolDir, owner, "roto.txt")
+	if err := os.WriteFile(onDisk, []byte("corrompido"), 0o600); err != nil {
+		t.Fatalf("corrompiendo el fichero de origen: %v", err)
+	}
+	if _, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir}); err == nil {
+		t.Fatal("Run debía fallar")
+	}
+	jobs, err := env.manager.List(context.Background())
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("List = %v, %+v", err, jobs)
+	}
+
+	if _, err := env.manager.Verify(context.Background(), jobs[0].ID); !errors.Is(err, ErrJobNotRestorable) {
+		t.Errorf("Verify sobre un job failed: err = %v, esperado ErrJobNotRestorable", err)
+	}
+}
+
+func TestVerifyRejectsUnknownJob(t *testing.T) {
+	env := newBackupTestEnv(t)
+	if _, err := env.manager.Verify(context.Background(), "no-existe"); !errors.Is(err, ErrJobNotFound) {
+		t.Errorf("err = %v, esperado ErrJobNotFound", err)
+	}
+}
+
 // --- Retención (ADR-017) --------------------------------------------------
 
 func TestRunPrunesOldBackupsBeyondRetentionCount(t *testing.T) {

@@ -283,6 +283,83 @@ func (m *Manager) Restore(ctx context.Context, opts RestoreOptions) error {
 	return errors.Join(errs...)
 }
 
+// FileVerifyResult es el resultado de re-verificar un fichero concreto de
+// un backup ya hecho, sin restaurarlo a ningún sitio.
+type FileVerifyResult struct {
+	PoolName   string
+	OwnerID    string
+	ParentPath string
+	Name       string
+	OK         bool
+	Error      string // vacío si OK
+}
+
+// VerifyResult es el resultado de Verify sobre un job completo.
+type VerifyResult struct {
+	JobID string
+	OK    bool // true solo si TODOS los ficheros verificaron correctamente
+	Files []FileVerifyResult
+}
+
+// Verify relee el manifiesto de un backup y recalcula el SHA-256 de cada
+// fichero ya copiado, sin moverlo ni restaurarlo a ningún sitio -- permite
+// comprobar la salud de un backup antiguo (p.ej. antes de confiar en él
+// para borrar el original, o tras sospechar de un problema de disco) sin
+// pagar el coste de una restauración completa. No modifica nada: ni el
+// backup, ni la base de datos, ni ningún destino.
+func (m *Manager) Verify(ctx context.Context, jobID string) (*VerifyResult, error) {
+	job, err := m.repo.GetJobByID(ctx, jobID)
+	if err != nil {
+		return nil, err
+	}
+	if job.Status != StatusCompleted {
+		return nil, fmt.Errorf("%w: %s (status=%s)", ErrJobNotRestorable, job.ID, job.Status)
+	}
+
+	jobDir := filepath.Join(job.DestinationPath, job.ID)
+	manifest, err := readManifest(jobDir)
+	if err != nil {
+		return nil, fmt.Errorf("leyendo el manifiesto del backup %s: %w", job.ID, err)
+	}
+	dataDir := filepath.Join(jobDir, "data")
+
+	result := &VerifyResult{JobID: job.ID, OK: true}
+	for _, pm := range manifest.Pools {
+		for _, fm := range pm.Files {
+			path := filepath.Join(dataDir, pm.PoolID, fm.OwnerID, filepath.FromSlash(fm.ParentPath), fm.Name)
+			fr := FileVerifyResult{PoolName: pm.PoolName, OwnerID: fm.OwnerID, ParentPath: fm.ParentPath, Name: fm.Name}
+			if err := verifyFileHash(path, fm.SHA256); err != nil {
+				fr.Error = err.Error()
+				result.OK = false
+			} else {
+				fr.OK = true
+			}
+			result.Files = append(result.Files, fr)
+		}
+	}
+	return result, nil
+}
+
+// verifyFileHash recalcula el SHA-256 de path y lo compara con
+// expectedSHA256, sin escribir ni mover nada -- a diferencia de
+// copyVerified, es puramente de lectura.
+func verifyFileHash(path, expectedSHA256 string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("abriendo el fichero: %w", err)
+	}
+	defer f.Close()
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, f); err != nil {
+		return fmt.Errorf("leyendo el fichero: %w", err)
+	}
+	got := hex.EncodeToString(hasher.Sum(nil))
+	if got != expectedSHA256 {
+		return fmt.Errorf("%w: esperado %s, obtenido %s", ErrIntegrityMismatch, expectedSHA256, got)
+	}
+	return nil
+}
+
 func restoreOneFile(srcPath, destPath, expectedSHA256 string) error {
 	f, err := os.Open(srcPath)
 	if err != nil {

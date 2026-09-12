@@ -24,7 +24,7 @@ func newBackupCmd() *cobra.Command {
 		Use:   "backup",
 		Short: "Backup Manager: backup manual, listar y restaurar (§18)",
 	}
-	cmd.AddCommand(newBackupRunCmd(), newBackupListCmd(), newBackupRestoreCmd())
+	cmd.AddCommand(newBackupRunCmd(), newBackupListCmd(), newBackupRestoreCmd(), newBackupVerifyCmd())
 	return cmd
 }
 
@@ -190,4 +190,41 @@ func newBackupRestoreCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dest, "dest", "", "carpeta donde extraer el backup (obligatorio)")
 	return cmd
+}
+
+func newBackupVerifyCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "verify <job-id>",
+		Short: "Recalcula el SHA-256 de cada fichero de un backup ya hecho, sin restaurarlo",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, _, manager, err := openBackupManager(cfg, true)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			result, err := manager.Verify(cmd.Context(), args[0])
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, fr := range result.Files {
+				status := "OK"
+				if !fr.OK {
+					status = "MAL: " + fr.Error
+				}
+				fmt.Fprintf(out, "%-8s %q%s\n", status, fr.PoolName, filepath.Join(fr.ParentPath, fr.Name))
+			}
+			if !result.OK {
+				return fmt.Errorf("backup %s: al menos un fichero no verificó correctamente", args[0])
+			}
+			fmt.Fprintf(out, "Backup %s: %d archivos verificados correctamente\n", args[0], len(result.Files))
+			return nil
+		},
+	}
 }
