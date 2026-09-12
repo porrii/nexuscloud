@@ -17,6 +17,7 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
   static const _autoIntervalKey = 'nexuscloud.sync.auto_interval_minutes';
   static const _autoLastAtKey = 'nexuscloud.sync.auto_last_at';
   static const _autoLastSummaryKey = 'nexuscloud.sync.auto_last_summary';
+  static const _watchLocalEnabledKey = 'nexuscloud.sync.watch_local_enabled';
 
   // Claves de antes del slice 15 (un único par + una única dirección
   // globales) -- solo se leen para migrar, nunca se vuelven a escribir.
@@ -112,5 +113,17 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
     final summary = prefs.getString(_autoLastSummaryKey);
     if (at == null || summary == null) return null;
     return (at: DateTime.parse(at), summary: summary);
+  }
+
+  @override
+  Future<void> saveWatchLocalChanges(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_watchLocalEnabledKey, enabled);
+  }
+
+  @override
+  Future<bool> readWatchLocalChanges() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_watchLocalEnabledKey) ?? false;
   }
 }

@@ -21,6 +21,17 @@ abstract interface class SyncConfigRepository {
   /// [AutoSyncSettings.disabled] si no hay nada guardado todavía.
   Future<AutoSyncSettings> readAutoSync();
 
+  /// Ajuste de `LocalChangeWatcherService` (slice 17): vigilar la carpeta
+  /// local de cada par en `Subir`/`Ambos` y sincronizar sola poco después
+  /// de un cambio, sin esperar al reloj de auto-sync. Un booleano suelto
+  /// basta -- a diferencia de [AutoSyncSettings], no tiene más parámetros
+  /// que el propio interruptor.
+  Future<void> saveWatchLocalChanges(bool enabled);
+
+  /// `false` si no hay nada guardado todavía -- mismo criterio
+  /// "desactivado por defecto" que el resto de interruptores de esta app.
+  Future<bool> readWatchLocalChanges();
+
   /// Se persiste tras cada intento automático (con al menos un par
   /// configurado) para que sea visible en Ajustes aunque la página no
   /// estuviera abierta en ese momento. Se guarda como resumen de texto, no

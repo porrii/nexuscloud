@@ -16,6 +16,7 @@ import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_pair_config.dart';
 import '../../domain/repositories/sync_config_repository.dart';
 import '../../domain/services/auto_sync_scheduler.dart';
+import '../../domain/services/local_change_watcher_service.dart';
 import '../../domain/services/multi_pair_sync_coordinator.dart';
 import '../../domain/services/sync_engine.dart';
 import '../widgets/pair_edit_dialog.dart';
@@ -44,6 +45,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   final SyncEngine _syncEngine = sl<SyncEngine>();
   final MultiPairSyncCoordinator _coordinator = sl<MultiPairSyncCoordinator>();
   final AutoSyncScheduler _autoSyncScheduler = sl<AutoSyncScheduler>();
+  final LocalChangeWatcherService _watcherService = sl<LocalChangeWatcherService>();
   final AppTrayService _trayService = sl<AppTrayService>();
   final LaunchAtStartupService _launchAtStartupService =
       sl<LaunchAtStartupService>();
@@ -63,6 +65,8 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   bool _autoSyncEnabled = false;
   int _autoSyncIntervalMinutes = _autoSyncIntervalOptions[1];
   ({DateTime at, String summary})? _lastAutoOutcome;
+
+  bool _watchLocalChangesEnabled = false;
 
   /// Instantánea de `AppTrayService.minimizeToTrayOnClose` (slice 9) --
   /// mismo criterio que `_engineBusy`: el servicio ya lo cachea tras su
@@ -112,6 +116,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
     _loadPairs();
     _loadAutoSyncSettings();
+    _loadWatchLocalChangesSetting();
     _loadLaunchAtStartupSettings();
   }
 
@@ -138,6 +143,12 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       _autoSyncIntervalMinutes = settings.intervalMinutes;
       _lastAutoOutcome = outcome;
     });
+  }
+
+  Future<void> _loadWatchLocalChangesSetting() async {
+    final enabled = await _configRepository.readWatchLocalChanges();
+    if (!mounted) return;
+    setState(() => _watchLocalChangesEnabled = enabled);
   }
 
   /// El invariante de "iniciar minimizado no puede quedar huérfano" se
@@ -210,6 +221,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     if (config == null || !mounted) return;
     setState(() => _pairs = [..._pairs, config]);
     await _configRepository.savePairs(_pairs);
+    await _watcherService.updatePairs(_pairs);
   }
 
   Future<void> _editPair(int index) async {
@@ -219,6 +231,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       _pairs = [..._pairs]..[index] = config;
     });
     await _configRepository.savePairs(_pairs);
+    await _watcherService.updatePairs(_pairs);
   }
 
   Future<void> _removePair(int index) async {
@@ -229,6 +242,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       ).toList();
     });
     await _configRepository.savePairs(_pairs);
+    await _watcherService.updatePairs(_pairs);
   }
 
   Future<void> _syncAll() => _runSync(_pairs);
@@ -442,6 +456,20 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                 const Divider(),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
+                  title: const Text('Vigilar cambios locales'),
+                  subtitle: const Text(
+                    'Sincroniza sola, poco después de guardar o borrar un '
+                    'archivo en una carpeta con sentido "Subir" o "Ambos". '
+                    'No sustituye al reloj ni al botón manual, los '
+                    'complementa.',
+                  ),
+                  value: _watchLocalChangesEnabled,
+                  onChanged: _setWatchLocalChangesEnabled,
+                ),
+                const SizedBox(height: 8),
+                const Divider(),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
                   title: const Text('Minimizar a la bandeja al cerrar'),
                   subtitle: const Text(
                     'La X esconde la ventana en vez de cerrar la app -- así '
@@ -539,6 +567,11 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     await _autoSyncScheduler.updateSettings(
       AutoSyncSettings(enabled: _autoSyncEnabled, intervalMinutes: minutes),
     );
+  }
+
+  Future<void> _setWatchLocalChangesEnabled(bool value) async {
+    setState(() => _watchLocalChangesEnabled = value);
+    await _watcherService.setEnabled(value);
   }
 
   Future<void> _setMinimizeToTrayOnClose(bool value) async {

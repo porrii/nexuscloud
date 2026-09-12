@@ -182,6 +182,12 @@ class SyncEngine {
 
   bool get isRunning => _inFlightByPairKey.isNotEmpty;
 
+  /// Igual que [isRunning] pero acotado a UN par -- usado por
+  /// `LocalChangeWatcherService` (slice 17) para no apilar un redisparo si
+  /// ese par concreto ya está sincronizándose (la pasada en curso ya va a
+  /// dejarlo al día).
+  bool isPairRunning(SyncPair pair) => _inFlightByPairKey.containsKey(pair.stableKey);
+
   /// Deliberadamente NO `async`: el chequeo+asignación en
   /// [_inFlightByPairKey] tiene que ocurrir en el mismo tramo síncrono,
   /// antes de que `_runSync` ceda el control en su primer `await` interno --

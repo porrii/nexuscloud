@@ -67,6 +67,11 @@ dependencies:
   # LaunchAtStartupService elige registro (suelto) o StartupTask (MSIX).
   nexus_startup_task:
     path: packages/nexus_startup_task
+  # Vigilancia de filesystem (slice 17): DirectoryWatcher del paquete
+  # oficial dart-lang para reaccionar a cambios locales sin esperar al
+  # reloj de auto-sync. Resuelve limpio (confirmado con
+  # `flutter pub add --dry-run`), sin dependency_overrides.
+  watcher: ^1.2.1
 
 dev_dependencies:
   flutter_test:

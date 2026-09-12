@@ -134,4 +134,20 @@ void main() {
     expect(outcome!.at, at);
     expect(outcome.summary, '3 descargados, 0 errores');
   });
+
+  test('readWatchLocalChanges devuelve false si no hay nada guardado', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    expect(await repo.readWatchLocalChanges(), isFalse);
+  });
+
+  test('saveWatchLocalChanges y readWatchLocalChanges hacen round-trip', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    await repo.saveWatchLocalChanges(true);
+    expect(await repo.readWatchLocalChanges(), isTrue);
+
+    await repo.saveWatchLocalChanges(false);
+    expect(await repo.readWatchLocalChanges(), isFalse);
+  });
 }

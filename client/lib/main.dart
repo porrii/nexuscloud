@@ -8,6 +8,7 @@ import 'core/window/app_tray_service.dart';
 import 'core/window/launch_at_startup_service.dart';
 import 'features/auth/presentation/pages/auth_gate_page.dart';
 import 'features/sync/domain/services/auto_sync_scheduler.dart';
+import 'features/sync/domain/services/local_change_watcher_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,6 +18,9 @@ Future<void> main() async {
   // llamar aunque el auto-login todavía no haya terminado -- cada tick
   // comprueba la sesión antes de hacer nada (ver `AutoSyncScheduler`).
   await sl<AutoSyncScheduler>().start();
+  // Vigilancia de filesystem (slice 17): mismo criterio que el auto-sync de
+  // arriba -- reactiva lo que ya estuviera activado en una sesión anterior.
+  await sl<LocalChangeWatcherService>().start();
   // Bandeja del sistema (slice 9): icono + comportamiento de cierre, antes
   // de que la ventana pueda recibir ningún evento (ver `AppTrayService`).
   await sl<AppTrayService>().init();

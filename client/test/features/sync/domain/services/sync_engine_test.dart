@@ -499,6 +499,40 @@ void main() {
     },
   );
 
+  group('isPairRunning (slice 17, LocalChangeWatcherService)', () {
+    test('false antes de sincronizar', () {
+      const pair = SyncPair(remotePath: '/x', localPath: '/y');
+      expect(engine.isPairRunning(pair), isFalse);
+    });
+
+    test('true mientras ese par está en curso, false al terminar', () async {
+      fake.listingsByPath['/root'] = const DirectoryListing(directories: [], files: []);
+      fake.listGate = Completer<void>();
+      final pair = SyncPair(remotePath: '/root', localPath: '${tempDir.path}/x');
+
+      final future = engine.syncNow(pair);
+      expect(engine.isPairRunning(pair), isTrue);
+
+      fake.listGate!.complete();
+      await future;
+      expect(engine.isPairRunning(pair), isFalse);
+    });
+
+    test('un par en curso no afecta a isPairRunning de OTRO par (aislamiento)', () async {
+      fake.listingsByPath['/root-a'] = const DirectoryListing(directories: [], files: []);
+      fake.listGate = Completer<void>();
+      final pairA = SyncPair(remotePath: '/root-a', localPath: '${tempDir.path}/a');
+      final pairB = SyncPair(remotePath: '/root-b', localPath: '${tempDir.path}/b');
+
+      final future = engine.syncNow(pairA);
+      expect(engine.isPairRunning(pairA), isTrue);
+      expect(engine.isPairRunning(pairB), isFalse);
+
+      fake.listGate!.complete();
+      await future;
+    });
+  });
+
   test(
     'onBusyChanged emite true al arrancar y false al terminar, incluso en error',
     () async {
