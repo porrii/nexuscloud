@@ -74,7 +74,7 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 
 ## Backup Manager (§18)
 
-CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md) y [ADR-016](architecture/decisions/ADR-016-backup-automatico.md).
+CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md), [ADR-016](architecture/decisions/ADR-016-backup-automatico.md) y [ADR-017](architecture/decisions/ADR-017-retencion-backups.md).
 
 - `backup run [--dest <ruta>] [--pool <id-o-nombre>]...`: respalda todos los pools activos elegibles (o solo los indicados) a `--dest` (por defecto, la carpeta de backups de esta instancia, `cfg.BackupsDir()`). Un pool con `backup_policy=off` queda excluido siempre, incluso si se pide explícitamente por `--pool`; `inherit`/`on` se incluyen.
 - Cada backup escribe `<dest>/<job-id>/data/<pool-id>/<owner-id>/<ruta>/<nombre>` (calca el aislamiento físico por propietario que ya usa `FileService`) y un `<dest>/<job-id>/manifest.json` autocontenido con propietario/ruta/nombre/tamaño/SHA-256 de cada fichero -- el manifiesto es la fuente de verdad para restaurar, no la base de datos.
@@ -82,6 +82,7 @@ CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni 
 - `backup restore <job-id> --dest <ruta>` extrae los ficheros del backup (re-verificando SHA-256) a una carpeta elegida -- no reinserta en un pool activo ni toca la base de datos. Intenta recuperar todos los ficheros que pueda: uno con bitrot en el propio disco de backup no impide restaurar el resto.
 - **Automático** (`backup.enabled: true` + `backup.intervalMinutes`, `false` por defecto): un bucle en segundo plano del propio servidor (`internal/server.startBackupScheduleLoop`, mismo patrón que la purga de papelera) ejecuta el equivalente a `backup run` sin flags cada N minutos. Desactivado por defecto porque copia datos reales, normalmente al mismo disco (§19, sin cumplir la regla 3-2-1 todavía) -- el administrador debe activarlo a propósito. No se ejecuta al arrancar el servidor, solo tras el primer intervalo completo.
 - `backup list` muestra el historial (estado/fecha/ficheros/tamaño/destino) leyendo `backup_jobs` (migración `0007`).
+- **Retención** (`--keep-last N`/`--keep-days N` en `run`, o `backup.retentionCount`/`backup.retentionDays` para el modo automático; `0` = sin límite cada uno): tras un backup completado con éxito, conserva los backups completados que cumplan CUALQUIERA de las políticas activas en ESE MISMO destino (nunca cuenta jobs `failed` ni afecta a otros destinos) -- p.ej. con las dos activas, un backup reciente por cantidad pero antiguo por días igualmente sobrevive. Poda en mejor esfuerzo: si borrar una carpeta antigua falla, su fila en `backup_jobs` tampoco se borra, para no dejar un puntero a nada -- nunca hace fallar el backup recién completado por esto.
 
 ## Qué falta (fases posteriores)
 

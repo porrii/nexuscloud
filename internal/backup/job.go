@@ -47,4 +47,8 @@ type Repository interface {
 	GetJobByID(ctx context.Context, id string) (*Job, error)
 	// ListJobs devuelve todos los jobs, más reciente primero.
 	ListJobs(ctx context.Context) ([]*Job, error)
+	// DeleteJob borra la fila de un job (usado por la retención, ADR-017).
+	// No toca nada en disco -- eso es responsabilidad del llamador, igual
+	// que DeleteFile en storage.FileRepository no toca el Provider.
+	DeleteJob(ctx context.Context, id string) error
 }

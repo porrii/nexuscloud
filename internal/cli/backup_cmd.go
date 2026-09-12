@@ -64,6 +64,7 @@ func ensureWritableDir(dest string) (string, error) {
 func newBackupRunCmd() *cobra.Command {
 	var dest string
 	var poolRefs []string
+	var keepLast, keepDays int
 	cmd := &cobra.Command{
 		Use:   "run",
 		Short: "Ejecuta un backup manual y completo",
@@ -99,7 +100,9 @@ func newBackupRunCmd() *cobra.Command {
 				poolIDs = append(poolIDs, id)
 			}
 
-			job, err := manager.Run(cmd.Context(), backup.RunOptions{PoolIDs: poolIDs, DestinationPath: absDest})
+			job, err := manager.Run(cmd.Context(), backup.RunOptions{
+				PoolIDs: poolIDs, DestinationPath: absDest, RetentionCount: keepLast, RetentionDays: keepDays,
+			})
 			if err != nil {
 				return err
 			}
@@ -110,6 +113,8 @@ func newBackupRunCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&dest, "dest", "", "carpeta de destino (por defecto: la carpeta de backups de esta instancia)")
 	cmd.Flags().StringArrayVar(&poolRefs, "pool", nil, "id o nombre de un storage pool a respaldar (repetible; por defecto, todos los elegibles)")
+	cmd.Flags().IntVar(&keepLast, "keep-last", 0, "conserva solo los N backups completados más recientes en --dest tras este run (0 = sin límite)")
+	cmd.Flags().IntVar(&keepDays, "keep-days", 0, "conserva solo los backups completados de los últimos N días en --dest tras este run (0 = sin límite)")
 	return cmd
 }
 

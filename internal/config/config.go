@@ -142,6 +142,14 @@ type SharingConfig struct {
 type BackupConfig struct {
 	Enabled         bool `yaml:"enabled"`
 	IntervalMinutes int  `yaml:"intervalMinutes"`
+	// RetentionCount/RetentionDays, si son > 0, podan backups completados por
+	// destino tras cada backup (ADR-017): se componen como "unión de
+	// motivos para conservar" -- un backup se poda solo si TODAS las
+	// políticas activas votan podarlo; basta con que una activa vote
+	// conservarlo para que sobreviva. Ambas en 0 (por defecto) = sin
+	// límite -- no se borra nada hasta que el administrador lo pida.
+	RetentionCount int `yaml:"retentionCount"`
+	RetentionDays  int `yaml:"retentionDays"`
 }
 
 type RateLimitConfig struct {

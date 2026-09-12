@@ -232,7 +232,9 @@ func startBackupScheduleLoop(manager *backup.Manager, cfg config.BackupConfig, d
 		// árbol grande puede tardar bastante más que purgar filas expiradas.
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 		defer cancel()
-		job, err := manager.Run(ctx, backup.RunOptions{DestinationPath: destDir})
+		job, err := manager.Run(ctx, backup.RunOptions{
+			DestinationPath: destDir, RetentionCount: cfg.RetentionCount, RetentionDays: cfg.RetentionDays,
+		})
 		if err != nil {
 			logger.Error("backup automático falló", "error", err)
 			return

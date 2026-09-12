@@ -88,6 +88,21 @@ func (r *SQLRepository) ListJobs(ctx context.Context) ([]*Job, error) {
 	return out, rows.Err()
 }
 
+func (r *SQLRepository) DeleteJob(ctx context.Context, id string) error {
+	res, err := r.conn.ExecContext(ctx, `DELETE FROM backup_jobs WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("borrando backup job: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrJobNotFound
+	}
+	return nil
+}
+
 type rowScanner interface {
 	Scan(dest ...any) error
 }

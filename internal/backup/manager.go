@@ -37,6 +37,15 @@ type RunOptions struct {
 	// Vacío = todos los pools activos elegibles.
 	PoolIDs         []string
 	DestinationPath string
+	// RetentionCount/RetentionDays, si son > 0, podan backups COMPLETADOS en
+	// este MISMO DestinationPath tras completar este Run con éxito (nunca
+	// cuentan ni tocan backups de otra ruta ni jobs failed). Se componen
+	// como "unión de motivos para conservar": un backup se poda solo si
+	// CADA política activa (>0) vota podarlo -- si cualquiera de las dos
+	// activas vota conservarlo, se conserva. Con ambas en 0 (por defecto),
+	// nunca se poda nada. Ver ADR-017.
+	RetentionCount int
+	RetentionDays  int
 }
 
 // Run ejecuta un backup manual y completo. Un pool con BackupPolicy=off
@@ -110,7 +119,55 @@ func (m *Manager) Run(ctx context.Context, opts RunOptions) (*Job, error) {
 		return nil, fmt.Errorf("marcando el backup job como completado: %w", err)
 	}
 	job.Status = StatusCompleted
+
+	if opts.RetentionCount > 0 || opts.RetentionDays > 0 {
+		m.pruneOldBackups(ctx, opts.DestinationPath, opts.RetentionCount, opts.RetentionDays)
+	}
 	return job, nil
+}
+
+// pruneOldBackups aplica la política de retención (ADR-017) sobre los
+// backups completados en destinationPath. Best-effort y deliberadamente
+// silencioso ante errores individuales (§173: el ÉXITO del backup que se
+// acaba de completar nunca debe reportarse como fallo solo porque podar
+// uno viejo no funcionó). Nunca toca jobs failed (no son "backups sanos"
+// que rotar) ni los de otro destino.
+//
+// Composición de retentionCount/retentionDays: "unión de motivos para
+// conservar" -- un backup se poda solo si TODAS las políticas activas
+// (>0) votan podarlo; una política en 0 no vota (ni a favor ni en
+// contra), simplemente no participa. Así, si solo una está activa, se
+// comporta exactamente como esa única política; si las dos lo están, basta
+// con que UNA quiera conservarlo para que sobreviva -- nunca al revés.
+func (m *Manager) pruneOldBackups(ctx context.Context, destinationPath string, retentionCount, retentionDays int) {
+	all, err := m.repo.ListJobs(ctx)
+	if err != nil {
+		return
+	}
+	var completed []*Job // ListJobs ya viene ordenado started_at DESC
+	for _, j := range all {
+		if j.Status == StatusCompleted && j.DestinationPath == destinationPath {
+			completed = append(completed, j)
+		}
+	}
+
+	cutoff := time.Now().Add(-time.Duration(retentionDays) * 24 * time.Hour)
+	for i, old := range completed {
+		prune := true
+		if retentionCount > 0 {
+			prune = prune && i >= retentionCount
+		}
+		if retentionDays > 0 {
+			prune = prune && !old.StartedAt.After(cutoff)
+		}
+		if !prune {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(destinationPath, old.ID)); err != nil {
+			continue // no se borra la fila si no se pudo borrar la carpeta -- nunca dejar un puntero a nada
+		}
+		_ = m.repo.DeleteJob(ctx, old.ID)
+	}
 }
 
 func (m *Manager) fail(ctx context.Context, job *Job, cause error) (*Job, error) {

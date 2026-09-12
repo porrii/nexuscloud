@@ -121,6 +121,28 @@ func TestValidateAllowsZeroIntervalWhenBackupDisabled(t *testing.T) {
 	}
 }
 
+func TestDefaultsBackupRetentionCountIsUnlimited(t *testing.T) {
+	if got := Defaults().Backup.RetentionCount; got != 0 {
+		t.Errorf("Backup.RetentionCount = %d, esperado 0 (sin límite) por defecto", got)
+	}
+}
+
+func TestValidateRejectsNegativeBackupRetentionCount(t *testing.T) {
+	cfg := Defaults()
+	cfg.Backup.RetentionCount = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar backup.retentionCount negativo")
+	}
+}
+
+func TestValidateRejectsNegativeBackupRetentionDays(t *testing.T) {
+	cfg := Defaults()
+	cfg.Backup.RetentionDays = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar backup.retentionDays negativo")
+	}
+}
+
 func TestValidateRejectsUnsupportedConfigVersion(t *testing.T) {
 	cfg := Defaults()
 	cfg.ConfigVersion = CurrentConfigVersion + 1

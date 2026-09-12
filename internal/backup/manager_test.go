@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -438,6 +439,240 @@ func TestRestoreDetectsBitrotInBackupDestination(t *testing.T) {
 	}
 }
 
+// --- Retención (ADR-017) --------------------------------------------------
+
+func TestRunPrunesOldBackupsBeyondRetentionCount(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("judy")
+
+	var jobIDs []string
+	for i := 0; i < 3; i++ {
+		env.upload(owner, "/", "archivo.txt", fmt.Sprintf("versión %d", i))
+		job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, RetentionCount: 2})
+		if err != nil {
+			t.Fatalf("Run %d falló: %v", i, err)
+		}
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("len(jobs) = %d, esperado 2 tras podar con RetentionCount=2: %+v", len(jobs), jobs)
+	}
+	if _, err := env.manager.repo.GetJobByID(context.Background(), jobIDs[0]); !errors.Is(err, ErrJobNotFound) {
+		t.Errorf("el job más antiguo (%s) debía haberse borrado de la BD, err=%v", jobIDs[0], err)
+	}
+	if _, err := os.Stat(filepath.Join(env.destDir, jobIDs[0])); !os.IsNotExist(err) {
+		t.Errorf("la carpeta del job más antiguo (%s) debía haberse borrado del disco, err=%v", jobIDs[0], err)
+	}
+	for _, id := range jobIDs[1:] {
+		if _, err := os.Stat(filepath.Join(env.destDir, id, "manifest.json")); err != nil {
+			t.Errorf("el job %s debía conservarse intacto: %v", id, err)
+		}
+	}
+}
+
+func TestRunPrunesOldBackupsBeyondRetentionDays(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("noah")
+
+	oldID := env.createSyntheticCompletedJob(env.destDir, time.Now().Add(-40*24*time.Hour))
+
+	env.upload(owner, "/", "reciente.txt", "contenido")
+	newJob, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, RetentionDays: 30})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	if _, err := env.manager.repo.GetJobByID(context.Background(), oldID); !errors.Is(err, ErrJobNotFound) {
+		t.Errorf("el job de hace 40 días debía podarse con RetentionDays=30, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.destDir, oldID)); !os.IsNotExist(err) {
+		t.Errorf("la carpeta del job de hace 40 días debía borrarse del disco, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(env.destDir, newJob.ID, "manifest.json")); err != nil {
+		t.Errorf("el job recién completado debía conservarse: %v", err)
+	}
+}
+
+// TestRunRetentionDaysOverridesAggressiveCount demuestra la mitad "la edad
+// salva de una cuenta agresiva" de la composición (ADR-017): con
+// RetentionCount=2 puro, los jobs en las posiciones 2+ se podarían; con
+// RetentionDays=30 activo A LA VEZ, como los 5 son recientes, ninguno se
+// poda -- basta con que UNA política activa vote conservar.
+func TestRunRetentionDaysOverridesAggressiveCount(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("olga")
+
+	var jobIDs []string
+	for i := 0; i < 5; i++ {
+		env.upload(owner, "/", "archivo.txt", fmt.Sprintf("v%d", i))
+		job, err := env.manager.Run(context.Background(), RunOptions{
+			DestinationPath: env.destDir, RetentionCount: 2, RetentionDays: 30,
+		})
+		if err != nil {
+			t.Fatalf("Run %d falló: %v", i, err)
+		}
+		jobIDs = append(jobIDs, job.ID)
+	}
+
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(jobs) != 5 {
+		t.Errorf("len(jobs) = %d, esperado 5: RetentionDays=30 (todos recientes) debía salvarlos pese a RetentionCount=2", len(jobs))
+	}
+	for _, id := range jobIDs {
+		if _, err := os.Stat(filepath.Join(env.destDir, id, "manifest.json")); err != nil {
+			t.Errorf("el job %s debía conservarse intacto: %v", id, err)
+		}
+	}
+}
+
+// TestRunRetentionCountOverridesAggressiveDays demuestra la otra mitad: con
+// RetentionDays=30 puro, dos jobs de hace 45 días se podarían por antiguos;
+// con RetentionCount=5 activo a la vez (más que suficiente para cubrir los
+// 2 que existen), la cuenta los salva a ambos -- ninguno se poda.
+func TestRunRetentionCountOverridesAggressiveDays(t *testing.T) {
+	env := newBackupTestEnv(t)
+
+	id1 := env.createSyntheticCompletedJob(env.destDir, time.Now().Add(-45*24*time.Hour))
+	id2 := env.createSyntheticCompletedJob(env.destDir, time.Now().Add(-44*24*time.Hour))
+
+	// Un tercer Run real, con la misma política, es lo que dispara la poda
+	// (la poda ocurre siempre al final de un Run exitoso).
+	owner := env.user("piotr")
+	env.upload(owner, "/", "trigger.txt", "contenido")
+	if _, err := env.manager.Run(context.Background(), RunOptions{
+		DestinationPath: env.destDir, RetentionCount: 5, RetentionDays: 30,
+	}); err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	for _, id := range []string{id1, id2} {
+		if _, err := env.manager.repo.GetJobByID(context.Background(), id); err != nil {
+			t.Errorf("el job %s (45/44 días) debía conservarse: RetentionCount=5 solo tiene 3 jobs en total, ninguno queda fuera del top-5: %v", id, err)
+		}
+		if _, err := os.Stat(filepath.Join(env.destDir, id, "manifest.json")); err != nil {
+			t.Errorf("la carpeta del job %s debía conservarse intacta: %v", id, err)
+		}
+	}
+}
+
+func TestRunRetentionZeroKeepsEverything(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("karl")
+
+	for i := 0; i < 3; i++ {
+		env.upload(owner, "/", fmt.Sprintf("archivo-%d.txt", i), "contenido")
+		if _, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir}); err != nil {
+			t.Fatalf("Run %d falló: %v", i, err)
+		}
+	}
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(jobs) != 3 {
+		t.Errorf("len(jobs) = %d, esperado 3: sin RetentionCount (0 por defecto) no debe podar nada", len(jobs))
+	}
+}
+
+func TestRunRetentionOnlyAffectsSameDestination(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("liam")
+	destA, destB := env.destDir, t.TempDir()
+
+	var lastA, lastB string
+	for i := 0; i < 3; i++ {
+		env.upload(owner, "/", "a.txt", fmt.Sprintf("a%d", i))
+		jobA, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: destA, RetentionCount: 1})
+		if err != nil {
+			t.Fatalf("Run A %d falló: %v", i, err)
+		}
+		lastA = jobA.ID
+		jobB, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: destB})
+		if err != nil {
+			t.Fatalf("Run B %d falló: %v", i, err)
+		}
+		lastB = jobB.ID
+	}
+	_ = lastB
+
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	var atA, atB int
+	for _, j := range jobs {
+		switch j.DestinationPath {
+		case destA:
+			atA++
+		case destB:
+			atB++
+		}
+	}
+	if atA != 1 {
+		t.Errorf("jobs en destA = %d, esperado 1 (podado con RetentionCount=1)", atA)
+	}
+	if atB != 3 {
+		t.Errorf("jobs en destB = %d, esperado 3 (sin retención, no debe verse afectado por la poda de destA)", atB)
+	}
+	if _, err := os.Stat(filepath.Join(destA, lastA, "manifest.json")); err != nil {
+		t.Errorf("el último job de destA debía sobrevivir: %v", err)
+	}
+}
+
+func TestRunRetentionNeverPrunesFailedJobs(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("mia")
+
+	env.upload(owner, "/", "roto.txt", "original")
+	onDisk := filepath.Join(env.poolDir, owner, "roto.txt")
+	if err := os.WriteFile(onDisk, []byte("corrompido"), 0o600); err != nil {
+		t.Fatalf("corrompiendo el fichero de origen: %v", err)
+	}
+	if _, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, RetentionCount: 1}); err == nil {
+		t.Fatal("Run debía fallar por el hash que no coincide")
+	}
+	failedJobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(failedJobs) != 1 || failedJobs[0].Status != StatusFailed {
+		t.Fatalf("esperaba exactamente 1 job failed tras el Run corrupto: %+v", failedJobs)
+	}
+	failedJobID := failedJobs[0].ID
+
+	// Arregla el origen y encadena 2 backups sanos más con la misma
+	// RetentionCount -- el job failed nunca debe entrar en la cuenta ni
+	// borrarse, solo se poda entre los completed.
+	if err := os.WriteFile(onDisk, []byte("original"), 0o600); err != nil {
+		t.Fatalf("restaurando el fichero de origen: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		env.upload(owner, "/", fmt.Sprintf("sano-%d.txt", i), "contenido sano")
+		if _, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, RetentionCount: 1}); err != nil {
+			t.Fatalf("Run sano %d falló: %v", i, err)
+		}
+	}
+
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(jobs) != 2 {
+		t.Fatalf("len(jobs) = %d, esperado 2 (1 failed intacto + 1 completed tras podar con RetentionCount=1): %+v", len(jobs), jobs)
+	}
+	if _, err := env.manager.repo.GetJobByID(context.Background(), failedJobID); err != nil {
+		t.Errorf("el job failed (%s) nunca debía borrarse: %v", failedJobID, err)
+	}
+}
+
 // writeFileToPool sube contenido directamente al Provider de un pool
 // concreto + su fila de metadatos, sin pasar por el pool activo por defecto
 // que usa FileService.Upload -- necesario en los tests para dirigir un
@@ -461,4 +696,33 @@ func writeFileToPool(t *testing.T, env *backupTestEnv, poolID, ownerID, parentPa
 	if err := env.files.UpsertFile(ctx, meta); err != nil {
 		t.Fatalf("UpsertFile falló: %v", err)
 	}
+}
+
+// createSyntheticCompletedJob inserta un backup "completed" ya terminado en
+// startedAt, con su carpeta y manifest.json reales en disco (aunque sin
+// ningún fichero de datos dentro -- no hace falta para probar la política
+// de retención). Necesario porque Run siempre usa time.Now(): es la única
+// forma de tener en los tests un backup "antiguo" de verdad para las
+// pruebas de RetentionDays.
+func (e *backupTestEnv) createSyntheticCompletedJob(destinationPath string, startedAt time.Time) string {
+	e.t.Helper()
+	ctx := context.Background()
+	job := &Job{
+		ID:              idgen.New(),
+		Status:          StatusCompleted,
+		DestinationPath: destinationPath,
+		PoolIDs:         []string{e.defaultPoolID()},
+		StartedAt:       startedAt,
+	}
+	if err := e.backupRepo.CreateJob(ctx, job); err != nil {
+		e.t.Fatalf("CreateJob (sintético) falló: %v", err)
+	}
+	jobDir := filepath.Join(destinationPath, job.ID)
+	if err := os.MkdirAll(jobDir, 0o750); err != nil {
+		e.t.Fatalf("creando la carpeta del job sintético: %v", err)
+	}
+	if err := writeManifest(jobDir, &Manifest{JobID: job.ID, CreatedAt: startedAt}); err != nil {
+		e.t.Fatalf("writeManifest (sintético) falló: %v", err)
+	}
+	return job.ID
 }

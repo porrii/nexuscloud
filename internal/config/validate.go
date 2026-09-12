@@ -79,6 +79,12 @@ func Validate(cfg *Config) error {
 	if cfg.Backup.Enabled && cfg.Backup.IntervalMinutes < 1 {
 		return fmt.Errorf("backup.intervalMinutes debe ser >= 1 cuando backup.enabled=true")
 	}
+	if cfg.Backup.RetentionCount < 0 {
+		return fmt.Errorf("backup.retentionCount no puede ser negativo (0 = sin límite)")
+	}
+	if cfg.Backup.RetentionDays < 0 {
+		return fmt.Errorf("backup.retentionDays no puede ser negativo (0 = sin límite)")
+	}
 
 	if err := validateStorageAreas(cfg); err != nil {
 		return err
