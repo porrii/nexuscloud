@@ -28,7 +28,13 @@ Ningún otro paquete debe tocar `Provider` directamente ni construir rutas de ar
 
 `storage_pools` modela pools con `name`, `type` (`local` en Fase 1), `path`, `priority`, `status`. Al arrancar, `storage.EnsureDefaultPool` crea un pool `default` si no existe ninguno — el repositorio en sí nunca crea pools implícitamente, para que la lógica de arranque sea explícita y auditable.
 
-RAID (§11-12) y detección de discos/SMART siguen pendientes (ver "Qué falta" más abajo): NexusCloud nunca implementará su propio RAID — detectará y mostrará el estado de las tecnologías que ya ofrezca el sistema operativo (mdadm, Storage Spaces, ZFS/Btrfs).
+Detección de RAID (§12) implementada para Linux/mdadm -- ver más abajo. SMART/temperatura siguen pendientes (ver "Qué falta"). NexusCloud nunca implementará su propio RAID — detecta y muestra el estado de las tecnologías que ya ofrezca el sistema operativo.
+
+## RAID (§12)
+
+`nexuscloud storage raid` (`internal/storage/raidinfo`, [ADR-018](architecture/decisions/ADR-018-raid-detection.md)): detecta arrays mdadm vía `/proc/mdstat`, solo lectura, solo Linux por ahora. Muestra nivel, dispositivos miembro y estado (`OK`/`DEGRADADO`/`INACTIVO`), más el progreso si hay una reconstrucción en curso. Mismo patrón que `storage disks` (`diskinfo`): `ErrUnsupported` en plataformas sin adaptador (hoy, todo lo que no sea Linux) en vez de fallar, y `/proc/mdstat` ausente se trata como "sin arrays", no como error.
+
+**Limitación de verificación, documentada en ADR-018**: la detección positiva (array sano/degradado/en reconstrucción) está probada exhaustivamente con texto realista de `/proc/mdstat` en tests unitarios, pero no contra un array real -- ni el entorno de desarrollo ni el contenedor de pruebas de este proyecto tienen uno configurado, y crearlo exigiría operaciones de bloque con privilegios que el sandbox deniega. Mismo criterio ya aceptado para el parseo de `/proc/mounts` en `diskinfo`.
 
 ## Identificadores
 
@@ -74,7 +80,7 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 
 ## Backup Manager (§18)
 
-CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md), [ADR-016](architecture/decisions/ADR-016-backup-automatico.md) y [ADR-017](architecture/decisions/ADR-017-retencion-backups.md).
+CLI para lo manual (`nexuscloud backup run|list|restore|verify`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md), [ADR-016](architecture/decisions/ADR-016-backup-automatico.md) y [ADR-017](architecture/decisions/ADR-017-retencion-backups.md).
 
 - `backup run [--dest <ruta>] [--pool <id-o-nombre>]...`: respalda todos los pools activos elegibles (o solo los indicados) a `--dest` (por defecto, la carpeta de backups de esta instancia, `cfg.BackupsDir()`). Un pool con `backup_policy=off` queda excluido siempre, incluso si se pide explícitamente por `--pool`; `inherit`/`on` se incluyen.
 - Cada backup escribe `<dest>/<job-id>/data/<pool-id>/<owner-id>/<ruta>/<nombre>` (calca el aislamiento físico por propietario que ya usa `FileService`) y un `<dest>/<job-id>/manifest.json` autocontenido con propietario/ruta/nombre/tamaño/SHA-256 de cada fichero -- el manifiesto es la fuente de verdad para restaurar, no la base de datos.
@@ -83,11 +89,13 @@ CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni 
 - **Automático** (`backup.enabled: true` + `backup.intervalMinutes`, `false` por defecto): un bucle en segundo plano del propio servidor (`internal/server.startBackupScheduleLoop`, mismo patrón que la purga de papelera) ejecuta el equivalente a `backup run` sin flags cada N minutos. Desactivado por defecto porque copia datos reales, normalmente al mismo disco (§19, sin cumplir la regla 3-2-1 todavía) -- el administrador debe activarlo a propósito. No se ejecuta al arrancar el servidor, solo tras el primer intervalo completo.
 - `backup list` muestra el historial (estado/fecha/ficheros/tamaño/destino) leyendo `backup_jobs` (migración `0007`).
 - **Retención** (`--keep-last N`/`--keep-days N` en `run`, o `backup.retentionCount`/`backup.retentionDays` para el modo automático; `0` = sin límite cada uno): tras un backup completado con éxito, conserva los backups completados que cumplan CUALQUIERA de las políticas activas en ESE MISMO destino (nunca cuenta jobs `failed` ni afecta a otros destinos) -- p.ej. con las dos activas, un backup reciente por cantidad pero antiguo por días igualmente sobrevive. Poda en mejor esfuerzo: si borrar una carpeta antigua falla, su fila en `backup_jobs` tampoco se borra, para no dejar un puntero a nada -- nunca hace fallar el backup recién completado por esto.
+- `backup verify <job-id>` recalcula el SHA-256 de cada fichero ya copiado en un backup, sin restaurarlo a ningún sitio ni tocar nada -- útil para comprobar la salud de un backup antiguo (p.ej. antes de confiar en él para borrar el original) sin pagar el coste de una restauración completa. Revisa TODOS los ficheros aunque alguno falle (igual que `restore`); código de salida distinto de cero si algo no verificó.
 
 ## Qué falta (fases posteriores)
 
-- **RAID** (§12) y **snapshots** (§17): delegado a las tecnologías que ya ofrezca el sistema operativo (mdadm, Storage Spaces, ZFS/Btrfs) -- NexusCloud detecta y muestra su estado, nunca implementa su propio RAID/snapshots.
-- **Backup incremental, cifrado y rotación/retención automática** (§18/§173): el Backup Manager de arriba es completo (con modo manual y automático); estas capacidades son slices futuros del mismo Backup Manager.
+- **RAID en Windows (Storage Spaces) y RAID hardware/JBOD** (§12): solo Linux/mdadm implementado (ver sección RAID arriba); Storage Spaces es un mecanismo completamente distinto (PowerShell/WMI), slice futuro dedicado.
+- **Snapshots** (§17): delegado a las tecnologías que ya ofrezca el sistema de archivos subyacente (ZFS/Btrfs/Storage Spaces) -- NexusCloud nunca implementará su propio mecanismo de snapshots; sin código todavía.
+- **Backup incremental y cifrado** (§18/§173): el Backup Manager ya tiene manual/automático/retención/verify (ver sección Backup Manager); estas dos capacidades son slices futuros del mismo Backup Manager.
 - **Restaurar directamente a un pool activo** (reinsertando metadatos): el `restore` actual solo extrae a una carpeta elegida.
 - **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.
 - **Miniaturas/previsualización/búsqueda de contenido** (§33-35): Fase 2.

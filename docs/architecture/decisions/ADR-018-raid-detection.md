@@ -1,0 +1,27 @@
+# ADR-018: Detección de RAID (Linux mdadm), solo lectura, solo Linux por ahora
+
+## Estado
+
+Aceptado.
+
+## Contexto
+
+Fase 5 tiene tres pilares: Backup Manager (slices 1-4, ya maduro), Snapshots y RAID/discos -- los dos últimos sin ningún código todavía. §12 exige explícitamente: **nunca implementar RAID propio**, detectar el que ya ofrezca el sistema operativo (mdadm en Linux, Storage Spaces en Windows, RAID hardware, JBOD) y mostrar su estado, advirtiendo de disco degradado/fallido/rebuild/capacidad reducida/riesgo de pérdida de datos.
+
+`internal/storage/diskinfo` (Fase C) ya dejó esto anotado como "deliberadamente fuera de esta primera versión" y ya fija el patrón a seguir: un adaptador por sistema operativo vía build tags, con la función de parseo separada de las llamadas al sistema real para poder probarla con texto sintético (`parseMountLines` se prueba así hoy, sin ningún `/proc/mounts` real).
+
+## Decisión
+
+1. **Paquete hermano nuevo `internal/storage/raidinfo`, no una extensión de `diskinfo`.** Un array RAID es una entidad de bloque, no un punto de montaje -- `diskinfo.Disk` y `raidinfo.RaidArray` son conceptos relacionados pero distintos (un `/dev/mdX` con filesystem encima SÍ aparecería además como un `Disk` normal vía `diskinfo`, sin relación de dependencia entre los dos paquetes).
+2. **Mismo patrón exacto que `diskinfo`**: `Enumerate(ctx)` delega en un `enumerate(ctx)` específico por SO (build tags); sin adaptador para la plataforma actual, `ErrUnsupported` -- nunca rompe la compilación ni el resto del sistema. El parseo del formato real (`parseMdstat`) vive separado de la apertura del fichero, para poder probarlo con texto sintético sin ningún array real.
+3. **Alcance de esta primera versión: solo Linux, vía `/proc/mdstat` (mdadm software RAID).** Windows Storage Spaces es un mecanismo completamente distinto (PowerShell/WMI, nada parseable en disco) y queda para un slice futuro dedicado -- de momento `Enumerate` devuelve `ErrUnsupported` en Windows igual que en cualquier plataforma sin adaptador. RAID hardware (controladoras dedicadas) y JBOD también quedan fuera: no hay una fuente de datos portable sin herramientas privilegiadas adicionales (mismo motivo por el que Fase C ya excluyó `smartctl`).
+4. **`parseMdstat` es deliberadamente tolerante, no una gramática completa.** El formato de `/proc/mdstat` lleva décadas estable pero tiene variantes según el nivel de RAID (RAID5/6 añaden "level 5, 512k chunk, algorithm 2" entre la versión de superbloque y los contadores). El parser solo extrae las señales de seguridad que pide §12 -- identidad del array, dispositivos miembro, degradado, en reconstrucción -- ignorando cualquier campo intermedio que no reconozca en vez de exigir que la línea entera encaje en un patrón rígido. Los contadores `[N/M]` y el patrón por-dispositivo `[U_...]` se localizan como los DOS ÚLTIMOS grupos entre corchetes de la línea de estado, no por posición fija, precisamente para tolerar esos campos variables.
+5. **`/proc/mdstat` ausente (`os.IsNotExist`) se trata como "sin arrays" (`nil, nil`), no como error.** Un kernel Linux sin el módulo `md` cargado no tiene RAID software, lo cual es un estado válido y común, no un fallo de NexusCloud.
+6. **Limitación de verificación, explícita y aceptada de antemano.** Ni el entorno de desarrollo de este slice ni su contenedor Docker de pruebas tienen un array RAID real configurado, y crear uno de verdad (loop devices + `mdadm --create`) exige operaciones de bloque con privilegios que el sandbox de esta sesión ya deniega (confirmado empíricamente: `dd` fue rechazado por política antes en este mismo proyecto). La verificación de la detección positiva (array sano/degradado/en reconstrucción) se apoya **solo** en tests unitarios contra texto realista de `/proc/mdstat` -- mismo criterio ya aceptado en este propio paquete hermano para `parseMountLines`. La verificación end-to-end contra el contenedor real solo puede confirmar la ruta "sin arrays", que es el estado genuino de ese entorno.
+
+## Consecuencias
+
+- `nexuscloud storage raid` da una primera respuesta a §12 en Linux hoy mismo, sin ningún riesgo de romper nada (solo lectura, ningún cambio de comportamiento existente).
+- Windows sigue sin ninguna detección de RAID -- una instancia NexusCloud en Windows con Storage Spaces configurado no verá nada todavía; documentado como hueco conocido, no silenciado.
+- La limitación de verificación (solo unitarios para la detección positiva) es un precedente ya aceptado en este mismo paquete hermano (`diskinfo`) para casos donde el hardware/SO real no está disponible en el entorno de desarrollo -- no es una rebaja de rigor específica de este slice.
+- Añadir alertas activas (§58 "RAID degradado") o mostrarlo en un dashboard es trabajo futuro que puede construirse encima de `raidinfo.Enumerate` sin cambiarlo -- ya devuelve todo lo necesario (`Degraded`, `Recovering`, `RecoveryPct`) para alimentar una alerta el día que exista el sistema de alertas.

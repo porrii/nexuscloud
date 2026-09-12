@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -16,15 +17,17 @@ import (
 	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/storage/diskinfo"
+	"github.com/porrii/nexuscloud/internal/storage/raidinfo"
 )
 
 func newStorageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "storage",
-		Short: "Gestión del almacenamiento: discos y Storage Pools",
+		Short: "Gestión del almacenamiento: discos, RAID y Storage Pools",
 	}
 	cmd.AddCommand(
 		newStorageDisksCmd(),
+		newStorageRaidCmd(),
 		newStoragePoolListCmd(),
 		newStoragePoolAddCmd(),
 		newStoragePoolStatusCmd("enable", "active", "Activa un Storage Pool"),
@@ -101,6 +104,57 @@ func newStorageDisksCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- raid (Fase 5, §12) --------------------------------------------------
+
+func newStorageRaidCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "raid",
+		Short: "Detecta arrays RAID gestionados por el sistema operativo (mdadm)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			arrays, err := raidinfo.Enumerate(cmd.Context())
+			if errors.Is(err, raidinfo.ErrUnsupported) {
+				fmt.Fprintln(cmd.OutOrStdout(),
+					"La detección de RAID no está soportada en este sistema operativo todavía.")
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("detectando RAID: %w", err)
+			}
+			if len(arrays) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No se detectó ningún array RAID.")
+				return nil
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%-8s %-8s %-24s %s\n", "ARRAY", "NIVEL", "DISPOSITIVOS", "ESTADO")
+			for _, a := range arrays {
+				estado := "OK"
+				if a.Degraded {
+					estado = "DEGRADADO"
+				}
+				if !a.Active {
+					estado = "INACTIVO"
+				}
+				fmt.Fprintf(out, "%-8s %-8s %-24s %d/%d %s\n",
+					a.Name, a.Level, truncate(raidDeviceNames(a.Devices), 24),
+					a.ActiveDevices, a.TotalDevices, estado)
+				if a.Recovering {
+					fmt.Fprintf(out, "         reconstruyendo: %.1f%%\n", a.RecoveryPct)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func raidDeviceNames(devices []raidinfo.RaidDevice) string {
+	names := make([]string, len(devices))
+	for i, d := range devices {
+		names[i] = d.Name
+	}
+	return strings.Join(names, ",")
 }
 
 // --- pools --------------------------------------------------------------
