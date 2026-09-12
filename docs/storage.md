@@ -32,9 +32,13 @@ Detección de RAID (§12) implementada para Linux/mdadm -- ver más abajo. SMART
 
 ## RAID (§12)
 
-`nexuscloud storage raid` (`internal/storage/raidinfo`, [ADR-018](architecture/decisions/ADR-018-raid-detection.md)): detecta arrays mdadm vía `/proc/mdstat`, solo lectura, solo Linux por ahora. Muestra nivel, dispositivos miembro y estado (`OK`/`DEGRADADO`/`INACTIVO`), más el progreso si hay una reconstrucción en curso. Mismo patrón que `storage disks` (`diskinfo`): `ErrUnsupported` en plataformas sin adaptador (hoy, todo lo que no sea Linux) en vez de fallar, y `/proc/mdstat` ausente se trata como "sin arrays", no como error.
+`nexuscloud storage raid` (`internal/storage/raidinfo`), solo lectura, con un adaptador por SO (mismo patrón que `storage disks`/`diskinfo`): `ErrUnsupported` en plataformas sin adaptador en vez de fallar.
 
-**Limitación de verificación, documentada en ADR-018**: la detección positiva (array sano/degradado/en reconstrucción) está probada exhaustivamente con texto realista de `/proc/mdstat` en tests unitarios, pero no contra un array real -- ni el entorno de desarrollo ni el contenedor de pruebas de este proyecto tienen uno configurado, y crearlo exigiría operaciones de bloque con privilegios que el sandbox deniega. Mismo criterio ya aceptado para el parseo de `/proc/mounts` en `diskinfo`.
+- **Linux** ([ADR-018](architecture/decisions/ADR-018-raid-detection.md)): arrays mdadm vía `/proc/mdstat`. Nivel, dispositivos miembro y estado (`OK`/`DEGRADADO`/`INACTIVO`), más el progreso si hay una reconstrucción en curso. `/proc/mdstat` ausente se trata como "sin arrays", no como error.
+- **Windows** ([ADR-019](architecture/decisions/ADR-019-raid-windows.md)): Storage Spaces vía PowerShell (`Get-VirtualDisk`) -- a diferencia de `diskinfo` (syscalls Win32 directos), Storage Spaces no tiene API Win32 clásica, es WMI/CIM puro. `Level` muestra la nomenclatura propia de Storage Spaces ("Simple"/"Mirror"/"Parity"), no "raidN". Lista de discos físicos por array y porcentaje de reconstrucción quedan fuera de este slice (exigirían una segunda consulta de correlación); el estado sano/degradado/reconstruyendo sí queda cubierto.
+- RAID hardware (controladoras dedicadas) y JBOD quedan fuera de ambos adaptadores: no hay una fuente de datos portable sin herramientas privilegiadas adicionales.
+
+**Limitación de verificación, documentada en ambas ADR**: la detección *positiva* (array sano/degradado/en reconstrucción) está probada con texto/JSON realista en tests unitarios en los dos sistemas operativos, pero no contra un array real -- crear uno exigiría operaciones de disco difíciles de revertir (Linux: privilegios de bloque que el sandbox deniega; Windows: modificar el Storage Pool real de la máquina de desarrollo). Mismo criterio ya aceptado para el parseo de `/proc/mounts` en `diskinfo`. El caso "sin arrays" (la ruta que sí se puede probar de verdad) se verificó end-to-end en ambos sistemas operativos contra el mecanismo real, incluido un binario Windows real ejecutado nativamente en la propia máquina de desarrollo.
 
 ## Identificadores
 
@@ -93,7 +97,8 @@ CLI para lo manual (`nexuscloud backup run|list|restore|verify`), sin endpoint H
 
 ## Qué falta (fases posteriores)
 
-- **RAID en Windows (Storage Spaces) y RAID hardware/JBOD** (§12): solo Linux/mdadm implementado (ver sección RAID arriba); Storage Spaces es un mecanismo completamente distinto (PowerShell/WMI), slice futuro dedicado.
+- **RAID hardware (controladoras dedicadas) y JBOD** (§12): Linux/mdadm y Windows/Storage Spaces ya implementados (ver sección RAID arriba); RAID hardware/JBOD quedan fuera de ambos adaptadores, sin fuente de datos portable sin herramientas privilegiadas adicionales.
+- **Porcentaje de reconstrucción y lista de discos físicos por array en Windows** (§12): `Get-StorageJob`/correlación con `Get-PhysicalDisk`, extensiones futuras de bajo riesgo sobre el adaptador ya construido.
 - **Snapshots** (§17): delegado a las tecnologías que ya ofrezca el sistema de archivos subyacente (ZFS/Btrfs/Storage Spaces) -- NexusCloud nunca implementará su propio mecanismo de snapshots; sin código todavía.
 - **Backup incremental y cifrado** (§18/§173): el Backup Manager ya tiene manual/automático/retención/verify (ver sección Backup Manager); estas dos capacidades son slices futuros del mismo Backup Manager.
 - **Restaurar directamente a un pool activo** (reinsertando metadatos): el `restore` actual solo extrae a una carpeta elegida.

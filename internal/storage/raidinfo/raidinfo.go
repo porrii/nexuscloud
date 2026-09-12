@@ -8,13 +8,13 @@
 // Enumerate devuelve ErrUnsupported y el resto del sistema sigue
 // funcionando con normalidad -- nunca depende de una única tecnología.
 //
-// Alcance de esta primera versión: solo Linux (mdadm software RAID, vía
-// /proc/mdstat). Windows Storage Spaces es un mecanismo completamente
-// distinto (PowerShell/WMI, nada parseable en disco) y queda para un slice
-// futuro dedicado -- de momento Enumerate devuelve ErrUnsupported en
-// Windows igual que en cualquier otra plataforma sin adaptador. RAID
-// hardware (controladoras dedicadas) y JBOD también quedan fuera: no hay
-// una fuente de datos portable sin herramientas privilegiadas adicionales.
+// Adaptadores implementados: Linux (mdadm software RAID, vía
+// /proc/mdstat) y Windows (Storage Spaces, vía PowerShell/Get-VirtualDisk
+// -- WMI/CIM puro, sin API Win32 clásica, a diferencia de la enumeración
+// básica de discos). En el resto de plataformas, Enumerate devuelve
+// ErrUnsupported. RAID hardware (controladoras dedicadas) y JBOD quedan
+// fuera de cualquier adaptador: no hay una fuente de datos portable sin
+// herramientas privilegiadas adicionales.
 package raidinfo
 
 import (
