@@ -82,6 +82,16 @@ func (r *SQLFileRepository) ListFiles(ctx context.Context, ownerID, parentPath s
 	return scanFileRows(rows)
 }
 
+func (r *SQLFileRepository) ListFilesByPool(ctx context.Context, poolID string) ([]*FileMeta, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		fileSelectColumns+` WHERE pool_id = ? AND deleted_at IS NULL ORDER BY owner_id, parent_path, name`, poolID)
+	if err != nil {
+		return nil, fmt.Errorf("listando archivos del pool: %w", err)
+	}
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
 func (r *SQLFileRepository) ListTrashedFiles(ctx context.Context, ownerID string) ([]*FileMeta, error) {
 	rows, err := r.conn.QueryContext(ctx,
 		fileSelectColumns+` WHERE owner_id = ? AND deleted_at IS NOT NULL ORDER BY deleted_at DESC`, ownerID)

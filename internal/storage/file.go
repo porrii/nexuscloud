@@ -42,6 +42,11 @@ type FileRepository interface {
 	// ListFiles devuelve solo archivos activos (deleted_at IS NULL) de esa
 	// ruta. Usa ListTrash para ver los archivos en la papelera.
 	ListFiles(ctx context.Context, ownerID, parentPath string) ([]*FileMeta, error)
+	// ListFilesByPool devuelve todos los archivos ACTIVOS (deleted_at IS
+	// NULL) de un pool, sin importar propietario ni carpeta -- a diferencia
+	// de ListFiles (una carpeta de un propietario), esto es lo que necesita
+	// cualquier operación que recorra un pool entero (Backup Manager, §18).
+	ListFilesByPool(ctx context.Context, poolID string) ([]*FileMeta, error)
 	ListTrashedFiles(ctx context.Context, ownerID string) ([]*FileMeta, error)
 	SoftDeleteFile(ctx context.Context, id string, deletedAt time.Time) error
 	RestoreFile(ctx context.Context, id string) error

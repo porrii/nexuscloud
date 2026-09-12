@@ -8,9 +8,10 @@ import (
 
 // notImplementedYet crea un subcomando "reservado": existe en la forma del
 // árbol de CLI descrito en §98 desde la Fase 1, pero su funcionalidad real
-// (Backup Manager, gestión avanzada de Storage/RAID, políticas de
-// seguridad) llega en fases posteriores (§163 Fase 5-6). Mantener el hueco
-// ahora evita romper la forma del CLI cuando se implemente.
+// (gestión avanzada de Storage/RAID, políticas de seguridad) llega en fases
+// posteriores (§163 Fase 6). Mantener el hueco ahora evita romper la forma
+// del CLI cuando se implemente. El Backup Manager (Fase 5) ya tiene
+// implementación real -- ver backup_cmd.go, ADR-015.
 func notImplementedYet(use, short, phase string) *cobra.Command {
 	return &cobra.Command{
 		Use:   use,
@@ -19,16 +20,6 @@ func notImplementedYet(use, short, phase string) *cobra.Command {
 			return fmt.Errorf("%q todavía no está implementado (planificado para %s); ver docs/architecture.md", use, phase)
 		},
 	}
-}
-
-func newBackupCmd() *cobra.Command {
-	cmd := notImplementedYet("backup", "Backup Manager (§18, Fase 5)", "Fase 5")
-	cmd.AddCommand(
-		notImplementedYet("run", "Ejecuta un backup manual", "Fase 5"),
-		notImplementedYet("list", "Lista backups disponibles", "Fase 5"),
-		notImplementedYet("restore", "Restaura un backup", "Fase 5"),
-	)
-	return cmd
 }
 
 func newSecurityCmd() *cobra.Command {
