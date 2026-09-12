@@ -20,6 +20,7 @@ import (
 	apiv1 "github.com/porrii/nexuscloud/internal/api/v1"
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
+	"github.com/porrii/nexuscloud/internal/backup"
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/db"
 	"github.com/porrii/nexuscloud/internal/security"
@@ -39,6 +40,7 @@ type Server struct {
 	apiLimiter    *security.RateLimiter
 	publicLimiter *security.RateLimiter
 	stopPurge     chan struct{}
+	stopBackup    chan struct{}
 }
 
 // Build realiza todo el arranque en frío: abrir BD, migrar, construir
@@ -109,6 +111,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
+	// backupManager solo lo consume el bucle automático de más abajo en este
+	// slice (ADR-016) -- todavía sin endpoint HTTP/UI, igual que en el Slice 1.
+	backupManager := backup.NewManager(poolRepo, fileRepo, providers, backup.NewSQLRepository(conn))
 
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
@@ -164,10 +169,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		startTrashPurgeLoop(fileSvc, cfg.Trash, logger, stopPurge)
 	}
 
+	stopBackup := make(chan struct{})
+	if cfg.Backup.Enabled {
+		startBackupScheduleLoop(backupManager, cfg.Backup, cfg.BackupsDir(), logger, stopBackup)
+	}
+
 	return &Server{
 		Handler: root, DB: sqlDB,
 		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
-		stopPurge: stopPurge,
+		stopPurge: stopPurge, stopBackup: stopBackup,
 	}, nil
 }
 
@@ -206,14 +216,56 @@ func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, l
 	}()
 }
 
+// startBackupScheduleLoop lanza el backup automático (§18 "programación",
+// ADR-016). A diferencia de startTrashPurgeLoop, NO se ejecuta una vez al
+// arrancar: purgar la papelera es barato e idempotente, pero lanzar un
+// backup completo en cada arranque del servidor podría ser costoso y
+// sorprendente si el proceso se reinicia con frecuencia (p.ej. durante
+// actualizaciones) -- el primer backup automático llega tras el primer
+// intervalo completo; quien quiera uno inmediato ya tiene "nexuscloud backup
+// run" a mano.
+func startBackupScheduleLoop(manager *backup.Manager, cfg config.BackupConfig, destDir string, logger *slog.Logger, stop <-chan struct{}) {
+	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
+
+	runOnce := func() {
+		// 30 minutos, no el time.Minute de la purga: un backup completo de un
+		// árbol grande puede tardar bastante más que purgar filas expiradas.
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+		defer cancel()
+		job, err := manager.Run(ctx, backup.RunOptions{DestinationPath: destDir})
+		if err != nil {
+			logger.Error("backup automático falló", "error", err)
+			return
+		}
+		logger.Info("backup automático completado", "job_id", job.ID, "files", job.FileCount, "bytes", job.TotalBytes)
+	}
+
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runOnce()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
 // Close libera los recursos abiertos por Build: conexión a base de datos y
-// las goroutines de limpieza de los rate limiters y de la papelera.
+// las goroutines de limpieza de los rate limiters, la papelera y el backup
+// automático.
 func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
 	s.publicLimiter.Stop()
 	if s.stopPurge != nil {
 		close(s.stopPurge)
+	}
+	if s.stopBackup != nil {
+		close(s.stopBackup)
 	}
 	return s.DB.Close()
 }

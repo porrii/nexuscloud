@@ -28,7 +28,7 @@ Ningún otro paquete debe tocar `Provider` directamente ni construir rutas de ar
 
 `storage_pools` modela pools con `name`, `type` (`local` en Fase 1), `path`, `priority`, `status`. Al arrancar, `storage.EnsureDefaultPool` crea un pool `default` si no existe ninguno — el repositorio en sí nunca crea pools implícitamente, para que la lógica de arranque sea explícita y auditable.
 
-RAID (§11-12) y detección de discos/SMART quedan para la Fase 5: NexusCloud nunca implementará su propio RAID — detectará y mostrará el estado de las tecnologías que ya ofrezca el sistema operativo (mdadm, Storage Spaces, ZFS/Btrfs).
+RAID (§11-12) y detección de discos/SMART siguen pendientes (ver "Qué falta" más abajo): NexusCloud nunca implementará su propio RAID — detectará y mostrará el estado de las tecnologías que ya ofrezca el sistema operativo (mdadm, Storage Spaces, ZFS/Btrfs).
 
 ## Identificadores
 
@@ -72,10 +72,21 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 - **Rate limit propio** (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) sobre todas las rutas `/api/v1/public/*`: es la otra superficie, además de login, expuesta a fuerza bruta.
 - Fuera de esta pasada: permiso de subida dirigido a un usuario/grupo concreto (solo los enlaces lo soportan); notificaciones por email; §38 (Subida Anónima) sigue totalmente separado y sin implementar.
 
+## Backup Manager (§18)
+
+CLI para lo manual (`nexuscloud backup run|list|restore`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md) y [ADR-016](architecture/decisions/ADR-016-backup-automatico.md).
+
+- `backup run [--dest <ruta>] [--pool <id-o-nombre>]...`: respalda todos los pools activos elegibles (o solo los indicados) a `--dest` (por defecto, la carpeta de backups de esta instancia, `cfg.BackupsDir()`). Un pool con `backup_policy=off` queda excluido siempre, incluso si se pide explícitamente por `--pool`; `inherit`/`on` se incluyen.
+- Cada backup escribe `<dest>/<job-id>/data/<pool-id>/<owner-id>/<ruta>/<nombre>` (calca el aislamiento físico por propietario que ya usa `FileService`) y un `<dest>/<job-id>/manifest.json` autocontenido con propietario/ruta/nombre/tamaño/SHA-256 de cada fichero -- el manifiesto es la fuente de verdad para restaurar, no la base de datos.
+- La papelera nunca se respalda (solo archivos activos). Cada fichero se verifica por SHA-256 mientras se copia; si alguno no coincide, el job entero se marca `failed` sin llegar a escribir `manifest.json` -- nunca queda un backup a medias que parezca completo.
+- `backup restore <job-id> --dest <ruta>` extrae los ficheros del backup (re-verificando SHA-256) a una carpeta elegida -- no reinserta en un pool activo ni toca la base de datos. Intenta recuperar todos los ficheros que pueda: uno con bitrot en el propio disco de backup no impide restaurar el resto.
+- **Automático** (`backup.enabled: true` + `backup.intervalMinutes`, `false` por defecto): un bucle en segundo plano del propio servidor (`internal/server.startBackupScheduleLoop`, mismo patrón que la purga de papelera) ejecuta el equivalente a `backup run` sin flags cada N minutos. Desactivado por defecto porque copia datos reales, normalmente al mismo disco (§19, sin cumplir la regla 3-2-1 todavía) -- el administrador debe activarlo a propósito. No se ejecuta al arrancar el servidor, solo tras el primer intervalo completo.
+- `backup list` muestra el historial (estado/fecha/ficheros/tamaño/destino) leyendo `backup_jobs` (migración `0007`).
+
 ## Qué falta (fases posteriores)
 
-- **Snapshots** (§17): delegado al filesystem/SO subyacente (ZFS/Btrfs/Storage Spaces) cuando llegue.
-- **Backups** (§18): Backup Manager independiente, Fase 5.
+- **RAID** (§12) y **snapshots** (§17): delegado a las tecnologías que ya ofrezca el sistema operativo (mdadm, Storage Spaces, ZFS/Btrfs) -- NexusCloud detecta y muestra su estado, nunca implementa su propio RAID/snapshots.
+- **Backup incremental, cifrado y rotación/retención automática** (§18/§173): el Backup Manager de arriba es completo (con modo manual y automático); estas capacidades son slices futuros del mismo Backup Manager.
+- **Restaurar directamente a un pool activo** (reinsertando metadatos): el `restore` actual solo extrae a una carpeta elegida.
 - **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.
 - **Miniaturas/previsualización/búsqueda de contenido** (§33-35): Fase 2.
-- **Range requests / descargas reanudables** (§41): el endpoint de descarga transmite el contenido completo; soporte de `Range` queda pendiente sin que suponga un cambio de contrato de API cuando se añada.

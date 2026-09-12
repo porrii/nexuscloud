@@ -76,6 +76,10 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("versioning.maxVersionsPerFile debe ser >= 1 cuando versioning.enabled=true")
 	}
 
+	if cfg.Backup.Enabled && cfg.Backup.IntervalMinutes < 1 {
+		return fmt.Errorf("backup.intervalMinutes debe ser >= 1 cuando backup.enabled=true")
+	}
+
 	if err := validateStorageAreas(cfg); err != nil {
 		return err
 	}

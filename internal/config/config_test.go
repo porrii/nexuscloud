@@ -29,6 +29,9 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if !cfg.Sharing.Enabled {
 		t.Error("sharing.enabled (compartición interna usuario/grupo, siempre autenticada) debe ser true por defecto, igual que trash/versioning")
 	}
+	if cfg.Backup.Enabled {
+		t.Error("backup.enabled debe ser false por defecto: copia datos reales, por defecto al mismo disco (§19), el admin debe activarlo a propósito (ADR-016)")
+	}
 }
 
 func TestLoadMissingFileFallsBackToDefaults(t *testing.T) {
@@ -97,6 +100,24 @@ func TestValidateRejectsPostgresWithoutDSN(t *testing.T) {
 	cfg.Database.DSN = ""
 	if err := Validate(cfg); err == nil {
 		t.Error("Validate debe exigir database.dsn cuando driver=postgres")
+	}
+}
+
+func TestValidateRejectsZeroIntervalWhenBackupEnabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.Backup.Enabled = true
+	cfg.Backup.IntervalMinutes = 0
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe exigir backup.intervalMinutes >= 1 cuando backup.enabled=true")
+	}
+}
+
+func TestValidateAllowsZeroIntervalWhenBackupDisabled(t *testing.T) {
+	cfg := Defaults()
+	cfg.Backup.Enabled = false
+	cfg.Backup.IntervalMinutes = 0
+	if err := Validate(cfg); err != nil {
+		t.Errorf("Validate no debe exigir intervalMinutes cuando backup.enabled=false: %v", err)
 	}
 }
 

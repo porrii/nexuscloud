@@ -28,6 +28,7 @@ type Config struct {
 	Trash         TrashConfig      `yaml:"trash"`
 	Versioning    VersioningConfig `yaml:"versioning"`
 	Sharing       SharingConfig    `yaml:"sharing"`
+	Backup        BackupConfig     `yaml:"backup"`
 	API           APIConfig        `yaml:"api"`
 	Web           WebConfig        `yaml:"web"`
 	Logging       LoggingConfig    `yaml:"logging"`
@@ -129,6 +130,20 @@ type SharingConfig struct {
 	PublicLinksEnabled bool `yaml:"publicLinksEnabled"`
 }
 
+// BackupConfig gobierna el backup automático (§18 "programación"). A
+// diferencia de Trash/Versioning/Sharing (que son "gratis" y por eso
+// activadas por defecto), un backup automático copia datos reales a
+// cfg.BackupsDir() -- por defecto en EL MISMO disco que el almacenamiento
+// principal (§19: eso no cumple la regla 3-2-1, cero protección ante un
+// fallo de disco) y consume espacio sin límite todavía (sin retención en
+// este slice, ADR-016). Por eso Enabled es false por defecto: el
+// administrador debe activarlo de forma explícita y consciente, igual que
+// sharing.publicLinksEnabled y web.enabled.
+type BackupConfig struct {
+	Enabled         bool `yaml:"enabled"`
+	IntervalMinutes int  `yaml:"intervalMinutes"`
+}
+
 type RateLimitConfig struct {
 	LoginPerMinute      int `yaml:"loginPerMinute"`
 	APIPerMinute        int `yaml:"apiPerMinute"`
@@ -189,6 +204,7 @@ func Defaults() *Config {
 		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
 		Sharing:    SharingConfig{Enabled: true, PublicLinksEnabled: false},
+		Backup:     BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		API:        APIConfig{Enabled: true},
 		Web:        WebConfig{Enabled: false},
 		Logging:    LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
