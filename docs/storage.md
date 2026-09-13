@@ -82,6 +82,16 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 - **Rate limit propio** (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) sobre todas las rutas `/api/v1/public/*`: es la otra superficie, además de login, expuesta a fuerza bruta.
 - Fuera de esta pasada: permiso de subida dirigido a un usuario/grupo concreto (solo los enlaces lo soportan); notificaciones por email; §38 (Subida Anónima) sigue totalmente separado y sin implementar.
 
+## Snapshots (§17)
+
+`nexuscloud storage snapshots` (`internal/storage/snapshotinfo`), solo lectura, con un adaptador por SO (mismo patrón que `storage disks`/`storage raid`): `ErrUnsupported` en plataformas sin adaptador.
+
+- **Windows** ([ADR-020](architecture/decisions/ADR-020-snapshot-detection.md)): VSS (Volume Shadow Copy Service) vía PowerShell (`Get-CimInstance Win32_ShadowCopy`), igual criterio que Storage Spaces en RAID -- WMI/CIM puro, sin API Win32 clásica. Nunca usa `vssadmin list shadowstorage` (exige privilegios elevados) -- solo lo que ya se puede consultar sin elevar. Hallazgo real a tener en cuenta en cualquier adaptador Windows futuro que use `ConvertTo-Json`: los campos `DateTime` de WMI se serializan como `"/Date(ms-desde-epoch)/"`, no ISO-8601.
+- **Linux**: sin adaptador todavía, `ErrUnsupported` -- slice futuro dedicado (ZFS/Btrfs).
+- NexusCloud nunca crea ni elimina snapshots -- §17 es sobre integrarse con los que ya existen, nunca gestionarlos activamente.
+
+**Limitación de verificación, documentada en ADR-020**: la detección *positiva* (con instantáneas reales) está probada con datos realistas en tests unitarios, pero no contra una instantánea real -- crearla exigiría privilegios elevados. El caso "sin instantáneas" sí se verificó end-to-end contra el mecanismo real (binario Windows nativo cruzado y ejecutado nativamente en la máquina de desarrollo).
+
 ## Backup Manager (§18)
 
 CLI para lo manual (`nexuscloud backup run|list|restore|verify`), sin endpoint HTTP ni UI web todavía -- mismo orden que Storage Pools en la Fase D. Backup completo (nunca incremental todavía) -- ver [ADR-015](architecture/decisions/ADR-015-backup-manager.md), [ADR-016](architecture/decisions/ADR-016-backup-automatico.md) y [ADR-017](architecture/decisions/ADR-017-retencion-backups.md).
@@ -99,7 +109,7 @@ CLI para lo manual (`nexuscloud backup run|list|restore|verify`), sin endpoint H
 
 - **RAID hardware (controladoras dedicadas) y JBOD** (§12): Linux/mdadm y Windows/Storage Spaces ya implementados (ver sección RAID arriba); RAID hardware/JBOD quedan fuera de ambos adaptadores, sin fuente de datos portable sin herramientas privilegiadas adicionales.
 - **Porcentaje de reconstrucción y lista de discos físicos por array en Windows** (§12): `Get-StorageJob`/correlación con `Get-PhysicalDisk`, extensiones futuras de bajo riesgo sobre el adaptador ya construido.
-- **Snapshots** (§17): delegado a las tecnologías que ya ofrezca el sistema de archivos subyacente (ZFS/Btrfs/Storage Spaces) -- NexusCloud nunca implementará su propio mecanismo de snapshots; sin código todavía.
+- **Snapshots** (§17): Windows/VSS ya implementado (ver sección Snapshots arriba); Linux (ZFS/Btrfs) queda pendiente, slice futuro dedicado.
 - **Backup incremental y cifrado** (§18/§173): el Backup Manager ya tiene manual/automático/retención/verify (ver sección Backup Manager); estas dos capacidades son slices futuros del mismo Backup Manager.
 - **Restaurar directamente a un pool activo** (reinsertando metadatos): el `restore` actual solo extrae a una carpeta elegida.
 - **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.

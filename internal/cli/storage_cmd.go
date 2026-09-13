@@ -18,16 +18,18 @@ import (
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/storage/diskinfo"
 	"github.com/porrii/nexuscloud/internal/storage/raidinfo"
+	"github.com/porrii/nexuscloud/internal/storage/snapshotinfo"
 )
 
 func newStorageCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "storage",
-		Short: "Gestión del almacenamiento: discos, RAID y Storage Pools",
+		Short: "Gestión del almacenamiento: discos, RAID, snapshots y Storage Pools",
 	}
 	cmd.AddCommand(
 		newStorageDisksCmd(),
 		newStorageRaidCmd(),
+		newStorageSnapshotsCmd(),
 		newStoragePoolListCmd(),
 		newStoragePoolAddCmd(),
 		newStoragePoolStatusCmd("enable", "active", "Activa un Storage Pool"),
@@ -155,6 +157,46 @@ func raidDeviceNames(devices []raidinfo.RaidDevice) string {
 		names[i] = d.Name
 	}
 	return strings.Join(names, ",")
+}
+
+// --- snapshots (Fase 5, §17) ----------------------------------------------
+
+func newStorageSnapshotsCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "snapshots",
+		Short: "Detecta instantáneas ya existentes en el almacenamiento subyacente (VSS)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			snaps, err := snapshotinfo.Enumerate(cmd.Context())
+			if errors.Is(err, snapshotinfo.ErrUnsupported) {
+				fmt.Fprintln(cmd.OutOrStdout(),
+					"La detección de instantáneas no está soportada en este sistema operativo todavía.")
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("detectando instantáneas: %w", err)
+			}
+			if len(snaps) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "No se detectaron instantáneas.")
+				return nil
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "%-38s %-38s %-20s %s\n", "ID", "VOLUMEN", "CREADO", "PERSISTENTE")
+			for _, s := range snaps {
+				creado := "-"
+				if !s.CreatedAt.IsZero() {
+					creado = s.CreatedAt.Local().Format("2006-01-02 15:04:05")
+				}
+				persistente := "no"
+				if s.Persistent {
+					persistente = "sí"
+				}
+				fmt.Fprintf(out, "%-38s %-38s %-20s %s\n",
+					truncate(s.ID, 38), truncate(s.VolumeName, 38), creado, persistente)
+			}
+			return nil
+		},
+	}
 }
 
 // --- pools --------------------------------------------------------------
