@@ -87,10 +87,11 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 `nexuscloud storage snapshots` (`internal/storage/snapshotinfo`), solo lectura, con un adaptador por SO (mismo patrón que `storage disks`/`storage raid`): `ErrUnsupported` en plataformas sin adaptador.
 
 - **Windows** ([ADR-020](architecture/decisions/ADR-020-snapshot-detection.md)): VSS (Volume Shadow Copy Service) vía PowerShell (`Get-CimInstance Win32_ShadowCopy`), igual criterio que Storage Spaces en RAID -- WMI/CIM puro, sin API Win32 clásica. Nunca usa `vssadmin list shadowstorage` (exige privilegios elevados) -- solo lo que ya se puede consultar sin elevar. Hallazgo real a tener en cuenta en cualquier adaptador Windows futuro que use `ConvertTo-Json`: los campos `DateTime` de WMI se serializan como `"/Date(ms-desde-epoch)/"`, no ISO-8601.
-- **Linux**: sin adaptador todavía, `ErrUnsupported` -- slice futuro dedicado (ZFS/Btrfs).
+- **Linux/ZFS** ([ADR-021](architecture/decisions/ADR-021-snapshot-zfs.md)): `zfs list -H -p -t snapshot -o name,creation` (banderas de scripting: sin cabecera, campos por TAB, fechas como epoch Unix -- nunca el formato pensado para humanos). El binario `zfs` ausente del `PATH` se trata como "sin snapshots" (no `ErrUnsupported`: Linux sí tiene adaptador, solo que esta vía no encuentra nada), igual que un pool ZFS sin importar.
+- **Linux/Btrfs**: sin adaptador todavía, `ErrUnsupported` -- slice futuro dedicado, modelo (subvolumen de solo lectura, no un tipo de objeto propio) y formato de salida completamente distintos de ZFS.
 - NexusCloud nunca crea ni elimina snapshots -- §17 es sobre integrarse con los que ya existen, nunca gestionarlos activamente.
 
-**Limitación de verificación, documentada en ADR-020**: la detección *positiva* (con instantáneas reales) está probada con datos realistas en tests unitarios, pero no contra una instantánea real -- crearla exigiría privilegios elevados. El caso "sin instantáneas" sí se verificó end-to-end contra el mecanismo real (binario Windows nativo cruzado y ejecutado nativamente en la máquina de desarrollo).
+**Limitación de verificación, documentada en ADR-020/021**: la detección *positiva* (con instantáneas reales) está probada con datos realistas en tests unitarios en los dos sistemas, pero no contra una instantánea real -- en Windows, crearla exigiría privilegios elevados; en Linux, ni el entorno de desarrollo ni la máquina de esta sesión tienen ZFS instalado, así que el formato de `zfs list` se verificó solo contra su documentación estable, sin ninguna evidencia empírica propia (a diferencia de todo lo demás en esta serie) -- el slice con menos verificación directa de los tres pilares de Fase 5. El caso "sin instantáneas" sí se verificó end-to-end en ambos sistemas operativos contra el mecanismo real (binario Windows nativo en la máquina de desarrollo; binario Linux real sin `zfs` instalado en el contenedor de esta sesión).
 
 ## Backup Manager (§18)
 
@@ -109,7 +110,7 @@ CLI para lo manual (`nexuscloud backup run|list|restore|verify`), sin endpoint H
 
 - **RAID hardware (controladoras dedicadas) y JBOD** (§12): Linux/mdadm y Windows/Storage Spaces ya implementados (ver sección RAID arriba); RAID hardware/JBOD quedan fuera de ambos adaptadores, sin fuente de datos portable sin herramientas privilegiadas adicionales.
 - **Porcentaje de reconstrucción y lista de discos físicos por array en Windows** (§12): `Get-StorageJob`/correlación con `Get-PhysicalDisk`, extensiones futuras de bajo riesgo sobre el adaptador ya construido.
-- **Snapshots** (§17): Windows/VSS ya implementado (ver sección Snapshots arriba); Linux (ZFS/Btrfs) queda pendiente, slice futuro dedicado.
+- **Snapshots en Linux/Btrfs** (§17): Windows/VSS y Linux/ZFS ya implementados (ver sección Snapshots arriba); Btrfs queda `ErrUnsupported`, slice futuro dedicado -- modelo (subvolumen de solo lectura) y formato de salida completamente distintos de ZFS.
 - **Backup incremental y cifrado** (§18/§173): el Backup Manager ya tiene manual/automático/retención/verify (ver sección Backup Manager); estas dos capacidades son slices futuros del mismo Backup Manager.
 - **Restaurar directamente a un pool activo** (reinsertando metadatos): el `restore` actual solo extrae a una carpeta elegida.
 - **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.
