@@ -9,13 +9,14 @@
 // compilación o fingir soporte que no existe.
 //
 // Adaptadores implementados: Windows (VSS/Volume Shadow Copy Service, vía
-// PowerShell/Get-CimInstance Win32_ShadowCopy) y Linux/ZFS (vía el binario
-// "zfs", ausente en el sistema -> lista vacía, no ErrUnsupported: Linux SÍ
-// tiene adaptador, simplemente esta vía concreta no tiene nada que
-// reportar). Btrfs (Linux) queda para un slice futuro dedicado -- modelo y
-// formato de salida completamente distintos de ZFS. NexusCloud nunca crea
-// ni elimina snapshots: §17 es sobre integrarse con los que ya existen,
-// nunca gestionarlos activamente.
+// PowerShell/Get-CimInstance Win32_ShadowCopy) y Linux, que agrega dos vías
+// independientes -- ZFS (vía el binario "zfs") y Btrfs (subvolúmenes de solo
+// lectura, vía "btrfs subvolume list" sobre cada montaje Btrfs encontrado en
+// /proc/mounts). En Linux, cada vía ausente (binario no instalado, o sin
+// nada que reportar) degrada a lista vacía sin afectar a la otra -- nunca a
+// ErrUnsupported, que queda reservado solo para plataformas sin ningún
+// adaptador en absoluto. NexusCloud nunca crea ni elimina snapshots: §17 es
+// sobre integrarse con los que ya existen, nunca gestionarlos activamente.
 package snapshotinfo
 
 import (

@@ -164,7 +164,7 @@ func raidDeviceNames(devices []raidinfo.RaidDevice) string {
 func newStorageSnapshotsCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "snapshots",
-		Short: "Detecta instantáneas ya existentes en el almacenamiento subyacente (VSS)",
+		Short: "Detecta instantáneas ya existentes en el almacenamiento subyacente (VSS, ZFS, Btrfs)",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			snaps, err := snapshotinfo.Enumerate(cmd.Context())
 			if errors.Is(err, snapshotinfo.ErrUnsupported) {
