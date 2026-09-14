@@ -13,6 +13,10 @@ services:
       # anterior y descomenta estas dos junto con el servicio "postgres":
       # NEXUSCLOUD_DB_DRIVER: "postgres"
       # NEXUSCLOUD_DB_DSN: "postgres://nexuscloud:changeme@postgres:5432/nexuscloud?sslmode=disable"
+      # O, para usar MySQL/MariaDB (ADR-031), comenta la línea por defecto y
+      # descomenta estas dos junto con el servicio "mysql":
+      # NEXUSCLOUD_DB_DRIVER: "mysql"
+      # NEXUSCLOUD_DB_DSN: "nexuscloud:changeme@tcp(mysql:3306)/nexuscloud"
     volumes:
       - nexuscloud-data:/data
     # No usar privileged ni montar "/" del host (§104).
@@ -29,6 +33,23 @@ services:
   #   volumes:
   #     - nexuscloud-postgres:/var/lib/postgresql/data
 
+  # Opcional (§8, ADR-031): MySQL/MariaDB, alternativa a Postgres para
+  # instalaciones mayores. Cualquiera de las dos imágenes sirve (mismo
+  # driver Go, go-sql-driver/mysql, cubre ambos motores por compatibilidad
+  # de protocolo) -- MariaDB suele preferirse en distros que ya la traen de
+  # serie (Debian/Ubuntu). Mínimo MySQL 8.0.16 / MariaDB 10.2.1 (los CHECK
+  # constraints del esquema no se aplican de verdad en versiones anteriores).
+  # mysql:
+  #   image: mysql:8   # o mariadb:11
+  #   restart: unless-stopped
+  #   environment:
+  #     MYSQL_USER: nexuscloud
+  #     MYSQL_PASSWORD: changeme
+  #     MYSQL_DATABASE: nexuscloud
+  #     MYSQL_RANDOM_ROOT_PASSWORD: "yes"
+  #   volumes:
+  #     - nexuscloud-mysql:/var/lib/mysql
+
   # Opcional (§50): reverse proxy con TLS para exponer NexusCloud a
   # Internet. NexusCloud no gestiona certificados por sí mismo; ver
   # docs/reverse-proxy.md antes de abrir el puerto 443 al exterior.
@@ -44,4 +65,5 @@ services:
 volumes:
   nexuscloud-data:
   # nexuscloud-postgres:
+  # nexuscloud-mysql:
   # caddy-data:

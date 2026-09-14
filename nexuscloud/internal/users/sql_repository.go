@@ -136,9 +136,26 @@ func (r *SQLRepository) HasRole(ctx context.Context, userID, roleID string) (boo
 	return n > 0, nil
 }
 
+// groupsTable (ADR-031): "groups" a secas es palabra reservada en MySQL 8+
+// (introducida para la unidad de ventana ROWS|RANGE|GROUPS, SQL:2016) --
+// CREATE TABLE/INSERT/SELECT sin comillas contra ella falla con
+// "ERROR 1064: ... syntax ... near 'groups'". Postgres no soporta comillas
+// invertidas como delimitador de identificador (solo comillas dobles, y
+// activar ANSI_QUOTES globalmente en MySQL para poder usar comillas dobles
+// ahí tendría efectos colaterales sobre el resto de sentencias), así que
+// la única forma portable es entrecomillar SOLO en la rama mysql, aquí y
+// en ListGroups/GroupsForUser -- los 3 únicos sitios de todo el código Go
+// que referencian esta tabla por nombre.
+func groupsTable(driver string) string {
+	if driver == "mysql" {
+		return "`groups`"
+	}
+	return "groups"
+}
+
 func (r *SQLRepository) CreateGroup(ctx context.Context, g *Group) error {
 	_, err := r.conn.ExecContext(ctx,
-		`INSERT INTO groups (id, name, quota_bytes, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO `+groupsTable(r.conn.Driver)+` (id, name, quota_bytes, created_at) VALUES (?, ?, ?, ?)`,
 		g.ID, g.Name, nullInt64(g.QuotaBytes), db.TimeToString(g.CreatedAt))
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -150,7 +167,7 @@ func (r *SQLRepository) CreateGroup(ctx context.Context, g *Group) error {
 }
 
 func (r *SQLRepository) ListGroups(ctx context.Context) ([]*Group, error) {
-	rows, err := r.conn.QueryContext(ctx, `SELECT id, name, quota_bytes, created_at FROM groups ORDER BY name`)
+	rows, err := r.conn.QueryContext(ctx, `SELECT id, name, quota_bytes, created_at FROM `+groupsTable(r.conn.Driver)+` ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("listando grupos: %w", err)
 	}
@@ -190,7 +207,7 @@ func (r *SQLRepository) AddUserToGroup(ctx context.Context, userID, groupID stri
 
 func (r *SQLRepository) GroupsForUser(ctx context.Context, userID string) ([]Group, error) {
 	rows, err := r.conn.QueryContext(ctx, `
-		SELECT g.id, g.name, g.quota_bytes, g.created_at FROM groups g
+		SELECT g.id, g.name, g.quota_bytes, g.created_at FROM `+groupsTable(r.conn.Driver)+` g
 		JOIN user_groups ug ON ug.group_id = g.id
 		WHERE ug.user_id = ? ORDER BY g.name`, userID)
 	if err != nil {
@@ -299,9 +316,10 @@ func nullInt64(v *int64) any {
 }
 
 // isUniqueViolation reconoce el mensaje de violación de restricción UNIQUE
-// tanto de sqlite (modernc.org/sqlite) como de postgres (pgx), evitando una
+// tanto de sqlite (modernc.org/sqlite) como de postgres (pgx) y mysql
+// (go-sql-driver/mysql: "Duplicate entry ... for key ..."), evitando una
 // dependencia directa en los tipos de error internos de cada driver.
 func isUniqueViolation(err error) bool {
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate key")
+	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate key") || strings.Contains(msg, "duplicate entry")
 }

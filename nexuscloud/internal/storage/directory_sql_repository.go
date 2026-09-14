@@ -24,11 +24,23 @@ func NewSQLDirectoryRepository(conn *db.Conn) *SQLDirectoryRepository {
 // inserta una segunda -- el llamador (FileService.Mkdir) es responsable de
 // comprobar antes si el nombre está ocupado por algo en la papelera.
 func (r *SQLDirectoryRepository) CreateDirectory(ctx context.Context, d *Directory) error {
-	_, err := r.conn.ExecContext(ctx, `
+	// MySQL/MariaDB no tienen "ON CONFLICT (columnas) DO NOTHING" -- solo
+	// INSERT IGNORE, que ignora cualquier error ignorable de la sentencia
+	// (no solo el de esta UNIQUE). Equivalente en la práctica aquí porque
+	// directories solo tiene 2 restricciones (PK id, UNIQUE de abajo);
+	// el único caso en que difiere es una colisión de id (UUID,
+	// criptográficamente despreciable) que postgres seguiría rechazando y
+	// MySQL ignoraría en silencio -- trade-off aceptado, ver ADR-031.
+	query := `
 		INSERT INTO directories (id, pool_id, owner_id, parent_path, name, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)
-		ON CONFLICT (pool_id, owner_id, parent_path, name) DO NOTHING`,
-		d.ID, d.PoolID, d.OwnerID, d.ParentPath, d.Name, db.TimeToString(d.CreatedAt))
+		ON CONFLICT (pool_id, owner_id, parent_path, name) DO NOTHING`
+	if r.conn.Driver == "mysql" {
+		query = `
+			INSERT IGNORE INTO directories (id, pool_id, owner_id, parent_path, name, created_at)
+			VALUES (?, ?, ?, ?, ?, ?)`
+	}
+	_, err := r.conn.ExecContext(ctx, query, d.ID, d.PoolID, d.OwnerID, d.ParentPath, d.Name, db.TimeToString(d.CreatedAt))
 	if err != nil {
 		return fmt.Errorf("creando carpeta: %w", err)
 	}
@@ -160,18 +172,39 @@ func (r *SQLDirectoryRepository) MoveDirectoryTree(ctx context.Context, poolID, 
 	// escapar serían comodines de LIKE -- una carpeta real llamada
 	// "100%" podría, sin esto, hacer que el patrón capturara descendientes
 	// de una ruta completamente distinta que coincidiera por casualidad.
+	// El VALOR que produce escapeLikePattern no cambia por dialecto (es un
+	// parámetro ligado, nunca se re-parsea como texto SQL); solo el TEXTO
+	// de la sentencia difiere -- ver concatExpr/escapeClause debajo.
 	likePattern := escapeLikePattern(oldFullPath) + `/%`
 
+	// sqlite/postgres: "||" concatena y "?" ya es su placeholder nativo/vía
+	// Rebind. MySQL no tiene "||" como concatenación (es el operador OR) --
+	// necesita CONCAT(...). La cláusula ESCAPE también difiere: sqlite y
+	// postgres (con standard_conforming_strings, el default desde hace más
+	// de una década) no tratan "\" como carácter de escape dentro de un
+	// literal '...', así que un solo backslash basta. MySQL/MariaDB SÍ lo
+	// tratan como escape por defecto -- un solo backslash entre comillas
+	// deja el string sin terminar (ERROR 1064); hace falta escaparlo con un
+	// SEGUNDO backslash. Verificado con un programa Go real contra mysql:8
+	// y mariadb:11 -- ver ADR-031. OJO al editar esta línea: deben quedar
+	// EXACTAMENTE dos backslashes entre las comillas de la rama mysql.
+	concatExpr := `? || substr(parent_path, ?)`
+	escapeClause := `ESCAPE '\'`
+	if r.conn.Driver == "mysql" {
+		concatExpr = `CONCAT(?, SUBSTR(parent_path, ?))`
+		escapeClause = `ESCAPE '` + `\` + `\` + `'`
+	}
+
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE directories SET parent_path = ? || substr(parent_path, ?)
-		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
+		UPDATE directories SET parent_path = `+concatExpr+`
+		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? `+escapeClause+`)`,
 		newFullPath, offset, poolID, ownerID, oldFullPath, likePattern,
 	); err != nil {
 		return fmt.Errorf("reescribiendo subcarpetas descendientes: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		UPDATE files SET parent_path = ? || substr(parent_path, ?)
-		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
+		UPDATE files SET parent_path = `+concatExpr+`
+		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? `+escapeClause+`)`,
 		newFullPath, offset, poolID, ownerID, oldFullPath, likePattern,
 	); err != nil {
 		return fmt.Errorf("reescribiendo archivos descendientes: %w", err)

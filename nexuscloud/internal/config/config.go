@@ -54,8 +54,8 @@ type ServerConfig struct {
 // DatabaseConfig selecciona el motor de base de datos. NexusCloud nunca debe
 // requerir cambios de código para cambiar de motor (§8).
 type DatabaseConfig struct {
-	Driver string `yaml:"driver"` // "sqlite" | "postgres"
-	DSN    string `yaml:"dsn"`    // sqlite: ruta de fichero; postgres: connection string
+	Driver string `yaml:"driver"` // "sqlite" | "postgres" | "mysql"
+	DSN    string `yaml:"dsn"`    // sqlite: ruta de fichero; postgres/mysql: connection string
 }
 
 // StorageConfig separa el directorio de datos general de la raíz de

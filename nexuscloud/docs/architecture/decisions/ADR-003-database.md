@@ -22,7 +22,7 @@ Alternativas consideradas:
 4. Un pequeño helper (`db.Conn.Rebind`) reescribe los placeholders `?` al estilo `$1, $2, ...` que exige PostgreSQL, permitiendo escribir cada consulta una única vez y mantenerla portable, sin necesidad de un ORM completo.
 5. Todas las columnas de timestamp se almacenan como `TEXT` en formato RFC3339Nano UTC en **ambos** dialectos, deliberadamente, para evitar diferencias de comportamiento entre drivers al escanear tipos nativos de fecha/hora (`time.Time` vs `string` según el driver y la configuración).
 6. Migraciones con `golang-migrate/migrate`, ficheros `.up.sql`/`.down.sql` explícitos por dialecto embebidos en el binario (`go:embed`), nunca destructivas por defecto (§8).
-7. MySQL/MariaDB queda fuera de esta pasada: las interfaces ya están desacopladas del dialecto, así que añadir un tercer driver + directorio de migraciones no debería requerir cambios en la lógica de negocio.
+7. MySQL/MariaDB queda fuera de esta pasada. ~~Las interfaces ya están desacopladas del dialecto, así que añadir un tercer driver + directorio de migraciones no debería requerir cambios en la lógica de negocio.~~ **Corrección ([ADR-031](ADR-031-mysql-mariadb.md), verificado empíricamente contra `mysql:8`/`mariadb:11` reales al implementarlo): esta afirmación era incorrecta.** MySQL/MariaDB exigen `VARCHAR` explícito en toda columna PK/FK/indexada/con `DEFAULT` (rechazan `TEXT` ahí), ignoran en silencio la sintaxis de FK inline que usan las migraciones de sqlite/postgres, y no soportan la sintaxis de `UPSERT`/concatenación de cadenas (`ON CONFLICT`, `||`) que ya usa el código de `internal/storage` -- sí hicieron falta cambios reales en 3 repositorios de dominio, no solo un driver y unas migraciones nuevas.
 
 ## Consecuencias
 

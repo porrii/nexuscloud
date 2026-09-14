@@ -18,12 +18,28 @@ func NewSQLFileRepository(conn *db.Conn) *SQLFileRepository {
 }
 
 func (r *SQLFileRepository) UpsertFile(ctx context.Context, meta *FileMeta) error {
-	_, err := r.conn.ExecContext(ctx, `
+	// MySQL/MariaDB no tienen "ON CONFLICT (columnas) DO UPDATE" -- solo
+	// "ON DUPLICATE KEY UPDATE", que dispara ante CUALQUIER violación de
+	// índice único de la tabla (aquí solo hay una además de la PK, así que
+	// es equivalente en la práctica). Usamos VALUES(col) -- deprecada en
+	// MySQL 8.0.20+ pero sin fecha de eliminación -- y NO el alias
+	// "... AS new ON DUPLICATE KEY UPDATE col = new.col" (la forma
+	// "moderna"): MariaDB nunca implementó el alias, y este driver único
+	// cubre ambos motores con el mismo SQL. Ver ADR-031.
+	query := `
 		INSERT INTO files (id, pool_id, owner_id, parent_path, name, size_bytes, sha256, mime_type, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (pool_id, owner_id, parent_path, name)
 		DO UPDATE SET size_bytes = excluded.size_bytes, sha256 = excluded.sha256,
-			mime_type = excluded.mime_type, updated_at = excluded.updated_at, deleted_at = NULL`,
+			mime_type = excluded.mime_type, updated_at = excluded.updated_at, deleted_at = NULL`
+	if r.conn.Driver == "mysql" {
+		query = `
+			INSERT INTO files (id, pool_id, owner_id, parent_path, name, size_bytes, sha256, mime_type, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE size_bytes = VALUES(size_bytes), sha256 = VALUES(sha256),
+				mime_type = VALUES(mime_type), updated_at = VALUES(updated_at), deleted_at = NULL`
+	}
+	_, err := r.conn.ExecContext(ctx, query,
 		meta.ID, meta.PoolID, meta.OwnerID, meta.ParentPath, meta.Name,
 		meta.SizeBytes, meta.SHA256, meta.MimeType,
 		db.TimeToString(meta.CreatedAt), db.TimeToString(meta.UpdatedAt),

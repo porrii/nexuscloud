@@ -15,12 +15,12 @@ func Validate(cfg *Config) error {
 	}
 
 	switch cfg.Database.Driver {
-	case "sqlite", "postgres":
+	case "sqlite", "postgres", "mysql":
 	default:
-		return fmt.Errorf("database.driver no soportado: %q (usa 'sqlite' o 'postgres')", cfg.Database.Driver)
+		return fmt.Errorf("database.driver no soportado: %q (usa 'sqlite', 'postgres' o 'mysql')", cfg.Database.Driver)
 	}
-	if cfg.Database.Driver == "postgres" && cfg.Database.DSN == "" {
-		return fmt.Errorf("database.dsn es obligatorio cuando database.driver=postgres")
+	if cfg.Database.Driver != "sqlite" && cfg.Database.DSN == "" {
+		return fmt.Errorf("database.dsn es obligatorio cuando database.driver=%s", cfg.Database.Driver)
 	}
 
 	if cfg.Storage.DataDir == "" {

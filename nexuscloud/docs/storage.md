@@ -4,6 +4,41 @@
 
 La base de datos solo contiene metadatos (ruta, tamaño, hash, propietario, tipo MIME, timestamps). El contenido de los archivos vive siempre en el filesystem, nunca en la base de datos.
 
+## Base de datos (§8)
+
+Tres dialectos seleccionables por `database.driver` sin tocar código
+(`sqlite`/`postgres`/`mysql`): SQLite (`modernc.org/sqlite`, por defecto,
+instalaciones pequeñas), PostgreSQL (`jackc/pgx/v5`, instalaciones
+mayores) y MySQL/MariaDB (`go-sql-driver/mysql`, ADR-031). Ver
+[ADR-003](architecture/decisions/ADR-003-database.md) para el diseño base
+(sin ORM, SQL a mano, `Rebind` para postgres) y
+[ADR-031](architecture/decisions/ADR-031-mysql-mariadb.md) para las
+divergencias reales que MySQL/MariaDB exigieron -- ADR-003 asumía que no
+haría falta ninguna, y esa suposición resultó incorrecta:
+
+- Migraciones con `VARCHAR` explícito (no `TEXT`) en toda columna
+  PK/FK/indexada/con `DEFAULT`, `FOREIGN KEY` siempre como cláusula
+  explícita (la forma inline de sqlite/postgres se ignora en silencio en
+  MySQL 8), y `COLLATE utf8mb4_bin` en cada tabla (MySQL/MariaDB son
+  insensibles a mayúsculas/acentos por defecto).
+  **Límite nuevo, solo en MySQL/MariaDB**: `parent_path` y `name` de
+  `files`/`directories` quedan acotados a 400/255 caracteres (el índice
+  compuesto de unicidad no cabría en el límite de InnoDB si no) -- sqlite
+  y postgres no limitan esa longitud en código Go hoy.
+- `CreateDirectory`/`UpsertFile` (`internal/storage`) ramifican por
+  dialecto: MySQL no tiene `ON CONFLICT`, usa `INSERT IGNORE`/
+  `INSERT ... ON DUPLICATE KEY UPDATE`.
+- `MoveDirectoryTree` ramifica la concatenación (`CONCAT` en vez de `||`,
+  que en MySQL es el operador OR) y el escape de `LIKE` (`ESCAPE '\\'`,
+  doble backslash, en vez de uno solo).
+- Mínimo soportado: MySQL 8.0.16+ / MariaDB 10.2.1+ (versiones anteriores
+  no aplican de verdad los `CHECK` del esquema, solo los parsean).
+- Verificación real contra Docker (`scripts/dev.sh test-mysql`/
+  `test-mariadb`/`test-postgres`, `internal/dbtest`): el mismo arnés
+  paramétrico por dialecto cierra también el hueco, previamente
+  documentado en ADR-006, de que Postgres nunca se había probado contra
+  una instancia real en este repo.
+
 ## Capas
 
 ```
@@ -116,6 +151,6 @@ CLI para lo manual (`nexuscloud backup run|list|restore|restore-to-pool|verify`)
 - **Miniaturas/previsualización/búsqueda de contenido** (§33-35): Fase 2, nunca empezado -- la pieza de mayor alcance de todo el backlog.
 - **Favoritos/Recientes** (§143): mencionado en el dashboard del explorador web pero sin backend que lo soporte todavía (ver `architecture.md`).
 - **Sharing: permiso de subida a un usuario/grupo concreto** (§37): hoy solo los enlaces lo soportan (no existe ningún camino de autorización de subida para user/group, solo vía token de enlace público -- haría falta diseñar uno nuevo); notificaciones por email tampoco están implementadas.
-- **MySQL/MariaDB** (Fase 1): interfaces ya desacopladas del dialecto ([ADR-003](architecture/decisions/ADR-003-database.md)), driver/migraciones sin implementar.
-- **Detección de mover/renombrar, limpieza de carpetas vacías, umbral de borrado configurable, auto-sync por par y detección de rutas solapadas en el motor de sync** (Fase 3, cliente Flutter): gaps aceptados explícitamente en ADR-011/012/013/014, ver esos documentos.
+- **MySQL/MariaDB** (Fase 1): implementado ([ADR-031](architecture/decisions/ADR-031-mysql-mariadb.md)) -- tercer dialecto, `go-sql-driver/mysql`. Ver sección "Base de datos" arriba para las divergencias de esquema/SQL reales frente a sqlite/postgres.
+- **Mover/renombrar, limpieza de carpetas vacías, umbral de borrado configurable, auto-sync por par y detección de rutas solapadas en el motor de sync** (Fase 3, cliente Flutter): implementado (ADR-030 parte B, §85) -- ya no son gaps.
 - **Auto-actualización del MSIX** (Fase 3): bloqueada en la obtención de un certificado de firma de código -- el usuario ha decidido comprar uno real.

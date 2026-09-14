@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 
+	mysqldriver "github.com/go-sql-driver/mysql" // driver "mysql" para database/sql + ParseDSN/FormatDSN
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database"
+	migratemysql "github.com/golang-migrate/migrate/v4/database/mysql"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
 	"github.com/golang-migrate/migrate/v4/database/sqlite"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
@@ -30,6 +32,9 @@ var sqliteMigrationsFS embed.FS
 //go:embed migrations/postgres/*.sql
 var postgresMigrationsFS embed.FS
 
+//go:embed migrations/mysql/*.sql
+var mysqlMigrationsFS embed.FS
+
 // Open abre la conexión al motor configurado en cfg.Database.Driver. No
 // aplica migraciones (ver Migrate) para que comandos de solo-lectura como
 // `migrate status` puedan inspeccionar sin arrancar el pool completo.
@@ -43,9 +48,34 @@ func Open(cfg *config.Config) (*sql.DB, error) {
 			return nil, fmt.Errorf("abriendo postgres: %w", err)
 		}
 		return conn, nil
+	case "mysql":
+		return openMySQL(cfg.Database.DSN)
 	default:
 		return nil, fmt.Errorf("driver de base de datos no soportado: %q", cfg.Database.Driver)
 	}
+}
+
+// openMySQL fuerza multiStatements=true sobre el DSN que dé el
+// administrador -- imprescindible para que golang-migrate/database/mysql
+// pueda aplicar ficheros de migración con varias sentencias separadas por
+// ";" (todas las demás opciones del DSN -- TLS, timeouts, collation de la
+// conexión, etc. -- se respetan tal cual las escribió el administrador,
+// igual que el DSN de postgres se usa sin tocar). No es un riesgo de
+// seguridad nuevo: NexusCloud nunca construye SQL concatenando varias
+// sentencias -- cada ExecContext/QueryContext en
+// internal/*/sql_repository.go ejecuta una única sentencia parametrizada --
+// así que esta capacidad del driver nunca queda expuesta a datos de usuario.
+func openMySQL(dsn string) (*sql.DB, error) {
+	parsed, err := mysqldriver.ParseDSN(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("parseando database.dsn de mysql: %w", err)
+	}
+	parsed.MultiStatements = true
+	conn, err := sql.Open("mysql", parsed.FormatDSN())
+	if err != nil {
+		return nil, fmt.Errorf("abriendo mysql: %w", err)
+	}
+	return conn, nil
 }
 
 func openSQLite(dsn string) (*sql.DB, error) {
@@ -81,6 +111,9 @@ func newMigrator(cfg *config.Config, conn *sql.DB) (*migrate.Migrate, error) {
 	case "postgres":
 		driver, err = postgres.WithInstance(conn, &postgres.Config{})
 		mfs, subdir = postgresMigrationsFS, "migrations/postgres"
+	case "mysql":
+		driver, err = migratemysql.WithInstance(conn, &migratemysql.Config{})
+		mfs, subdir = mysqlMigrationsFS, "migrations/mysql"
 	default:
 		return nil, fmt.Errorf("driver de base de datos no soportado: %q", cfg.Database.Driver)
 	}

@@ -29,9 +29,14 @@ server:
   trustedProxies: []
 
 database:
-  driver: "sqlite"      # sqlite | postgres
+  driver: "sqlite"      # sqlite | postgres | mysql
   # sqlite: si se deja vacío, se usa <storage.dataDir>/database/nexuscloud.db
   # postgres: obligatorio, p.ej. postgres://usuario:password@host:5432/nexuscloud?sslmode=disable
+  # mysql: obligatorio, p.ej. usuario:password@tcp(host:3306)/nexuscloud
+  #   (MySQL 8.0.16+ o MariaDB 10.2.1+ -- versiones anteriores no aplican
+  #   los CHECK constraints del esquema, solo los parsean; no hace falta
+  #   añadir "?multiStatements=true" -- NexusCloud lo fuerza internamente
+  #   porque lo necesitan las migraciones, ver ADR-031)
   dsn: ""
 
 storage:
