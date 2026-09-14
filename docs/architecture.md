@@ -42,15 +42,15 @@ Ver [docs/api.md](api.md) para la referencia completa. Resumen: `/health`, `/rea
 
 ## Fases
 
-El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **Las Fases 1 y 2 están completas**:
+El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **Las Fases 1, 2, 3 y 5 están completas**:
 
 | Fase | Contenido | Estado |
 |---|---|---|
-| 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa |
+| 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa (con algunos gaps conocidos menores, ver más abajo) |
 | 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado + Sharing | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15`, `docs/storage.md#compartición-37` |
-| 3 | Cliente Desktop (Windows/Linux) | En progreso — slice 1 (login + explorador de solo lectura) implementado y verificado; sync/subida/descarga/sharing en el cliente quedan para slices posteriores. Ver `client/README.md`, [ADR-005](architecture/decisions/ADR-005-multiplatform-strategy.md), [ADR-009](architecture/decisions/ADR-009-flutter-client-foundation.md) |
+| 3 | Cliente Desktop (Windows/Linux) | ✅ Completa (18 slices) — paridad funcional con la web, sync bidireccional con varios pares, auto-sync, descargas reanudables. Único pendiente: auto-actualización del MSIX, bloqueada en la obtención de un certificado de firma de código. Ver `client/README.md`, [ADR-005](architecture/decisions/ADR-005-multiplatform-strategy.md), [ADR-009](architecture/decisions/ADR-009-flutter-client-foundation.md) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
-| 5 | Backup Manager, Snapshots, gestión de discos/RAID | Pendiente |
+| 5 | Backup Manager, Snapshots, gestión de discos/RAID | ✅ Completa (9 slices) — ver `docs/storage.md#backup-manager-18`, `docs/storage.md#raid-12`, `docs/storage.md#snapshots-17` |
 | 6 | Seguridad avanzada: 2FA reforzado, Passkeys/WebAuthn, WebDAV | Pendiente — `security`/`storage`/`backup` ya reservados en el CLI |
 | 7 | Integración real con el ecosistema Nexus (NexusWorkspace, etc.) | Pendiente |
 
@@ -60,6 +60,6 @@ El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arr
 
 ### Gaps conocidos dentro de la propia Fase 1
 
-- **Windows Service**: el plan inicial preveía envolver el binario con `kardianos/service` para que `nexuscloud start` pudiera instalarse como servicio nativo de Windows. No se implementó en esta pasada — hoy el binario corre en primer plano tanto en Windows como en Linux (con apagado ordenado por señal). Linux sí tiene una unidad `systemd` real y funcional (`deploy/systemd/nexuscloud.service`). Instalar como servicio de Windows hoy requiere un envoltorio externo (NSSM, Tarea Programada) hasta que se añada soporte nativo.
-- **Range requests / descargas reanudables**: `GET /api/v1/files/{id}` transmite el contenido completo en streaming, pero no soporta cabecera `Range` todavía (§41 queda para una fase posterior sin romper el contrato de la API).
-- **MySQL/MariaDB**: la capa de abstracción de base de datos está lista para añadirlo (interfaces ya desacopladas del dialecto), pero no se implementó el driver/migraciones en esta pasada — solo SQLite y PostgreSQL, que son el mínimo exigido por §8.
+- **Windows Service**: implementado -- `nexuscloud service install|uninstall|start|stop|restart|status` (`internal/cli/service_cmd.go`) envuelve el binario con `kardianos/service`, multiplataforma (Windows Service Control Manager / systemd / launchd) sin depender de Docker. Linux además conserva la unidad `systemd` de ejemplo (`deploy/systemd/nexuscloud.service`) como alternativa nativa sin pasar por el propio gestor de NexusCloud. **Housekeeping detectado (2026-09-13): esta entrada llevaba desactualizada, describiendo un gap ya cerrado, sin que ningún ADR ni entrada de `docs/storage.md#qué-falta` lo hubiera corregido -- verificar siempre contra el código, no solo contra la documentación existente, antes de dar un gap por bueno.**
+- **Range requests / descargas reanudables**: implementado en Fase 3 slice 18 (§41) — `GET /api/v1/files/{id}` (y version/public-share) soportan `Range: bytes=N-` con `206 Partial Content`/`416`. Ver `docs/storage.md` y [ADR-010](architecture/decisions/ADR-010-file-transfer.md) y siguientes.
+- **MySQL/MariaDB**: la capa de abstracción de base de datos está lista para añadirlo (interfaces ya desacopladas del dialecto, [ADR-003](architecture/decisions/ADR-003-database.md)), pero no se implementó el driver/migraciones en esta pasada — solo SQLite y PostgreSQL, que son el mínimo exigido por §8. **Sigue pendiente.**
