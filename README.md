@@ -1,80 +1,140 @@
 # NexusCloud
 
-Plataforma de almacenamiento en nube privada, autoalojada, modular y multiplataforma. MIT. Escrita en Go.
+Plataforma de almacenamiento en la nube privada, autoalojada (self-hosted),
+modular y multiplataforma. Escrita en Go, licencia MIT. Todo el código vive
+en [`nexuscloud/`](nexuscloud/).
 
-NexusCloud es el primer componente con servidor del ecosistema **Nexus** (self-hosted, offline-capable), pensado para funcionar tanto en una red local sin Internet como, más adelante, detrás de un dominio propio.
+NexusCloud es el primer componente **con servidor** del ecosistema **Nexus**
+(self-hosted, capaz de funcionar sin Internet): pensado para correr en tu
+propia red local o detrás de tu propio dominio, sin depender de ningún
+proveedor externo para guardar tus archivos.
 
-> **Estado del proyecto**: Fases 1 y 2 completas — Core, Auth, Storage, API, interfaz web, papelera, versionado y compartición (ver [docs/architecture.md](docs/architecture.md#fases)). Hay un backend real, probado y funcional, y una web para usarlo sin tocar la API directamente — pero **todavía no hay clientes de escritorio/móvil**. Consulta la sección "Qué funciona hoy" antes de asumir cualquier funcionalidad de las fases futuras.
+## Qué hace hoy
 
-## Qué funciona hoy
+- **Usuarios y acceso**: roles (RBAC), grupos, cuotas, invitaciones (sin
+  registro público), contraseña + Argon2id, sesiones revocables, TOTP (2FA).
+- **Archivos**: subida/descarga en streaming con descargas reanudables
+  (`Range`), papelera con purga automática configurable (por antigüedad y
+  por tamaño total), historial de versiones, protección activa contra path
+  traversal e IDOR.
+- **Compartición**: usuario→usuario, usuario→grupo, y enlaces públicos
+  (contraseña, expiración, límite de descargas/tamaño, revocación).
+- **Interfaz web** (React+TS+Vite, embebida en el propio binario): explorador
+  con arrastrar-y-soltar, papelera, versiones, compartición, sesiones.
+- **Cliente de escritorio** (Windows/Linux, Flutter): paridad funcional con
+  la web, sincronización bidireccional de varias carpetas a la vez,
+  detección de mover/renombrar sin re-subir contenido, auto-sync
+  configurable, bandeja del sistema, arranque con el sistema operativo.
+- **Backup Manager**: manual o programado, completo o incremental
+  (deduplicación por hardlinks), cifrado (AES-256-CTR), a una carpeta local
+  o a otro servidor NexusCloud remoto (regla 3-2-1), con retención y
+  restauración directa a un pool activo.
+- **Detección de RAID y Snapshots del sistema operativo**: mdadm/Storage
+  Spaces (RAID Linux/Windows), VSS/ZFS/Btrfs (Snapshots Windows/Linux) —
+  solo lectura, NexusCloud no gestiona el RAID ni las snapshots por sí
+  mismo.
+- **Multi-base de datos**: SQLite (por defecto, cero configuración),
+  PostgreSQL o MySQL/MariaDB, seleccionable sin tocar código.
+- API REST versionada (`/api/v1`), CLI (`nexuscloud`) con `start`, `doctor`,
+  `migrate`, `admin`, `users`, `config`, `backup`, `storage`, `service`.
+- Seguridad transversal: rate limiting, CORS estricto, cabeceras
+  defensivas, auditoría. Docker, systemd, servicio de Windows, CI
+  multiplataforma (Linux amd64/arm64, Windows).
 
-- Usuarios, roles (RBAC), grupos, cuotas, invitaciones (sin registro público, §21)
-- Autenticación: contraseña + Argon2id, sesiones revocables, TOTP (2FA)
-- Almacenamiento de archivos y carpetas: subida/descarga en streaming, protección activa contra path traversal e IDOR
-- **Papelera** (§16): borrar mueve a la papelera por defecto, restaurable; purga automática por retención configurable — ver [docs/storage.md#papelera](docs/storage.md#papelera)
-- **Versionado** (§15): subir contenido distinto a un archivo activo conserva la versión anterior en vez de perderla; historial descargable y restaurable sin pérdida de datos — ver [docs/storage.md#versionado-15](docs/storage.md#versionado-15)
-- **Compartición** (§37): usuario→usuario, usuario→grupo, y enlaces públicos (contraseña, expiración, límite de descargas, límite de tamaño, revocación); enlaces públicos desactivados por defecto — ver [docs/storage.md#compartición-37](docs/storage.md#compartición-37)
-- **Interfaz web** (React+TS+Vite, embebida en el binario): login, explorador de archivos con arrastrar-y-soltar, papelera, historial de versiones, compartición, gestión de sesiones — ver [web/README.md](web/README.md)
-- API REST versionada (`/api/v1`) — ver [docs/api.md](docs/api.md)
-- Seguridad transversal: rate limiting, CORS estricto, cabeceras defensivas, auditoría
-- Multi-base de datos: SQLite (por defecto) o PostgreSQL, sin cambiar código
-- CLI (`nexuscloud`) con `start`, `doctor`, `migrate`, `admin`, `users`, `config`
-- Docker, systemd, CI multiplataforma (Linux/Windows/ARM64)
+**Explícitamente fuera de alcance todavía**: cliente Android, subida
+anónima, sincronización WebDAV, Passkeys/WebAuthn, sistema de plugins,
+miniaturas/búsqueda de contenido. El detalle completo de qué fase cubre qué
+está en [`nexuscloud/docs/architecture.md`](nexuscloud/docs/architecture.md#fases).
 
-**Explícitamente fuera de esta fase**: clientes Flutter (Windows/Linux/Android), subida anónima (§38), sincronización, WebDAV, backups automáticos, snapshots, detección de discos/RAID, Passkeys/WebAuthn, sistema de plugins. Ver [docs/architecture.md](docs/architecture.md#fases) para el roadmap completo.
+## Instalación
 
-## Inicio rápido
+### Automática (recomendado)
 
-### Con Docker (recomendado)
+Clona el repo y ejecuta el instalador de tu sistema. Ninguno de los dos
+necesita Docker ni entorno gráfico: compilan el binario desde código
+fuente (instalando Go si hace falta) y registran NexusCloud como servicio
+del sistema (systemd en Linux, servicio de Windows).
 
 ```bash
+git clone https://github.com/porrii/nexuscloud.git
+cd nexuscloud
+sudo ./install.sh          # Linux
+```
+
+```bat
+git clone https://github.com/porrii/nexuscloud.git
+cd nexuscloud
+install.bat                :: Windows -- desde una consola de Administrador
+```
+
+Al terminar, el servicio queda instalado pero **parado** a propósito: revisa
+la configuración generada, crea tu primer usuario y arráncalo siguiendo las
+instrucciones que el propio instalador imprime al final.
+
+Para desinstalar o actualizar más adelante, usa
+`nexuscloud/deploy/scripts/uninstall.sh`/`update.sh` (o sus equivalentes
+`.ps1` en Windows).
+
+### Con Docker
+
+```bash
+cd nexuscloud
 docker compose up -d
 docker compose exec nexuscloud nexuscloud admin create-user --username tu-usuario
 curl http://localhost:8080/health
 ```
 
-### Compilando desde código fuente
+### Compilando a mano
 
 Requiere [Go](https://go.dev) 1.25+.
 
 ```bash
+cd nexuscloud
 go build -o nexuscloud ./cmd/nexuscloud
 ./nexuscloud config init          # genera config.yaml con valores seguros por defecto
-./nexuscloud admin create-user --username tu-usuario   # nunca admin/admin (§140)
+./nexuscloud admin create-user --username tu-usuario   # nunca admin/admin
 ./nexuscloud doctor                # comprueba que todo esté en orden
 ./nexuscloud start
 ```
 
-La interfaz web está desactivada por defecto (secure by default, §3/§47). Para activarla:
+La interfaz web está desactivada por defecto (secure by default). Para
+activarla hace falta además Node.js:
 
 ```bash
-cd web && npm install && npm run build && cd ..
+cd nexuscloud/web && npm install && npm run build && cd ..
 go build -o nexuscloud ./cmd/nexuscloud   # ahora embebe web/dist
 NEXUSCLOUD_WEB_ENABLED=true ./nexuscloud start
 ```
 
-Y entra a `http://localhost:8080` con el usuario que acabas de crear. Sin interfaz web, consulta [docs/api.md](docs/api.md) para hacer login y subir tu primer archivo directamente por API.
+Sin interfaz web, la [referencia de la API](nexuscloud/docs/api.md) explica
+cómo hacer login y subir tu primer archivo directamente.
 
 ## Documentación
 
-- [docs/architecture.md](docs/architecture.md) — módulos, árbol de proyecto, fases
-- [docs/security.md](docs/security.md) — modelo de seguridad
-- [docs/storage.md](docs/storage.md) — motor de almacenamiento
-- [docs/deployment.md](docs/deployment.md) — Docker, systemd, Windows, reverse proxy
-- [docs/api.md](docs/api.md) — referencia de la API REST
-- [docs/security/threat-model.md](docs/security/threat-model.md) — modelo de amenazas
-- [docs/architecture/decisions/](docs/architecture/decisions/) — decisiones de arquitectura (ADRs)
+Todo bajo [`nexuscloud/docs/`](nexuscloud/docs/):
+
+- [architecture.md](nexuscloud/docs/architecture.md) — módulos, árbol de proyecto, fases
+- [security.md](nexuscloud/docs/security.md) — modelo de seguridad
+- [storage.md](nexuscloud/docs/storage.md) — motor de almacenamiento, base de datos, backup, RAID, snapshots
+- [deployment.md](nexuscloud/docs/deployment.md) — Docker, systemd, Windows, reverse proxy
+- [api.md](nexuscloud/docs/api.md) — referencia de la API REST
+- [architecture/decisions/](nexuscloud/docs/architecture/decisions/) — decisiones de arquitectura (ADRs)
+- [`NEXUSCLOUD.md`](nexuscloud/NEXUSCLOUD.md) — especificación completa del proyecto
 
 ## Desarrollo
 
 ```bash
+cd nexuscloud
 go build ./...
 go vet ./...
 go test ./...
 gofmt -l .
 ```
 
-Este repositorio no requiere Docker para desarrollar si tienes Go instalado localmente; se usó Docker durante el desarrollo inicial únicamente porque la máquina de referencia no tenía Go nativo.
+Si no tienes Go instalado localmente, `nexuscloud/scripts/dev.sh` envuelve
+lo mismo dentro de un contenedor `golang` (`bash scripts/dev.sh all`).
+También añade `test-mysql`/`test-mariadb`/`test-postgres` para correr los
+tests contra un motor de base de datos real vía Docker.
 
 ## Licencia
 

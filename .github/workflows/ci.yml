@@ -11,12 +11,18 @@ permissions:
 env:
   GO_VERSION: "1.25"
 
+# Todo el código Go vive en nexuscloud/ (reestructuración 2026-09-14, ver
+# README.md de la raíz) -- working-directory a nivel de job en vez de
+# repetirlo en cada "run:" individual.
 jobs:
   build-test:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: nexuscloud
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -28,6 +34,9 @@ jobs:
 
   lint:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexuscloud
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -44,6 +53,9 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexuscloud
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -56,6 +68,9 @@ jobs:
   # Linux amd64/arm64 (servidor, Raspberry Pi) y Windows amd64.
   cross-compile:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: nexuscloud
     strategy:
       matrix:
         include:
@@ -76,4 +91,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t nexuscloud:ci .
+      # Sin working-directory aquí (ese default es para "run:" de shell,
+      # no afecta a "docker build") -- el contexto se pasa explícito.
+      - run: docker build -t nexuscloud:ci -f nexuscloud/Dockerfile nexuscloud
