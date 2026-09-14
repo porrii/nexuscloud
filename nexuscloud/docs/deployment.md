@@ -8,8 +8,8 @@ adapte:
 
 | Método | Cuándo | Punto de entrada |
 |--------|--------|------------------|
-| **Nativo + systemd** (Linux) | servidor Linux dedicado, control total | `deploy/scripts/install.sh` |
-| **Nativo + servicio** (Windows) | equipo Windows dedicado | `deploy/scripts/install.ps1` |
+| **Nativo + systemd** (Linux) | servidor Linux dedicado, control total | `install.sh` (raíz del repo) |
+| **Nativo + servicio** (Windows) | equipo Windows dedicado | `install.bat` (raíz del repo) |
 | **Nativo en primer plano** | pruebas, u otro supervisor (runit, s6, NSSM…) | `nexuscloud start --config <ruta>` |
 | **Docker** | ya usas Docker, quieres aislamiento | `Dockerfile` |
 | **Docker Compose** | Docker + PostgreSQL / reverse-proxy juntos | `docker-compose.yml` |
@@ -63,12 +63,16 @@ Igual con cualquier método:
 ## Nativo + systemd (Linux)
 
 ```sh
-# Con el binario 'nexuscloud' compilado (go build -o nexuscloud ./cmd/nexuscloud)
-# o descargado a mano:
-sudo ./deploy/scripts/install.sh ./nexuscloud
+# Desde la raíz del repo clonado -- compila desde código fuente (instala Go
+# si hace falta) y lo instala todo en un solo paso:
+sudo ./install.sh
 # -> crea el usuario de servicio, instala el binario en /usr/local/bin,
 #    genera /etc/nexuscloud/config.yaml, aplica migraciones, hace 'enable'
 #    del servicio (NO lo arranca todavía: revisa la config primero).
+#
+# Con un binario ya compilado (go build -o nexuscloud ./cmd/nexuscloud,
+# cruzado a otra arquitectura, o descargado) en vez de compilar aquí:
+#   sudo ./install.sh /ruta/al/binario
 
 sudo -e /etc/nexuscloud/config.yaml
 sudo -u nexuscloud /usr/local/bin/nexuscloud \
@@ -78,12 +82,13 @@ systemctl status nexuscloud
 journalctl -u nexuscloud -f
 ```
 
-- Actualizar: `sudo ./deploy/scripts/update.sh ./nexuscloud-nuevo`
+- Actualizar: `sudo nexuscloud/deploy/scripts/update.sh ./nexuscloud-nuevo`
   (para el servicio, guarda copia del binario anterior, migra, y revierte
   el binario si la migración falla).
-- Desinstalar: `sudo ./deploy/scripts/uninstall.sh`
+- Desinstalar: `sudo nexuscloud/deploy/scripts/uninstall.sh`
   (conserva datos y config; `--purge` los borra también).
-- Reubicar rutas: `NX_PREFIX`, `NX_CONFIG_DIR`, `NX_DATA_DIR`, `NX_USER`.
+- Reubicar rutas: `NX_PREFIX`, `NX_CONFIG_DIR`, `NX_DATA_DIR`, `NX_USER`
+  (mismas variables para `install.sh`, `update.sh` y `uninstall.sh`).
 
 `deploy/systemd/nexuscloud.service` es la unit de referencia (hardening:
 `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, mínimo privilegio
@@ -94,20 +99,23 @@ ruta a `ReadWritePaths=`.
 
 ## Nativo + servicio de Windows
 
-```powershell
-# En una consola de PowerShell ELEVADA, con nexuscloud.exe a mano:
-.\deploy\scripts\install.ps1 -BinPath .\nexuscloud.exe
-# -> copia a "Archivos de programa\NexusCloud", genera
-#    ProgramData\NexusCloud\config.yaml, migra y registra el servicio.
+```bat
+:: Desde una consola de Administrador, en la raíz del repo clonado --
+:: compila desde código fuente (instala Go si hace falta) y lo instala:
+install.bat
+:: -> copia a "Archivos de programa\NexusCloud", genera
+::    ProgramData\NexusCloud\config.yaml, migra y registra el servicio.
+```
 
+```powershell
 & "$env:ProgramFiles\NexusCloud\nexuscloud.exe" `
     --config "$env:ProgramData\NexusCloud\config.yaml" admin create-user
 & "$env:ProgramFiles\NexusCloud\nexuscloud.exe" service start
 ```
 
 El servicio se gestiona con `nexuscloud service {start|stop|restart|status}`
-o desde `services.msc`. Desinstalar: `.\deploy\scripts\uninstall.ps1`
-(`-Purge` borra datos y config).
+o desde `services.msc`. Desinstalar:
+`nexuscloud\deploy\scripts\uninstall.ps1` (`-Purge` borra datos y config).
 
 Por debajo, `nexuscloud service …` usa `github.com/kardianos/service`, que
 habla con el SCM de Windows, systemd (Linux) o launchd (macOS) según el

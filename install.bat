@@ -2,8 +2,7 @@
 setlocal enabledelayedexpansion
 REM Instala NexusCloud en Windows: compila desde codigo fuente (instalando
 REM Go si hace falta) y lo registra como servicio de Windows. Prioridad
-REM menor que install.sh (Linux) -- mismo criterio, envoltorio fino sobre
-REM lo que ya existe: nexuscloud\deploy\scripts\install.ps1.
+REM menor que install.sh (Linux) -- mismo criterio.
 REM
 REM Uso: ejecuta este .bat desde una consola de Administrador (clic derecho
 REM       -> "Ejecutar como administrador").
@@ -13,6 +12,11 @@ REM proposito -- un bloque "( ... )" que contiene lineas con parentesis
 REM propios (como el codigo PowerShell que genera mas abajo) es una fuente
 REM clasica de errores de parseo en cmd.exe; goto evita ese problema por
 REM completo, cada linea se interpreta por separado.
+REM
+REM Para actualizar o desinstalar mas adelante, usa
+REM nexuscloud\deploy\scripts\uninstall.ps1 (no hay update.ps1 todavia --
+REM reinstalar con este mismo script sirve igual, config.yaml no se toca
+REM si ya existe).
 
 set "MIN_GO_VERSION=1.25"
 set "SCRIPT_DIR=%~dp0"
@@ -67,9 +71,46 @@ REM La interfaz web (nexuscloud\web\) NO se compila aqui a proposito: exige
 REM Node.js ademas de Go, y viene desactivada por defecto (secure-by-default)
 REM -- si la quieres, sigue el paso manual del README tras esta instalacion.
 
+REM ---- Instalar como servicio (antes delegado en un
+REM nexuscloud\deploy\scripts\install.ps1 separado -- unificado aqui en un
+REM unico script, mismo criterio que install.sh en Linux). Generado como
+REM .ps1 temporal en vez de -Command en linea, por el mismo motivo que el
+REM paso de Go de arriba: evita mezclar el quoting de batch con el de
+REM PowerShell en una sola linea larga.
 echo ==^> Instalando el servicio
-powershell -NoProfile -ExecutionPolicy Bypass -File "%CODE_DIR%\deploy\scripts\install.ps1" -BinPath "%BUILD_DIR%\nexuscloud.exe"
+set "INSTALL_PS1=%TEMP%\nexuscloud-install-%RANDOM%.ps1"
+> "%INSTALL_PS1%" echo $ErrorActionPreference = 'Stop'
+>>"%INSTALL_PS1%" echo $InstallDir = Join-Path $env:ProgramFiles 'NexusCloud'
+>>"%INSTALL_PS1%" echo $ConfigDir  = Join-Path $env:ProgramData  'NexusCloud'
+>>"%INSTALL_PS1%" echo $DataDir    = Join-Path $env:ProgramData  'NexusCloud\data'
+>>"%INSTALL_PS1%" echo $exe        = Join-Path $InstallDir 'nexuscloud.exe'
+>>"%INSTALL_PS1%" echo $configFile = Join-Path $ConfigDir  'config.yaml'
+>>"%INSTALL_PS1%" echo Write-Host "==^> Directorios"
+>>"%INSTALL_PS1%" echo New-Item -ItemType Directory -Force -Path $InstallDir, $ConfigDir, $DataDir ^| Out-Null
+>>"%INSTALL_PS1%" echo Write-Host "==^> Binario -^> $exe"
+>>"%INSTALL_PS1%" echo Copy-Item -Path '%BUILD_DIR%\nexuscloud.exe' -Destination $exe -Force
+>>"%INSTALL_PS1%" echo Write-Host "==^> Configuracion"
+>>"%INSTALL_PS1%" echo if (Test-Path $configFile^) {
+>>"%INSTALL_PS1%" echo     Write-Host "    $configFile ya existe, no se toca"
+>>"%INSTALL_PS1%" echo } else {
+>>"%INSTALL_PS1%" echo     ^& $exe config init --out $configFile
+>>"%INSTALL_PS1%" echo     Write-Host "    revisa $configFile antes de arrancar (docs/security.md)"
+>>"%INSTALL_PS1%" echo }
+>>"%INSTALL_PS1%" echo Write-Host "==^> Migraciones de base de datos"
+>>"%INSTALL_PS1%" echo $env:NEXUSCLOUD_DATA_DIR = $DataDir
+>>"%INSTALL_PS1%" echo ^& $exe --config $configFile migrate up
+>>"%INSTALL_PS1%" echo Write-Host "==^> Servicio de Windows"
+>>"%INSTALL_PS1%" echo ^& $exe service install --config $configFile
+>>"%INSTALL_PS1%" echo Write-Host ""
+>>"%INSTALL_PS1%" echo Write-Host "NexusCloud instalado. El servicio NO se ha arrancado todavia."
+>>"%INSTALL_PS1%" echo Write-Host "  1. Revisa   $configFile"
+>>"%INSTALL_PS1%" echo Write-Host "  2. Crea un admin:  ^&$exe --config $configFile admin create-user"
+>>"%INSTALL_PS1%" echo Write-Host "  3. Arranca:  ^&$exe service start   (o desde services.msc)"
+>>"%INSTALL_PS1%" echo Write-Host ""
+>>"%INSTALL_PS1%" echo Write-Host "Desinstalar:  nexuscloud\deploy\scripts\uninstall.ps1   (-Purge borra tambien los datos)"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_PS1%"
 set "INSTALL_RESULT=%ERRORLEVEL%"
+del /f /q "%INSTALL_PS1%" >nul 2>&1
 rmdir /s /q "%BUILD_DIR%" >nul 2>&1
 exit /b %INSTALL_RESULT%
 
