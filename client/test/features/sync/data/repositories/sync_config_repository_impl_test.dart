@@ -150,4 +150,20 @@ void main() {
     await repo.saveWatchLocalChanges(false);
     expect(await repo.readWatchLocalChanges(), isFalse);
   });
+
+  test('readMaxAutoDeleteBatch devuelve 10 si no hay nada guardado', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    expect(await repo.readMaxAutoDeleteBatch(), 10);
+  });
+
+  test('saveMaxAutoDeleteBatch y readMaxAutoDeleteBatch hacen round-trip', () async {
+    final repo = SyncConfigRepositoryImpl();
+
+    await repo.saveMaxAutoDeleteBatch(50);
+    expect(await repo.readMaxAutoDeleteBatch(), 50);
+
+    await repo.saveMaxAutoDeleteBatch(5);
+    expect(await repo.readMaxAutoDeleteBatch(), 5);
+  });
 }

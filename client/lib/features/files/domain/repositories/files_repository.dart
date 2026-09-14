@@ -1,3 +1,4 @@
+import '../entities/directory_entry.dart';
 import '../entities/directory_listing.dart';
 import '../entities/file_entry.dart';
 import '../entities/file_version.dart';
@@ -55,6 +56,21 @@ abstract interface class FilesRepository {
   /// (normal o permanente) una carpeta activa con contenido activo
   /// dentro (`409 not_empty`) -- elementos ya trasheados no cuentan.
   Future<void> deleteDirectory(String directoryId, {bool permanent = false});
+
+  /// Mueve y/o renombra [fileId] DE VERDAD (ADR-030, §85): mismo id en el
+  /// servidor, nunca vuelve a subir el contenido -- preserva el historial
+  /// de versiones y las comparticiones intactos. Omitir [newParentPath]
+  /// es "renombrar en el sitio"; omitir [newName] es "mover sin
+  /// renombrar" (mismo espíritu que un rename() de filesystem). El
+  /// servidor rechaza un destino ya ocupado (activo o en papelera) --
+  /// nunca sobrescribe. Devuelve los metadatos actualizados.
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName});
+
+  /// Igual que [moveFile], para una carpeta -- mueve TODO su árbol de
+  /// descendientes (archivos y subcarpetas, cualquier profundidad) con
+  /// ella. El servidor rechaza moverla dentro de sí misma o de una de sus
+  /// propias subcarpetas.
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName});
 
   Future<void> restoreFile(String fileId);
 

@@ -20,11 +20,19 @@ import 'pending_delete.dart';
 /// porque el lote superaba el umbral anti-"borrado masivo" -- quien llama
 /// debe mostrarlos al usuario y, si los confirma, invocar `syncNow` de
 /// nuevo con sus claves en `confirmedDeletePaths`.
+///
+/// [moved] (ADR-030, §85): un archivo que desapareció de un lado y
+/// reapareció en el MISMO lado con idéntico contenido (mismo SHA-256) es
+/// un renombrado/movido, no un borrado seguido de una subida/descarga
+/// independiente -- ver `SyncEngine._detectAndApplyMoves`. Ni cuenta como
+/// borrado (nunca entra en el umbral anti-"borrado masivo", ADR-013) ni
+/// como subida/descarga (nunca vuelve a transferir el contenido).
 class SyncResult extends Equatable {
   const SyncResult({
     required this.downloaded,
     required this.uploaded,
     required this.skipped,
+    required this.moved,
     required this.errors,
     required this.conflicts,
     required this.deletedRemote,
@@ -36,6 +44,7 @@ class SyncResult extends Equatable {
   final int downloaded;
   final int uploaded;
   final int skipped;
+  final int moved;
   final List<String> errors;
   final List<String> conflicts;
   final int deletedRemote;
@@ -48,6 +57,7 @@ class SyncResult extends Equatable {
         downloaded,
         uploaded,
         skipped,
+        moved,
         errors,
         conflicts,
         deletedRemote,

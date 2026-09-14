@@ -46,4 +46,17 @@ abstract interface class SyncConfigRepository {
   });
 
   Future<({DateTime at, String summary})?> readLastAutoSyncOutcome();
+
+  /// Umbral de la guarda anti-"borrado masivo" (ADR-013), configurable
+  /// desde Ajustes (#23) en vez de fijo en el motor -- global para todos
+  /// los pares, mismo criterio que [AutoSyncSettings] (ninguna de las
+  /// tareas de esta serie pidió granularidad por par, y añadirla sin un
+  /// caso de uso claro sería complejidad de UI sin beneficio real).
+  Future<void> saveMaxAutoDeleteBatch(int value);
+
+  /// `10` si no hay nada guardado todavía -- el mismo valor que ya traía
+  /// `SyncEngine._maxAutoDeleteBatch` como constante antes de #23, para
+  /// que una instalación existente no cambie de comportamiento sin que
+  /// nadie lo haya pedido.
+  Future<int> readMaxAutoDeleteBatch();
 }

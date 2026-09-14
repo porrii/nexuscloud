@@ -117,6 +117,14 @@ class _FakeFilesRepository implements FilesRepository {
       throw UnimplementedError();
 
   @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
   Future<void> restoreFile(String fileId) => throw UnimplementedError();
 
   @override

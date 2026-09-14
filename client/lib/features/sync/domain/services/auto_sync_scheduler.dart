@@ -95,7 +95,14 @@ class AutoSyncScheduler {
   Future<void> _tick(Timer timer) async {
     if (_authRepository.currentUser == null) return;
 
-    final pairs = await _configRepository.readPairs();
+    // Filtrado por `autoSyncEnabled` (#24): un par puede seguir
+    // configurado y sincronizable a mano sin participar en el reloj
+    // automático. Se relee en fresco en cada tick (igual que la lista
+    // completa de pares), así que desactivar/activar el interruptor de un
+    // par en `SyncSettingsPage` aplica al siguiente tick sin más.
+    final pairs = (await _configRepository.readPairs())
+        .where((c) => c.autoSyncEnabled)
+        .toList();
     if (pairs.isEmpty) return;
 
     // `confirmedDeletePathsByPair` nunca se rellena aquí (ADR-013): un tick

@@ -18,6 +18,7 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
   static const _autoLastAtKey = 'nexuscloud.sync.auto_last_at';
   static const _autoLastSummaryKey = 'nexuscloud.sync.auto_last_summary';
   static const _watchLocalEnabledKey = 'nexuscloud.sync.watch_local_enabled';
+  static const _maxAutoDeleteBatchKey = 'nexuscloud.sync.max_auto_delete_batch';
 
   // Claves de antes del slice 15 (un único par + una única dirección
   // globales) -- solo se leen para migrar, nunca se vuelven a escribir.
@@ -125,5 +126,17 @@ class SyncConfigRepositoryImpl implements SyncConfigRepository {
   Future<bool> readWatchLocalChanges() async {
     final prefs = await SharedPreferences.getInstance();
     return prefs.getBool(_watchLocalEnabledKey) ?? false;
+  }
+
+  @override
+  Future<void> saveMaxAutoDeleteBatch(int value) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_maxAutoDeleteBatchKey, value);
+  }
+
+  @override
+  Future<int> readMaxAutoDeleteBatch() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getInt(_maxAutoDeleteBatchKey) ?? 10;
   }
 }

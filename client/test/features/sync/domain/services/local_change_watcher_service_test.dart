@@ -7,6 +7,7 @@ import 'package:nexuscloud_client/features/auth/domain/entities/auto_login_outco
 import 'package:nexuscloud_client/features/auth/domain/entities/login_result.dart';
 import 'package:nexuscloud_client/features/auth/domain/repositories/auth_repository.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
@@ -138,6 +139,15 @@ class _FakeSyncConfigRepository implements SyncConfigRepository {
 
   @override
   Future<bool> readWatchLocalChanges() async => watchEnabled;
+
+  int maxAutoDeleteBatch = 10;
+
+  @override
+  Future<void> saveMaxAutoDeleteBatch(int value) async =>
+      maxAutoDeleteBatch = value;
+
+  @override
+  Future<int> readMaxAutoDeleteBatch() async => maxAutoDeleteBatch;
 }
 
 /// Árbol remoto vacío por defecto para todos los pares -- ningún escenario
@@ -188,6 +198,14 @@ class _FakeFilesRepository implements FilesRepository {
 
   @override
   Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
       throw UnimplementedError();
 
   @override

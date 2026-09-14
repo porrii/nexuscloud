@@ -205,8 +205,78 @@ class _FakeFilesRepository implements FilesRepository {
     }
   }
 
+  final List<String> deletedDirectoryIds = [];
+
   @override
-  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+  Future<void> deleteDirectory(String directoryId, {bool permanent = false}) async {
+    deletedDirectoryIds.add(directoryId);
+    for (final path in listingsByPath.keys.toList()) {
+      final listing = listingsByPath[path]!;
+      if (listing.directories.any((d) => d.id == directoryId)) {
+        listingsByPath[path] = DirectoryListing(
+          directories: listing.directories.where((d) => d.id != directoryId).toList(),
+          files: listing.files,
+        );
+      }
+    }
+  }
+
+  /// `(fileId, newParentPath, newName)` de cada llamada -- los tests de
+  /// detección de rename/move (ADR-030, §85, Parte B) comprueban que
+  /// SyncEngine llama aquí en vez de borrar+volver a subir.
+  final List<(String, String?, String?)> moveFileCalls = [];
+  final Set<String> failMoveForIds = {};
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) async {
+    moveFileCalls.add((fileId, newParentPath, newName));
+    if (failMoveForIds.contains(fileId)) {
+      throw const ApiException(code: 'forbidden', message: 'Mover no permitido.');
+    }
+    String? currentParent;
+    FileEntry? current;
+    for (final entry in listingsByPath.entries) {
+      for (final f in entry.value.files) {
+        if (f.id == fileId) {
+          currentParent = entry.key;
+          current = f;
+        }
+      }
+    }
+    if (current == null || currentParent == null) {
+      throw const ApiException(code: 'not_found', message: 'Archivo no encontrado.');
+    }
+    final targetParent = newParentPath ?? currentParent;
+    final targetName = newName ?? current.name;
+
+    final oldListing = listingsByPath[currentParent]!;
+    listingsByPath[currentParent] = DirectoryListing(
+      directories: oldListing.directories,
+      files: oldListing.files.where((f) => f.id != fileId).toList(),
+    );
+    // ADR-030: Move nunca cambia updatedAt -- no es un cambio de
+    // contenido, así que ni el sha256 ni la fecha de "última
+    // modificación de verdad" tienen por qué moverse.
+    final updated = FileEntry(
+      id: current.id,
+      parentPath: targetParent,
+      name: targetName,
+      sizeBytes: current.sizeBytes,
+      sha256: current.sha256,
+      mimeType: current.mimeType,
+      createdAt: current.createdAt,
+      updatedAt: current.updatedAt,
+    );
+    final targetListing = listingsByPath[targetParent] ?? const DirectoryListing(directories: [], files: []);
+    listingsByPath[targetParent] = DirectoryListing(
+      directories: targetListing.directories,
+      files: [...targetListing.files, updated],
+    );
+    return updated;
+  }
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
       throw UnimplementedError();
 
   @override
@@ -919,6 +989,248 @@ void main() {
     });
   });
 
+  group('detección de renombrado/movido (ADR-030, §85, Parte B)', () {
+    late SyncPair pair;
+
+    setUp(() {
+      pair = SyncPair(remotePath: '/root', localPath: tempDir.path);
+      fake.listingsByPath['/root'] =
+          const DirectoryListing(directories: [], files: []);
+    });
+
+    /// Mismo helper que en 'modo both' (duplicado deliberadamente: es un
+    /// closure local a ese grupo, extraerlo a main() tocaría tests ya
+    /// verificados sin necesidad real).
+    Future<void> seedInSync(String content, {String name = 'a.txt'}) async {
+      final bytes = utf8.encode(content);
+      final localFile = File('${tempDir.path}/$name');
+      await localFile.writeAsBytes(bytes);
+      final remoteTs = DateTime.utc(2026, 5, 1, 12);
+      await localFile.setLastModified(remoteTs);
+      final remote = fake.putRemoteFile(
+        parentPath: '/root',
+        name: name,
+        content: bytes,
+        updatedAt: remoteTs,
+      );
+      await stateStore.write(pair, {
+        ...await stateStore.read(pair),
+        name: SyncStateEntry(
+          remoteSizeBytes: bytes.length,
+          localSizeBytes: bytes.length,
+          sha256: remote.sha256,
+          remoteUpdatedAt: remoteTs,
+          localModifiedAt: localFile.statSync().modified.toUtc(),
+        ),
+      });
+    }
+
+    test(
+      'rename LOCAL (mismo contenido, desaparece a.txt local, aparece b.txt local) mueve en el servidor, nunca borra+sube',
+      () async {
+        await seedInSync('contenido idéntico');
+        final remoteIdBefore = fake.listingsByPath['/root']!.files.single.id;
+
+        File('${tempDir.path}/a.txt').renameSync('${tempDir.path}/b.txt');
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.moved, 1);
+        expect(result.deletedRemote, 0);
+        expect(result.uploaded, 0);
+        expect(result.pendingDeletes, isEmpty);
+        expect(fake.moveFileCalls, hasLength(1));
+        expect(fake.moveFileCalls.single.$1, remoteIdBefore);
+        expect(fake.moveFileCalls.single.$3, 'b.txt');
+        expect(fake.deleteFileCalls, isEmpty);
+
+        final remoteNames = fake.listingsByPath['/root']!.files.map((f) => f.name);
+        expect(remoteNames, ['b.txt']);
+        expect((await stateStore.read(pair)).containsKey('b.txt'), isTrue);
+        expect((await stateStore.read(pair)).containsKey('a.txt'), isFalse);
+      },
+    );
+
+    test(
+      'rename REMOTO (mismo contenido, desaparece a.txt remoto, aparece b.txt remoto) renombra en local, nunca descarga de nuevo',
+      () async {
+        await seedInSync('contenido idéntico');
+
+        // Simula que OTRO cliente/la web renombró el archivo en el
+        // servidor: la clave vieja desaparece del listado remoto, aparece
+        // una nueva con el MISMO contenido.
+        fake.listingsByPath['/root'] =
+            const DirectoryListing(directories: [], files: []);
+        fake.putRemoteFile(
+          parentPath: '/root',
+          name: 'b.txt',
+          content: utf8.encode('contenido idéntico'),
+          updatedAt: DateTime.utc(2026, 5, 1, 12),
+        );
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.moved, 1);
+        expect(result.deletedLocal, 0);
+        expect(result.downloaded, 0);
+        expect(result.pendingDeletes, isEmpty);
+        expect(fake.downloadedFileIds, isEmpty);
+        expect(File('${tempDir.path}/a.txt').existsSync(), isFalse);
+        expect(File('${tempDir.path}/b.txt').existsSync(), isTrue);
+        expect(
+          await File('${tempDir.path}/b.txt').readAsString(),
+          'contenido idéntico',
+        );
+        expect((await stateStore.read(pair)).containsKey('b.txt'), isTrue);
+        expect((await stateStore.read(pair)).containsKey('a.txt'), isFalse);
+      },
+    );
+
+    test(
+      'contenido DISTINTO entre el desaparecido y el nuevo -> nunca se detecta como move, sigue el camino normal',
+      () async {
+        await seedInSync('contenido original');
+
+        File('${tempDir.path}/a.txt').deleteSync();
+        await File('${tempDir.path}/b.txt').writeAsString('contenido totalmente distinto');
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.moved, 0);
+        expect(result.deletedRemote, 1); // a.txt sí se borró en remoto
+        expect(result.uploaded, 1); // b.txt sí se subió como archivo nuevo
+        expect(fake.moveFileCalls, isEmpty);
+      },
+    );
+
+    test(
+      'un lote de renombrados que superaría el umbral anti-"borrado masivo" no pide confirmación -- los moves no cuentan como borrados (ADR-013)',
+      () async {
+        for (var i = 0; i < 15; i++) {
+          await seedInSync('contenido $i', name: 'viejo-$i.txt');
+        }
+
+        for (var i = 0; i < 15; i++) {
+          File('${tempDir.path}/viejo-$i.txt').renameSync('${tempDir.path}/nuevo-$i.txt');
+        }
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.moved, 15);
+        expect(result.pendingDeletes, isEmpty);
+        expect(result.deletedRemote, 0);
+        expect(fake.moveFileCalls, hasLength(15));
+      },
+    );
+
+    test(
+      'si moveFile falla en el servidor, cae al camino normal (borra+sube) en vez de perder el archivo',
+      () async {
+        await seedInSync('contenido idéntico');
+        final remoteId = fake.listingsByPath['/root']!.files.single.id;
+        fake.failMoveForIds.add(remoteId);
+
+        File('${tempDir.path}/a.txt').renameSync('${tempDir.path}/b.txt');
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.moved, 0);
+        expect(result.errors, isNotEmpty);
+        // Cayó al camino normal: se borra el viejo en remoto y se sube el
+        // nuevo -- el archivo no se pierde solo porque el move fallara.
+        expect(result.deletedRemote, 1);
+        expect(result.uploaded, 1);
+      },
+    );
+  });
+
+  group('limpieza de carpetas vacías tras un borrado propagado (#22)', () {
+    late SyncPair pair;
+
+    setUp(() {
+      pair = SyncPair(remotePath: '/root', localPath: tempDir.path);
+      fake.listingsByPath['/root'] =
+          const DirectoryListing(directories: [], files: []);
+    });
+
+    test('borrado local propagado deja vacía una carpeta REMOTA -> la carpeta remota se borra también', () async {
+      final bytes = utf8.encode('contenido anidado');
+      fake.listingsByPath['/root'] = DirectoryListing(
+        directories: [
+          DirectoryEntry(id: 'dir-sub', parentPath: '/root', name: 'Sub', createdAt: DateTime.utc(2026)),
+        ],
+        files: const [],
+      );
+      final remote = fake.putRemoteFile(
+        parentPath: '/root/Sub',
+        name: 'a.txt',
+        content: bytes,
+        updatedAt: DateTime.utc(2026, 5, 1, 12),
+      );
+      final localFile = File('${tempDir.path}/Sub/a.txt');
+      await localFile.create(recursive: true);
+      await localFile.writeAsBytes(bytes);
+      await localFile.setLastModified(DateTime.utc(2026, 5, 1, 12));
+      await stateStore.write(pair, {
+        'sub/a.txt': SyncStateEntry(
+          remoteSizeBytes: bytes.length,
+          localSizeBytes: bytes.length,
+          sha256: remote.sha256,
+          remoteUpdatedAt: DateTime.utc(2026, 5, 1, 12),
+          localModifiedAt: localFile.statSync().modified.toUtc(),
+        ),
+      });
+
+      // Desaparece en LOCAL -> se propaga como borrado en remoto -> la
+      // carpeta remota /root/Sub se queda vacía -> debe limpiarse sola.
+      localFile.deleteSync();
+
+      final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+      expect(result.deletedRemote, 1);
+      expect(fake.deletedDirectoryIds, ['dir-sub']);
+      // El directorio ya no aparece en el listado de SU PADRE -- lo único
+      // que importa funcionalmente (el fake nunca borra la clave del mapa
+      // en sí, solo la entrada dentro del listado del padre, igual que el
+      // servidor real: la carpeta pasa a la papelera/desaparece, pero
+      // "listar dentro de un id que ya no existe" es un caso aparte que
+      // este fake no modela).
+      expect(fake.listingsByPath['/root']!.directories, isEmpty);
+    });
+
+    test('la RAÍZ del par nunca se borra aunque quede vacía', () async {
+      final bytes = utf8.encode('único archivo');
+      final remote = fake.putRemoteFile(
+        parentPath: '/root',
+        name: 'a.txt',
+        content: bytes,
+        updatedAt: DateTime.utc(2026, 5, 1, 12),
+      );
+      final localFile = File('${tempDir.path}/a.txt');
+      await localFile.writeAsBytes(bytes);
+      await localFile.setLastModified(DateTime.utc(2026, 5, 1, 12));
+      await stateStore.write(pair, {
+        'a.txt': SyncStateEntry(
+          remoteSizeBytes: bytes.length,
+          localSizeBytes: bytes.length,
+          sha256: remote.sha256,
+          remoteUpdatedAt: DateTime.utc(2026, 5, 1, 12),
+          localModifiedAt: localFile.statSync().modified.toUtc(),
+        ),
+      });
+
+      localFile.deleteSync();
+
+      final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+      expect(result.deletedRemote, 1);
+      // Nunca se intenta borrar la propia raíz del par -- ni siquiera se
+      // lista para comprobarlo (relPath de 'a.txt' sin más segmentos de
+      // carpeta padre por encima de la raíz).
+      expect(fake.deletedDirectoryIds, isEmpty);
+    });
+  });
+
   group('modo both -- guarda anti-"borrado masivo" (ADR-013)', () {
     late SyncPair pair;
 
@@ -1015,6 +1327,28 @@ void main() {
         final result = await engine.syncNow(pair, direction: SyncDirection.both);
 
         expect(result.deletedRemote, 10);
+        expect(result.pendingDeletes, isEmpty);
+      },
+    );
+
+    test(
+      'updateMaxAutoDeleteBatch (#23) cambia el umbral de una instancia ya '
+      'construida -- un lote que antes quedaba pendiente pasa a ejecutarse',
+      () async {
+        await seedManyInSync(12);
+        for (var i = 0; i < 12; i++) {
+          File(p.join(tempDir.path, 'n$i.txt')).deleteSync();
+        }
+
+        // Con el default (10) del `setUp`, 12 quedarían pendientes -- ver el
+        // primer test de este grupo. Subir el umbral a 15 en la MISMA
+        // instancia (sin reconstruir `engine`) debe bastar para que el
+        // siguiente sync ejecute los 12 sin pedir confirmación.
+        engine.updateMaxAutoDeleteBatch(15);
+
+        final result = await engine.syncNow(pair, direction: SyncDirection.both);
+
+        expect(result.deletedRemote, 12);
         expect(result.pendingDeletes, isEmpty);
       },
     );

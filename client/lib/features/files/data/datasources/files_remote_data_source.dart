@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../domain/entities/directory_entry.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/entities/file_version.dart';
@@ -228,6 +229,38 @@ class FilesRemoteDataSource {
         queryParameters: permanent ? {'permanent': 'true'} : null,
       ),
     );
+  }
+
+  /// PATCH real (ADR-030, §85) -- nunca borrar+volver a subir. Solo se
+  /// incluyen en el body los campos que de verdad se piden cambiar
+  /// (newParentPath/newName nulos se OMITEN del JSON, no se mandan como
+  /// `null` explícito): el servidor interpreta un campo AUSENTE como
+  /// "mantener el valor actual" (ver FileService.MoveFile/MoveDirectory,
+  /// que distinguen puntero nil de cadena vacía).
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) async {
+    final response = await _apiClient.request(
+      (dio) => dio.patch<Map<String, dynamic>>(
+        '/files/$fileId',
+        data: {
+          if (newParentPath != null) 'parent_path': newParentPath,
+          if (newName != null) 'name': newName,
+        },
+      ),
+    );
+    return FileEntryModel.fromJson(response.data!);
+  }
+
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) async {
+    final response = await _apiClient.request(
+      (dio) => dio.patch<Map<String, dynamic>>(
+        '/directories/$directoryId',
+        data: {
+          if (newParentPath != null) 'parent_path': newParentPath,
+          if (newName != null) 'name': newName,
+        },
+      ),
+    );
+    return DirectoryEntryModel.fromJson(response.data!);
   }
 
   Future<void> restoreFile(String fileId) {

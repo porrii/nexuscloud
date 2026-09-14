@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/features/files/data/datasources/files_remote_data_source.dart';
 import 'package:nexuscloud_client/features/files/data/repositories/files_repository_impl.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
@@ -84,6 +85,31 @@ class _FakeFilesRemoteDataSource implements FilesRemoteDataSource {
     if (deleteError != null) throw deleteError!;
     deletedDirectoryIds.add(directoryId);
     deletedDirectoryPermanentFlags.add(permanent);
+  }
+
+  FileEntry? moveFileResult;
+  ApiException? moveFileError;
+  final List<String> movedFileIds = [];
+  final List<String?> movedFileNewParentPaths = [];
+  final List<String?> movedFileNewNames = [];
+  DirectoryEntry? moveDirectoryResult;
+  ApiException? moveDirectoryError;
+  final List<String> movedDirectoryIds = [];
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) async {
+    movedFileIds.add(fileId);
+    movedFileNewParentPaths.add(newParentPath);
+    movedFileNewNames.add(newName);
+    if (moveFileError != null) throw moveFileError!;
+    return moveFileResult!;
+  }
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) async {
+    movedDirectoryIds.add(directoryId);
+    if (moveDirectoryError != null) throw moveDirectoryError!;
+    return moveDirectoryResult!;
   }
 
   @override
@@ -391,6 +417,69 @@ void main() {
     await expectLater(
       repo.restoreVersion(fileId: 'f1', versionNum: 3),
       throwsA(isA<ApiException>().having((e) => e.code, 'code', 'not_found')),
+    );
+  });
+
+  test(
+    'moveFile delega con fileId/newParentPath/newName correctos y propaga el FileEntry devuelto',
+    () async {
+      final fake = _FakeFilesRemoteDataSource()..moveFileResult = testFile;
+      final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+      final result = await repo.moveFile('f1', newParentPath: '/Documentos', newName: 'nuevo.jpg');
+
+      expect(result, testFile);
+      expect(fake.movedFileIds, ['f1']);
+      expect(fake.movedFileNewParentPaths, ['/Documentos']);
+      expect(fake.movedFileNewNames, ['nuevo.jpg']);
+    },
+  );
+
+  test('moveFile delega con newParentPath/newName nulos cuando se omiten', () async {
+    final fake = _FakeFilesRemoteDataSource()..moveFileResult = testFile;
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await repo.moveFile('f1');
+
+    expect(fake.movedFileNewParentPaths, [null]);
+    expect(fake.movedFileNewNames, [null]);
+  });
+
+  test('una ApiException de moveFile (p.ej. destination_occupied) se propaga', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..moveFileError = const ApiException(code: 'destination_occupied', message: 'x');
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await expectLater(
+      repo.moveFile('f1', newName: 'x.jpg'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'destination_occupied')),
+    );
+  });
+
+  test('moveDirectory delega con el directoryId correcto y propaga el DirectoryEntry devuelto', () async {
+    final testDirectory = DirectoryEntry(
+      id: 'd1',
+      parentPath: '/Archivo',
+      name: 'ProyectoViejo',
+      createdAt: DateTime.utc(2026),
+    );
+    final fake = _FakeFilesRemoteDataSource()..moveDirectoryResult = testDirectory;
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    final result = await repo.moveDirectory('d1', newParentPath: '/Archivo', newName: 'ProyectoViejo');
+
+    expect(result, testDirectory);
+    expect(fake.movedDirectoryIds, ['d1']);
+  });
+
+  test('una ApiException de moveDirectory (p.ej. invalid_move_destination) se propaga', () async {
+    final fake = _FakeFilesRemoteDataSource()
+      ..moveDirectoryError = const ApiException(code: 'invalid_move_destination', message: 'x');
+    final repo = FilesRepositoryImpl(remoteDataSource: fake);
+
+    await expectLater(
+      repo.moveDirectory('d1', newParentPath: '/d1/Sub'),
+      throwsA(isA<ApiException>().having((e) => e.code, 'code', 'invalid_move_destination')),
     );
   });
 }

@@ -94,6 +94,14 @@ class _FakeFilesRepository implements FilesRepository {
     deletedDirectoryIds.add(directoryId);
   }
 
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
   // restoreFile/restoreDirectory/listTrash son responsabilidad de
   // TrashPage, no de FileBrowserPage -- no los ejercita ningún test de
   // este archivo.

@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
@@ -71,6 +72,14 @@ class _FakeFilesRepository implements FilesRepository {
 
   @override
   Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
       throw UnimplementedError();
 
   @override

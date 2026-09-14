@@ -1,3 +1,4 @@
+import '../../domain/entities/directory_entry.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/entities/file_version.dart';
@@ -53,6 +54,14 @@ class FilesRepositoryImpl implements FilesRepository {
   @override
   Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
       _remoteDataSource.deleteDirectory(directoryId, permanent: permanent);
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      _remoteDataSource.moveFile(fileId, newParentPath: newParentPath, newName: newName);
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
+      _remoteDataSource.moveDirectory(directoryId, newParentPath: newParentPath, newName: newName);
 
   @override
   Future<void> restoreFile(String fileId) =>

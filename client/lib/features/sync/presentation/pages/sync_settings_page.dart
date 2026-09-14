@@ -28,6 +28,12 @@ import '../widgets/pair_sync_result_card.dart';
 /// de ser razonable para carpetas con muchos archivos.
 const _autoSyncIntervalOptions = [5, 15, 30, 60];
 
+/// Opciones ofrecidas para el umbral de la guarda anti-"borrado masivo"
+/// (#23, ADR-013) -- mismo criterio que [_autoSyncIntervalOptions]: un
+/// puñado de valores fijos en vez de un campo de texto libre, para no tener
+/// que validar un número arbitrario aquí.
+const _maxAutoDeleteBatchOptions = [5, 10, 20, 50, 100];
+
 /// Configura la lista de pares carpeta-remota/carpeta-local a sincronizar
 /// (slice A ADR-011 -- un único par; slice 15 ADR-014 -- varios, cada uno
 /// con su propio sentido), dispara sincronizaciones manuales (todos los
@@ -65,6 +71,8 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   bool _autoSyncEnabled = false;
   int _autoSyncIntervalMinutes = _autoSyncIntervalOptions[1];
   ({DateTime at, String summary})? _lastAutoOutcome;
+
+  int _maxAutoDeleteBatch = 10;
 
   bool _watchLocalChangesEnabled = false;
 
@@ -116,6 +124,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
     _loadPairs();
     _loadAutoSyncSettings();
+    _loadMaxAutoDeleteBatch();
     _loadWatchLocalChangesSetting();
     _loadLaunchAtStartupSettings();
   }
@@ -143,6 +152,12 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
       _autoSyncIntervalMinutes = settings.intervalMinutes;
       _lastAutoOutcome = outcome;
     });
+  }
+
+  Future<void> _loadMaxAutoDeleteBatch() async {
+    final value = await _configRepository.readMaxAutoDeleteBatch();
+    if (!mounted) return;
+    setState(() => _maxAutoDeleteBatch = value);
   }
 
   Future<void> _loadWatchLocalChangesSetting() async {
@@ -217,7 +232,7 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   }
 
   Future<void> _addPair() async {
-    final config = await showPairEditDialog(context);
+    final config = await showPairEditDialog(context, existingPairs: _pairs);
     if (config == null || !mounted) return;
     setState(() => _pairs = [..._pairs, config]);
     await _configRepository.savePairs(_pairs);
@@ -225,7 +240,13 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
   }
 
   Future<void> _editPair(int index) async {
-    final config = await showPairEditDialog(context, initial: _pairs[index]);
+    final config = await showPairEditDialog(
+      context,
+      initial: _pairs[index],
+      // Sin el propio par que se está editando -- si no, cualquier edición
+      // sin cambiar las rutas "solaparía" consigo mismo.
+      existingPairs: [..._pairs]..removeAt(index),
+    );
     if (config == null || !mounted) return;
     setState(() {
       _pairs = [..._pairs]..[index] = config;
@@ -452,6 +473,29 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
                     ],
                   ),
                 ],
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    const Expanded(
+                      child: Text(
+                        'Avisar antes de borrar más de esta cantidad de '
+                        'archivos de golpe (cualquier sincronización, '
+                        'manual o automática)',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    DropdownButton<int>(
+                      value: _maxAutoDeleteBatch,
+                      items: [
+                        for (final n in _maxAutoDeleteBatchOptions)
+                          DropdownMenuItem(value: n, child: Text('$n')),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) _setMaxAutoDeleteBatch(value);
+                      },
+                    ),
+                  ],
+                ),
                 const SizedBox(height: 8),
                 const Divider(),
                 SwitchListTile(
@@ -567,6 +611,12 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     await _autoSyncScheduler.updateSettings(
       AutoSyncSettings(enabled: _autoSyncEnabled, intervalMinutes: minutes),
     );
+  }
+
+  Future<void> _setMaxAutoDeleteBatch(int value) async {
+    setState(() => _maxAutoDeleteBatch = value);
+    await _configRepository.saveMaxAutoDeleteBatch(value);
+    _syncEngine.updateMaxAutoDeleteBatch(value);
   }
 
   Future<void> _setWatchLocalChangesEnabled(bool value) async {

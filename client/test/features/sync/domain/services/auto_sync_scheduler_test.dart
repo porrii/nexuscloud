@@ -8,6 +8,7 @@ import 'package:nexuscloud_client/features/auth/domain/entities/auto_login_outco
 import 'package:nexuscloud_client/features/auth/domain/entities/login_result.dart';
 import 'package:nexuscloud_client/features/auth/domain/repositories/auth_repository.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
@@ -144,6 +145,15 @@ class _FakeSyncConfigRepository implements SyncConfigRepository {
 
   @override
   Future<bool> readWatchLocalChanges() async => watchLocalChanges;
+
+  int maxAutoDeleteBatch = 10;
+
+  @override
+  Future<void> saveMaxAutoDeleteBatch(int value) async =>
+      maxAutoDeleteBatch = value;
+
+  @override
+  Future<int> readMaxAutoDeleteBatch() async => maxAutoDeleteBatch;
 }
 
 /// Solo implementa `list` -- las únicas rutas de este archivo son
@@ -192,6 +202,14 @@ class _FakeFilesRepository implements FilesRepository {
 
   @override
   Future<void> deleteDirectory(String directoryId, {bool permanent = false}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
       throw UnimplementedError();
 
   @override
@@ -435,6 +453,46 @@ void main() {
       expect(results.single.map((o) => o.pair.remotePath), ['/root-a', '/root-b']);
       expect(fakeConfigRepo.lastOutcome!.summary, contains('local-a'));
       expect(fakeConfigRepo.lastOutcome!.summary, contains('local-b'));
+      await subscription.cancel();
+    },
+  );
+
+  test(
+    'un tick salta los pares con autoSyncEnabled:false (#24)',
+    () async {
+      fakeAuth.currentUser = _someUser;
+      fakeConfigRepo.pairs = const [
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/root-a', localPath: '/local-a'),
+          direction: SyncDirection.download,
+          autoSyncEnabled: true,
+        ),
+        SyncPairConfig(
+          pair: SyncPair(remotePath: '/root-b', localPath: '/local-b'),
+          direction: SyncDirection.download,
+          autoSyncEnabled: false,
+        ),
+      ];
+      // A propósito NO se registra ningún listado para '/root-b': si el
+      // filtro por `autoSyncEnabled` no funcionara, el coordinador
+      // intentaría sincronizarlo igual y `list()` lanzaría `not_found`,
+      // apareciendo como un `startupError` en `results` -- este test
+      // fallaría de forma clara en vez de solo "verse bien por casualidad".
+      fakeFilesRepository.listingsByPath['/root-a'] =
+          const DirectoryListing(directories: [], files: []);
+      await scheduler.updateSettings(
+        const AutoSyncSettings(enabled: true, intervalMinutes: 5),
+      );
+
+      final results = <List<PairSyncOutcome>>[];
+      final subscription = scheduler.onResult.listen(results.add);
+
+      timerFactory.fire();
+      await pumpEventQueue();
+
+      expect(results, hasLength(1));
+      expect(results.single, hasLength(1));
+      expect(results.single.single.pair.remotePath, '/root-a');
       await subscription.cancel();
     },
   );

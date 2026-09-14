@@ -7,8 +7,10 @@ import 'core/theme/app_theme.dart';
 import 'core/window/app_tray_service.dart';
 import 'core/window/launch_at_startup_service.dart';
 import 'features/auth/presentation/pages/auth_gate_page.dart';
+import 'features/sync/domain/repositories/sync_config_repository.dart';
 import 'features/sync/domain/services/auto_sync_scheduler.dart';
 import 'features/sync/domain/services/local_change_watcher_service.dart';
+import 'features/sync/domain/services/sync_engine.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -18,6 +20,14 @@ Future<void> main() async {
   // llamar aunque el auto-login todavía no haya terminado -- cada tick
   // comprueba la sesión antes de hacer nada (ver `AutoSyncScheduler`).
   await sl<AutoSyncScheduler>().start();
+  // Umbral de la guarda anti-"borrado masivo" (#23): aplica el valor
+  // persistido a la instancia de `SyncEngine` ya construida -- mismo
+  // criterio que el auto-sync de arriba, sin bandeja ni segundo plano de
+  // por medio, es seguro llamarlo aquí en cada arranque (ver la nota en
+  // `SyncEngine._maxAutoDeleteBatch`).
+  sl<SyncEngine>().updateMaxAutoDeleteBatch(
+    await sl<SyncConfigRepository>().readMaxAutoDeleteBatch(),
+  );
   // Vigilancia de filesystem (slice 17): mismo criterio que el auto-sync de
   // arriba -- reactiva lo que ya estuviera activado en una sesión anterior.
   await sl<LocalChangeWatcherService>().start();

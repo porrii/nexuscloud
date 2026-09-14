@@ -6,6 +6,7 @@ import 'package:path/path.dart' as p;
 
 import '../../../../core/network/api_exception.dart';
 import '../../../../core/paths/remote_path.dart';
+import '../../../files/domain/entities/directory_entry.dart';
 import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart';
 import '../entities/pending_delete.dart';
@@ -94,6 +95,7 @@ class _Tally {
   int downloaded = 0;
   int uploaded = 0;
   int skipped = 0;
+  int moved = 0;
   int deletedRemote = 0;
   int deletedLocal = 0;
   final errors = <String>[];
@@ -131,9 +133,11 @@ class SyncEngine {
     required FilesRepository filesRepository,
     required SyncStateStore stateStore,
     required LocalTrashStore trashStore,
+    int maxAutoDeleteBatch = 10,
   })  : _filesRepository = filesRepository,
         _stateStore = stateStore,
-        _trashStore = trashStore;
+        _trashStore = trashStore,
+        _maxAutoDeleteBatch = maxAutoDeleteBatch;
 
   final FilesRepository _filesRepository;
   final SyncStateStore _stateStore;
@@ -152,8 +156,23 @@ class SyncEngine {
   /// `SyncResult.pendingDeletes`. Diez es deliberadamente conservador para
   /// uso personal (§160): un borrado suelto o unos pocos son gestos
   /// normales del usuario; un lote grande de golpe huele más a carpeta mal
-  /// apuntada o unidad desconectada que a intención real.
-  static const _maxAutoDeleteBatch = 10;
+  /// apuntada o unidad desconectada que a intención real. Configurable
+  /// desde Ajustes (#23) -- `10` por defecto en el constructor para no
+  /// cambiar el comportamiento de instalaciones ya existentes que nunca
+  /// tocaron este ajuste. NO es `final`: `main.dart` aplica el valor
+  /// persistido con [updateMaxAutoDeleteBatch] justo después de arrancar,
+  /// y `SyncSettingsPage` lo vuelve a llamar cuando el usuario cambia el
+  /// ajuste -- mismo patrón que `AutoSyncScheduler.updateSettings`, que
+  /// reconfigura una instancia ya construida en vez de recibir el valor
+  /// solo por constructor.
+  int _maxAutoDeleteBatch;
+
+  /// Cambia el umbral de la guarda anti-"borrado masivo" en una instancia
+  /// ya construida -- ver la nota de [_maxAutoDeleteBatch] sobre por qué
+  /// no basta con el parámetro del constructor.
+  void updateMaxAutoDeleteBatch(int value) {
+    _maxAutoDeleteBatch = value;
+  }
 
   /// Nombres locales que nunca se suben: basura del SO, y las propias
   /// *conflict copies* (si no, una se subiría como "archivo local nuevo" y
@@ -313,6 +332,7 @@ class SyncEngine {
       downloaded: tally.downloaded,
       uploaded: tally.uploaded,
       skipped: tally.skipped,
+      moved: tally.moved,
       errors: tally.errors,
       conflicts: tally.conflicts,
       deletedRemote: tally.deletedRemote,
@@ -447,6 +467,13 @@ class SyncEngine {
     };
     final ensuredDirs = <String>{};
     final deleteCandidates = <_DeleteCandidate>[];
+    // "Nuevo sin base" en cada lado -- NO se ejecutan todavía (a
+    // diferencia de antes de ADR-030): primero hace falta comprobar si
+    // alguno de ellos es en realidad el destino de un renombrado/movido
+    // detectado en _detectAndApplyMoves, antes de decidir si de verdad
+    // hace falta transferir el contenido.
+    final newRemoteCandidates = <_RemoteFile>[];
+    final newLocalCandidates = <_LocalFile>[];
 
     for (final key in allKeys) {
       if (collisionKeys.contains(key)) continue;
@@ -461,17 +488,12 @@ class SyncEngine {
 
       final base = baseline[key];
       final segments = local?.relativeSegments ?? remote!.relativeSegments;
-      final localPath = p.joinAll([pair.localPath, ...segments]);
       final name = segments.last;
 
       try {
         if (remote != null && local == null) {
           if (base == null) {
-            // Nuevo en remoto -> descargar.
-            onStatus?.call('Descargando $name...');
-            await _download(remote, localPath);
-            newBaseline[key] = _entryAfterDownload(remote, localPath);
-            tally.downloaded++;
+            newRemoteCandidates.add(remote);
           } else {
             // Estaba sincronizado y ya no está en local (ADR-013): borrado
             // local que se propaga -> candidato a borrar también en
@@ -487,11 +509,7 @@ class SyncEngine {
           }
         } else if (remote == null && local != null) {
           if (base == null) {
-            // Nuevo en local -> subir.
-            onStatus?.call('Subiendo $name...');
-            final entry = await _upload(pair, local, ensuredDirs);
-            newBaseline[key] = _entryAfterUpload(entry);
-            tally.uploaded++;
+            newLocalCandidates.add(local);
           } else {
             // Estaba sincronizado y ya no está en remoto: candidato a
             // borrar también en local.
@@ -505,6 +523,7 @@ class SyncEngine {
             ));
           }
         } else if (remote != null && local != null) {
+          final localPath = p.joinAll([pair.localPath, ...segments]);
           await _reconcileBothPresent(
             pair: pair,
             key: key,
@@ -526,7 +545,48 @@ class SyncEngine {
       }
     }
 
-    await _resolveDeletes(
+    // ADR-030/§85: empareja "desaparecido" con "nuevo del mismo lado, mismo
+    // contenido" -- lo que empareje se mueve/renombra de verdad y se quita
+    // de deleteCandidates/newRemoteCandidates/newLocalCandidates; lo que
+    // sobra sigue el camino normal de abajo.
+    await _detectAndApplyMoves(
+      pair,
+      deleteCandidates,
+      newRemoteCandidates,
+      newLocalCandidates,
+      newBaseline,
+      tally,
+      onStatus,
+    );
+
+    for (final remote in newRemoteCandidates) {
+      final localPath = p.joinAll([pair.localPath, ...remote.relativeSegments]);
+      try {
+        onStatus?.call('Descargando ${remote.file.name}...');
+        await _download(remote, localPath);
+        newBaseline[remote.key] = _entryAfterDownload(remote, localPath);
+        tally.downloaded++;
+      } on ApiException catch (e) {
+        tally.errors.add('${remote.file.name}: ${e.message}');
+      } on FileSystemException catch (e) {
+        tally.errors.add('${remote.file.name}: ${e.message}');
+      }
+    }
+    for (final local in newLocalCandidates) {
+      final name = local.relativeSegments.last;
+      try {
+        onStatus?.call('Subiendo $name...');
+        final entry = await _upload(pair, local, ensuredDirs);
+        newBaseline[local.key] = _entryAfterUpload(entry);
+        tally.uploaded++;
+      } on ApiException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      } on FileSystemException catch (e) {
+        tally.errors.add('$name: ${e.message}');
+      }
+    }
+
+    final succeededDeletes = await _resolveDeletes(
       pair,
       deleteCandidates,
       confirmedDeletePaths,
@@ -534,6 +594,15 @@ class SyncEngine {
       tally,
       onStatus,
     );
+
+    // #22: tras ejecutar los borrados de esta pasada, una carpeta que se
+    // quedó vacía por ellos no se limpia sola -- se sube por la cadena de
+    // padres (nunca la raíz del propio par) borrando mientras sigan
+    // vacías, con una relectura real en cada nivel (nunca contabilidad en
+    // memoria, que podría no reflejar archivos fuera de lo que esta
+    // pasada tocó). Solo los borrados que de verdad se ejecutaron (no los
+    // pendientes/fallidos) pueden haber dejado una carpeta vacía.
+    await _cleanUpEmptyAncestors(pair, succeededDeletes, onStatus);
   }
 
   Future<void> _reconcileBothPresent({
@@ -616,7 +685,13 @@ class SyncEngine {
   /// su entrada de manifiesto tal cual -- ni se borra ni se resucita --
   /// para que la próxima pasada lo reconozca otra vez como el mismo
   /// candidato.
-  Future<void> _resolveDeletes(
+  ///
+  /// Devuelve los candidatos que de verdad se borraron con éxito (ni
+  /// pendientes de confirmación ni fallidos) -- #22 los usa para saber
+  /// qué carpetas padre comprobar por si quedaron vacías; un candidato
+  /// pendiente o fallido no cambió nada de verdad, así que su carpeta
+  /// padre no puede haberse quedado vacía por su causa.
+  Future<List<_DeleteCandidate>> _resolveDeletes(
     SyncPair pair,
     List<_DeleteCandidate> candidates,
     Set<String> confirmedDeletePaths,
@@ -624,7 +699,7 @@ class SyncEngine {
     _Tally tally,
     void Function(String status)? onStatus,
   ) async {
-    if (candidates.isEmpty) return;
+    if (candidates.isEmpty) return const [];
 
     final toExecute = <_DeleteCandidate>[];
     if (candidates.length <= _maxAutoDeleteBatch) {
@@ -642,6 +717,7 @@ class SyncEngine {
       }
     }
 
+    final succeeded = <_DeleteCandidate>[];
     for (final c in toExecute) {
       try {
         if (c.direction == DeleteDirection.toRemote) {
@@ -660,6 +736,7 @@ class SyncEngine {
         // No se copia a newBaseline -- ahora los dos lados están
         // genuinamente ausentes, igual que el caso "borrado en los dos
         // lados" de arriba.
+        succeeded.add(c);
       } on ApiException catch (e) {
         tally.errors.add('${c.name}: ${e.message}');
         newBaseline[c.key] = c.base;
@@ -668,6 +745,221 @@ class SyncEngine {
         newBaseline[c.key] = c.base;
       }
     }
+    return succeeded;
+  }
+
+  // --- renombrado/movido (ADR-030, §85) -----------------------------
+
+  /// Busca, dentro de los candidatos a borrar y los candidatos "nuevos sin
+  /// base" recolectados por `_reconcilePass`, pares que en realidad son un
+  /// mismo archivo renombrado/movido -- mismo SHA-256, mismo LADO del
+  /// cambio (los dos locales, o los dos remotos). Un archivo que
+  /// "desaparece" de un lado con un "nuevo" del MISMO lado y el MISMO
+  /// contenido no es un borrado y una creación independientes: es el
+  /// usuario (o el propio servidor) moviendo/renombrando ese archivo. Se
+  /// refleja como un `FilesRepository.moveFile` real en vez de
+  /// borrar+volver a subir/bajar -- preserva el historial de versiones
+  /// (§15) en el lado remoto, y evita que el guardia anti-"borrado
+  /// masivo" (ADR-013) dispare por error al renombrar una carpeta con
+  /// muchos archivos (hoy verían N borrados + N altas en vez de N moves).
+  ///
+  /// Deliberadamente solo a nivel de ARCHIVO individual, nunca de carpeta
+  /// completa: el motor de sync no modela carpetas como entidades propias
+  /// en su recorrido (solo archivos, las carpetas se materializan al
+  /// vuelo), así que mover una carpeta local con muchos archivos se
+  /// refleja como N llamadas a `moveFile` independientes, una por
+  /// archivo, no como una única `moveDirectory` -- correcto, aunque menos
+  /// eficiente que agrupar; agrupar exigiría detectar que un CONJUNTO de
+  /// archivos se movió coherentemente bajo el mismo prefijo, una pieza de
+  /// diseño bastante mayor que no está pedida aquí.
+  ///
+  /// Los emparejados se ELIMINAN de [deleteCandidates]/[newRemote]/
+  /// [newLocal] (mutando las listas) -- lo que quede en ellas tras esto
+  /// sigue el camino normal (borrar/subir/descargar) sin saber que esta
+  /// detección existe.
+  Future<void> _detectAndApplyMoves(
+    SyncPair pair,
+    List<_DeleteCandidate> deleteCandidates,
+    List<_RemoteFile> newRemote,
+    List<_LocalFile> newLocal,
+    Map<String, SyncStateEntry> newBaseline,
+    _Tally tally,
+    void Function(String status)? onStatus,
+  ) async {
+    for (final deleted in List<_DeleteCandidate>.of(deleteCandidates)) {
+      if (deleted.direction == DeleteDirection.toRemote) {
+        // Desapareció EN LOCAL -- el archivo remoto (deleted.remote) sigue
+        // existiendo tal cual; buscar un candidato NUEVO EN LOCAL con el
+        // mismo contenido -- sería el destino del rename/move local.
+        // Hace falta hashear cada candidato nuevo local para comparar (no
+        // hay un SHA-256 precalculado para un archivo que nunca se subió
+        // todavía) -- coste aceptado, acotado al número de candidatos
+        // "nuevos" de esta pasada, nunca de todo el árbol.
+        _LocalFile? match;
+        for (final candidate in newLocal) {
+          if (await _sha(candidate.file) == deleted.remote!.file.sha256) {
+            match = candidate;
+            break;
+          }
+        }
+        if (match == null) continue;
+
+        final segments = match.relativeSegments;
+        final newParentPath = _joinRemotePath(
+          pair.remotePath,
+          segments.sublist(0, segments.length - 1),
+        );
+        onStatus?.call('Renombrando/moviendo ${deleted.name} en el servidor...');
+        try {
+          final updated = await _filesRepository.moveFile(
+            deleted.remote!.file.id,
+            newParentPath: newParentPath,
+            newName: segments.last,
+          );
+          newBaseline[match.key] = _entryInSync(match, updated);
+          tally.moved++;
+        } on ApiException catch (e) {
+          // No se pudo mover en el servidor -- se deja tal cual en las
+          // listas originales, así que el camino normal de abajo lo
+          // tratará como un borrado + una subida real.
+          tally.errors.add('${deleted.name} → ${segments.last}: ${e.message}');
+          continue;
+        }
+        deleteCandidates.remove(deleted);
+        newLocal.remove(match);
+      } else {
+        // toLocal: desapareció EN REMOTO -- comparar contra el SHA-256 YA
+        // REGISTRADO en la base (deleted.base.sha256), sin ningún I/O: el
+        // archivo local viejo ya no existe para poder rehashearlo, pero
+        // el manifiesto ya conocía su hash desde la última sincronización.
+        _RemoteFile? match;
+        for (final candidate in newRemote) {
+          if (candidate.file.sha256 == deleted.base.sha256) {
+            match = candidate;
+            break;
+          }
+        }
+        if (match == null) continue;
+
+        final oldLocalPath = p.joinAll([pair.localPath, ...deleted.local!.relativeSegments]);
+        final newLocalPath = p.joinAll([pair.localPath, ...match.relativeSegments]);
+        onStatus?.call('Renombrando/moviendo ${deleted.name} en local...');
+        try {
+          await Directory(p.dirname(newLocalPath)).create(recursive: true);
+          final movedFile = await File(oldLocalPath).rename(newLocalPath);
+          final stat = movedFile.statSync();
+          newBaseline[match.key] = SyncStateEntry(
+            remoteSizeBytes: match.file.sizeBytes,
+            localSizeBytes: stat.size,
+            sha256: match.file.sha256,
+            remoteUpdatedAt: match.file.updatedAt,
+            localModifiedAt: stat.modified.toUtc(),
+          );
+          tally.moved++;
+        } on FileSystemException catch (e) {
+          tally.errors.add('${deleted.name} → ${match.relativeSegments.last}: ${e.message}');
+          continue;
+        }
+        deleteCandidates.remove(deleted);
+        newRemote.remove(match);
+      }
+    }
+  }
+
+  // --- limpieza de carpetas vacías tras un borrado propagado (#22) ---
+
+  /// Para cada borrado que de verdad se ejecutó, sube por su cadena de
+  /// carpetas padre borrando las que se quedaron vacías -- nunca la raíz
+  /// configurada del propio par, aunque quede vacía. Best-effort en cada
+  /// nivel: un fallo (permisos, ya no existe, lo que sea) simplemente deja
+  /// esa carpeta tal cual, nunca aborta la sincronización por esto.
+  Future<void> _cleanUpEmptyAncestors(
+    SyncPair pair,
+    List<_DeleteCandidate> succeededDeletes,
+    void Function(String status)? onStatus,
+  ) async {
+    for (final deleted in succeededDeletes) {
+      final segments = deleted.relPath.split('/')..removeLast();
+      while (segments.isNotEmpty) {
+        final deletedThisLevel = deleted.direction == DeleteDirection.toRemote
+            ? await _tryDeleteEmptyRemoteDir(pair, segments, onStatus)
+            : await _tryDeleteEmptyLocalDir(pair, segments, onStatus);
+        if (!deletedThisLevel) break;
+        segments.removeLast();
+      }
+    }
+  }
+
+  Future<bool> _tryDeleteEmptyLocalDir(
+    SyncPair pair,
+    List<String> segments,
+    void Function(String status)? onStatus,
+  ) async {
+    final dir = Directory(p.joinAll([pair.localPath, ...segments]));
+    if (!dir.existsSync()) return false;
+    if (!await dir.list().isEmpty) return false;
+    onStatus?.call('Limpiando carpeta vacía ${segments.join('/')}...');
+    try {
+      await dir.delete();
+      return true;
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  /// A diferencia del lado local (donde borrar no exige conocer ningún
+  /// id), el servidor identifica carpetas por id -- se obtiene listando
+  /// el PADRE de [segments] y buscando la entrada cuyo nombre coincide,
+  /// ya que `list` sobre la propia carpeta solo devuelve lo que hay
+  /// DENTRO de ella, nunca sus propios metadatos.
+  Future<bool> _tryDeleteEmptyRemoteDir(
+    SyncPair pair,
+    List<String> segments,
+    void Function(String status)? onStatus,
+  ) async {
+    final fullPath = _joinRemotePath(pair.remotePath, segments);
+    try {
+      final listing = await _filesRepository.list(fullPath);
+      if (listing.directories.isNotEmpty || listing.files.isNotEmpty) return false;
+    } on ApiException {
+      return false;
+    }
+
+    final parentPath = _joinRemotePath(pair.remotePath, segments.sublist(0, segments.length - 1));
+    DirectoryEntry? entry;
+    try {
+      final parentListing = await _filesRepository.list(parentPath);
+      for (final d in parentListing.directories) {
+        if (d.name == segments.last) {
+          entry = d;
+          break;
+        }
+      }
+    } on ApiException {
+      return false;
+    }
+    if (entry == null) return false;
+
+    onStatus?.call('Limpiando carpeta remota vacía ${segments.join('/')}...');
+    try {
+      await _filesRepository.deleteDirectory(entry.id);
+      return true;
+    } on ApiException {
+      return false;
+    }
+  }
+
+  /// Construye la ruta remota absoluta de [segments] (relativos a la raíz
+  /// del par) uniéndolos uno a uno con `RemotePath.join` -- mismo cálculo
+  /// que `_upload` ya necesitaba, extraído aquí para no duplicarlo ahora
+  /// que `_detectAndApplyMoves`/`_tryDeleteEmptyRemoteDir` también lo
+  /// necesitan.
+  String _joinRemotePath(String root, List<String> segments) {
+    var path = root;
+    for (final s in segments) {
+      path = RemotePath.join(path, s);
+    }
+    return path;
   }
 
   // --- operaciones de transferencia --------------------------------
@@ -688,10 +980,7 @@ class SyncEngine {
   ) async {
     final segments = local.relativeSegments;
     await _ensureRemoteDirs(pair.remotePath, segments, ensuredDirs);
-    var parentPath = pair.remotePath;
-    for (final s in segments.sublist(0, segments.length - 1)) {
-      parentPath = RemotePath.join(parentPath, s);
-    }
+    final parentPath = _joinRemotePath(pair.remotePath, segments.sublist(0, segments.length - 1));
     final entry = await _filesRepository.uploadFile(
       parentPath: parentPath,
       localFilePath: local.file.path,
