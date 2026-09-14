@@ -102,20 +102,32 @@ type Argon2Config struct {
 // TrashConfig gobierna la papelera (§16), la primera línea de defensa
 // contra un borrado accidental o ransomware (§128). Con Enabled=false,
 // eliminar un archivo/carpeta es inmediato y permanente -- sin red de
-// seguridad -- así que el valor por defecto es true.
+// seguridad -- así que el valor por defecto es true. MaxTotalSizeBytes
+// (0 = sin límite) es un límite de PROTECCIÓN DE ESPACIO, no una promesa de
+// cuánto conservar -- por eso compone con RetentionDays como "el más
+// restrictivo gana" (se poda si cualquiera de los dos lo pide), al revés
+// que la retención de backups (ADR-017), que compone como "el más generoso
+// gana". Ver ADR-023.
 type TrashConfig struct {
-	Enabled       bool `yaml:"enabled"`
-	RetentionDays int  `yaml:"retentionDays"`
+	Enabled           bool  `yaml:"enabled"`
+	RetentionDays     int   `yaml:"retentionDays"`
+	MaxTotalSizeBytes int64 `yaml:"maxTotalSizeBytes"`
 }
 
 // VersioningConfig gobierna el historial de versiones (§15). Con
 // Enabled=false, subir a un path existente sigue sobrescribiendo sin dejar
-// rastro, como en la Fase 1. MaxVersionsPerFile acota el espacio: al
-// superarse, se purga la versión más antigua (§15 "política automática de
-// limpieza"); no hay todavía límite por antigüedad ni por espacio total.
+// rastro, como en la Fase 1. Las tres políticas (MaxVersionsPerFile,
+// MaxVersionAgeDays, MaxVersionsTotalSizeBytes; 0 = sin límite cada una)
+// componen como "el más restrictivo gana" -- una versión se purga si
+// CUALQUIER política activa lo pide, no solo si todas coinciden. Mismo
+// criterio que TrashConfig y por el mismo motivo: son límites de espacio en
+// disco, no una promesa de cuánto historial conservar (al revés que la
+// retención de backups, ADR-017). Ver ADR-024.
 type VersioningConfig struct {
-	Enabled            bool `yaml:"enabled"`
-	MaxVersionsPerFile int  `yaml:"maxVersionsPerFile"`
+	Enabled                   bool  `yaml:"enabled"`
+	MaxVersionsPerFile        int   `yaml:"maxVersionsPerFile"`
+	MaxVersionAgeDays         int   `yaml:"maxVersionAgeDays"`
+	MaxVersionsTotalSizeBytes int64 `yaml:"maxVersionsTotalSizeBytes"`
 }
 
 // SharingConfig gobierna la compartición (§37). Enabled cubre usuario→usuario
@@ -150,6 +162,31 @@ type BackupConfig struct {
 	// límite -- no se borra nada hasta que el administrador lo pida.
 	RetentionCount int `yaml:"retentionCount"`
 	RetentionDays  int `yaml:"retentionDays"`
+	// Incremental (false por defecto): un fichero cuyo SHA-256 no cambió
+	// desde el backup anterior en el MISMO destino se enlaza (hardlink) a
+	// su copia ya existente en vez de recopiarse -- ahorra tiempo/espacio
+	// en instalaciones con backup automático y árboles grandes. El
+	// manifiesto sigue siendo siempre completo (todos los ficheros
+	// activos): cada job resultante sigue siendo independientemente
+	// restaurable, Restore/RestoreToPool/Verify no necesitan saber que
+	// esto existe. Ver ADR-026.
+	Incremental bool `yaml:"incremental"`
+	// Encrypt (false por defecto, ADR-028): cifra cada backup automático
+	// con AES-256-CTR. La passphrase nunca vive en este config.yaml -- se
+	// lee de la variable de entorno NEXUSCLOUD_BACKUP_PASSPHRASE al
+	// arrancar el servidor (internal/server.Build), la única vía que
+	// funciona igual para el modo automático (sin terminal) que para
+	// "backup run --encrypt" manual. Con Encrypt=true, Incremental deja de
+	// enlazar ficheros para ese run (ver ADR-028) -- ambas cosas pueden
+	// activarse a la vez sin error, simplemente el ahorro de espacio de
+	// Incremental no aplica mientras Encrypt esté activo.
+	Encrypt bool `yaml:"encrypt"`
+	// RemoteDestination (vacío por defecto, ADR-029): URL http(s):// de
+	// otro servidor NexusCloud al que respaldar en vez de la carpeta local
+	// de siempre (cfg.BackupsDir()). El token de autenticación tampoco
+	// vive aquí -- se lee de NEXUSCLOUD_BACKUP_REMOTE_TOKEN al arrancar el
+	// servidor, mismo criterio que la passphrase de cifrado.
+	RemoteDestination string `yaml:"remoteDestination"`
 }
 
 type RateLimitConfig struct {

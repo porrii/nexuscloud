@@ -143,6 +143,46 @@ func TestValidateRejectsNegativeBackupRetentionDays(t *testing.T) {
 	}
 }
 
+func TestDefaultsTrashMaxTotalSizeBytesIsUnlimited(t *testing.T) {
+	if got := Defaults().Trash.MaxTotalSizeBytes; got != 0 {
+		t.Errorf("Trash.MaxTotalSizeBytes = %d, esperado 0 (sin límite) por defecto", got)
+	}
+}
+
+func TestValidateRejectsNegativeTrashMaxTotalSizeBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.Trash.MaxTotalSizeBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar trash.maxTotalSizeBytes negativo")
+	}
+}
+
+func TestDefaultsVersioningAgeAndSizeLimitsAreUnlimited(t *testing.T) {
+	d := Defaults()
+	if d.Versioning.MaxVersionAgeDays != 0 {
+		t.Errorf("Versioning.MaxVersionAgeDays = %d, esperado 0 (sin límite) por defecto", d.Versioning.MaxVersionAgeDays)
+	}
+	if d.Versioning.MaxVersionsTotalSizeBytes != 0 {
+		t.Errorf("Versioning.MaxVersionsTotalSizeBytes = %d, esperado 0 (sin límite) por defecto", d.Versioning.MaxVersionsTotalSizeBytes)
+	}
+}
+
+func TestValidateRejectsNegativeVersioningMaxVersionAgeDays(t *testing.T) {
+	cfg := Defaults()
+	cfg.Versioning.MaxVersionAgeDays = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar versioning.maxVersionAgeDays negativo")
+	}
+}
+
+func TestValidateRejectsNegativeVersioningMaxVersionsTotalSizeBytes(t *testing.T) {
+	cfg := Defaults()
+	cfg.Versioning.MaxVersionsTotalSizeBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar versioning.maxVersionsTotalSizeBytes negativo")
+	}
+}
+
 func TestValidateRejectsUnsupportedConfigVersion(t *testing.T) {
 	cfg := Defaults()
 	cfg.ConfigVersion = CurrentConfigVersion + 1

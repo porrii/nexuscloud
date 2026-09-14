@@ -8,6 +8,7 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/porrii/nexuscloud/internal/idgen"
@@ -17,6 +18,17 @@ var (
 	ErrForbidden           = errors.New("storage: no tienes permiso sobre este elemento")
 	ErrInvalidName         = errors.New("storage: nombre de archivo/carpeta inválido")
 	ErrNameOccupiedByTrash = errors.New("storage: ya hay un elemento con ese nombre en la papelera; restáuralo, elimínalo definitivamente o usa otro nombre")
+	// ErrDestinationOccupied (ADR-030): a diferencia de Upload (que
+	// sobrescribe un archivo activo del mismo nombre por diseño, §498-507),
+	// Move siempre rechaza un destino ya ocupado -- activo o en papelera --
+	// en vez de fusionar dos semánticas distintas ("mover" y "sobrescribir")
+	// en una sola operación.
+	ErrDestinationOccupied = errors.New("storage: ya hay un archivo o carpeta con ese nombre en el destino")
+	// ErrInvalidMoveDestination (ADR-030): mover una carpeta dentro de sí
+	// misma o de uno de sus propios descendientes es un ciclo sin sentido
+	// en el árbol -- se rechaza explícitamente en vez de dejar que el
+	// UPDATE de reescritura de prefijos produzca un resultado indefinido.
+	ErrInvalidMoveDestination = errors.New("storage: no se puede mover una carpeta dentro de sí misma ni de una de sus subcarpetas")
 )
 
 // invalidNameChars cubre los caracteres prohibidos en nombres de archivo de
@@ -28,30 +40,33 @@ var invalidNameChars = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
 // autorización (propiedad) y la ruta lógica antes de delegar en Provider.
 // Ningún otro paquete debe tocar Provider directamente (§195-196).
 type FileService struct {
-	files              FileRepository
-	directories        DirectoryRepository
-	versions           VersionRepository
-	shares             ShareRepository
-	pools              PoolRepository
-	providers          ProviderResolver
-	hasher             PasswordHasher
-	trashEnabled       bool
-	versioningEnabled  bool
-	maxVersionsPerFile int
-	sharingEnabled     bool
-	publicLinksEnabled bool
+	files                     FileRepository
+	directories               DirectoryRepository
+	versions                  VersionRepository
+	shares                    ShareRepository
+	pools                     PoolRepository
+	providers                 ProviderResolver
+	hasher                    PasswordHasher
+	trashEnabled              bool
+	versioningEnabled         bool
+	maxVersionsPerFile        int
+	maxVersionAgeDays         int
+	maxVersionsTotalSizeBytes int64
+	sharingEnabled            bool
+	publicLinksEnabled        bool
 }
 
 func NewFileService(
 	files FileRepository, directories DirectoryRepository, versions VersionRepository, shares ShareRepository,
 	pools PoolRepository, providers ProviderResolver, hasher PasswordHasher,
-	trashEnabled, versioningEnabled bool, maxVersionsPerFile int,
+	trashEnabled, versioningEnabled bool, maxVersionsPerFile, maxVersionAgeDays int, maxVersionsTotalSizeBytes int64,
 	sharingEnabled, publicLinksEnabled bool,
 ) *FileService {
 	return &FileService{
 		files: files, directories: directories, versions: versions, shares: shares,
 		pools: pools, providers: providers, hasher: hasher,
 		trashEnabled: trashEnabled, versioningEnabled: versioningEnabled, maxVersionsPerFile: maxVersionsPerFile,
+		maxVersionAgeDays: maxVersionAgeDays, maxVersionsTotalSizeBytes: maxVersionsTotalSizeBytes,
 		sharingEnabled: sharingEnabled, publicLinksEnabled: publicLinksEnabled,
 	}
 }
@@ -99,6 +114,23 @@ type UploadInput struct {
 	ParentPath string
 	Name       string
 	Content    io.Reader
+	// PoolID, si no está vacío, fija el pool destino explícitamente (p.ej.
+	// restaurar un backup a un pool concreto, que puede no ser el por
+	// defecto). Vacío (el caso normal) resuelve el pool por defecto, mismo
+	// comportamiento de siempre -- ver resolveTargetPool.
+	PoolID string
+}
+
+// resolveTargetPool centraliza la resolución de pool destino que Upload y
+// Mkdir necesitan por igual: sin poolID explícito, el por defecto (todo el
+// comportamiento anterior a esto, intacto); con uno, ese pool concreto --
+// necesario para reinsertar un backup en un pool que puede no ser el por
+// defecto (§18, ADR-025).
+func (s *FileService) resolveTargetPool(ctx context.Context, poolID string) (*Pool, error) {
+	if poolID == "" {
+		return s.pools.DefaultPool(ctx)
+	}
+	return s.pools.GetPoolByID(ctx, poolID)
 }
 
 // Upload valida nombre/ruta y escribe primero a una ubicación provisional
@@ -112,9 +144,9 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 	}
 	parent := normalizeParentPath(in.ParentPath)
 
-	pool, err := s.pools.DefaultPool(ctx)
+	pool, err := s.resolveTargetPool(ctx, in.PoolID)
 	if err != nil {
-		return nil, fmt.Errorf("resolviendo storage pool por defecto: %w", err)
+		return nil, fmt.Errorf("resolviendo storage pool destino: %w", err)
 	}
 	prov, err := s.providers.For(ctx, pool.ID)
 	if err != nil {
@@ -209,30 +241,57 @@ func (s *FileService) snapshotVersion(ctx context.Context, existing *FileMeta) e
 	return s.enforceMaxVersions(ctx, existing.PoolID, existing.ID)
 }
 
-// enforceMaxVersions purga la versión más antigua mientras se exceda el
-// límite configurado (§15 "política automática de limpieza"). El contenido
-// de las versiones vive en el mismo pool que el fichero.
+// enforceMaxVersions purga las versiones del historial que sobren según las
+// políticas activas (§15 "política automática de limpieza"): cantidad
+// (MaxVersionsPerFile), antigüedad (MaxVersionAgeDays) y espacio total
+// ocupado (MaxVersionsTotalSizeBytes). Cada política es independiente (0 =
+// desactivada) y componen como "el más restrictivo gana" -- una versión se
+// purga si CUALQUIER política activa lo pide, no solo si todas coinciden.
+// Es la composición inversa a la retención de backups (ADR-017, "el más
+// generoso gana"): aquí las tres políticas son límites de protección de
+// espacio en disco, no una promesa de cuánto historial conservar -- ver
+// ADR-024. El contenido de las versiones vive en el mismo pool que el
+// fichero.
 func (s *FileService) enforceMaxVersions(ctx context.Context, poolID, fileID string) error {
-	if s.maxVersionsPerFile <= 0 {
+	if s.maxVersionsPerFile <= 0 && s.maxVersionAgeDays <= 0 && s.maxVersionsTotalSizeBytes <= 0 {
 		return nil
 	}
 	prov, err := s.providers.For(ctx, poolID)
 	if err != nil {
 		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
 	}
-	versions, err := s.versions.ListVersions(ctx, fileID) // ya viene ordenado version_num DESC
+	versions, err := s.versions.ListVersions(ctx, fileID) // ya viene ordenado version_num DESC (más nueva primero)
 	if err != nil {
 		return err
 	}
-	for len(versions) > s.maxVersionsPerFile {
-		oldest := versions[len(versions)-1]
-		if err := prov.Delete(ctx, oldest.StorageKey); err != nil {
+
+	var cutoff time.Time
+	if s.maxVersionAgeDays > 0 {
+		cutoff = time.Now().UTC().AddDate(0, 0, -s.maxVersionAgeDays)
+	}
+
+	var cumulativeBytes int64
+	for i, v := range versions {
+		cumulativeBytes += v.SizeBytes
+		prune := false
+		if s.maxVersionsPerFile > 0 {
+			prune = prune || i >= s.maxVersionsPerFile
+		}
+		if s.maxVersionAgeDays > 0 {
+			prune = prune || v.CreatedAt.Before(cutoff)
+		}
+		if s.maxVersionsTotalSizeBytes > 0 {
+			prune = prune || cumulativeBytes > s.maxVersionsTotalSizeBytes
+		}
+		if !prune {
+			continue
+		}
+		if err := prov.Delete(ctx, v.StorageKey); err != nil {
 			return fmt.Errorf("purgando contenido de versión antigua: %w", err)
 		}
-		if err := s.versions.DeleteVersion(ctx, oldest.ID); err != nil {
+		if err := s.versions.DeleteVersion(ctx, v.ID); err != nil {
 			return err
 		}
-		versions = versions[:len(versions)-1]
 	}
 	return nil
 }
@@ -330,6 +389,25 @@ func (s *FileService) rejectIfTrashOccupiesName(ctx context.Context, poolID, own
 	}
 	if existing, err := s.directories.GetDirectoryByNaturalKey(ctx, poolID, ownerID, parentPath, name); err == nil && existing.IsTrashed() {
 		return ErrNameOccupiedByTrash
+	}
+	return nil
+}
+
+// rejectIfDestinationOccupied (ADR-030, usado por MoveFile/MoveDirectory):
+// a diferencia de rejectIfTrashOccupiesName (que solo mira la papelera,
+// porque Upload SÍ puede sobrescribir un archivo activo), Move rechaza el
+// destino tanto si está ocupado por algo activo como por algo en la
+// papelera -- nunca sobrescribe.
+func (s *FileService) rejectIfDestinationOccupied(ctx context.Context, poolID, ownerID, parentPath, name string) error {
+	if _, err := s.files.GetFileByNaturalKey(ctx, poolID, ownerID, parentPath, name); err == nil {
+		return ErrDestinationOccupied
+	} else if !errors.Is(err, ErrFileNotFound) {
+		return err
+	}
+	if _, err := s.directories.GetDirectoryByNaturalKey(ctx, poolID, ownerID, parentPath, name); err == nil {
+		return ErrDestinationOccupied
+	} else if !errors.Is(err, ErrDirectoryNotFound) {
+		return err
 	}
 	return nil
 }
@@ -444,6 +522,68 @@ func (s *FileService) RestoreFile(ctx context.Context, requesterID, fileID strin
 	return nil
 }
 
+// MoveFile (ADR-030, §85) reubica un archivo a una nueva carpeta y/o le
+// cambia el nombre -- DENTRO del mismo pool, nunca cambia PoolID (mover
+// entre pools movería bytes entre dos Provider distintos, una feature
+// aparte que no encaja en un simple prov.Move; fuera de alcance aquí).
+// newParentPath/newName nil significa "mantener el valor actual" (mismo
+// espíritu que un rename() de filesystem: mover sin renombrar, o
+// renombrar en el sitio, son casos válidos sin repetir lo que no cambia).
+// Mismo rigor que Upload en la validación, pero nunca sobrescribe: un
+// destino ocupado (activo o en papelera) se rechaza (ErrDestinationOccupied),
+// nunca se fusiona con la semántica de "sobrescribir" de Upload. Al ser el
+// MISMO archivo (mismo ID, nunca se recrea), su historial de versiones
+// (indexado por ID, no por ruta) y sus shares sobreviven intactos sin
+// ningún código adicional -- la ganancia real de mover de verdad frente a
+// borrar+volver a subir.
+func (s *FileService) MoveFile(ctx context.Context, requesterID, fileID string, newParentPath, newName *string) (*FileMeta, error) {
+	meta, err := s.files.GetFileByID(ctx, fileID)
+	if err != nil {
+		return nil, err
+	}
+	if meta.OwnerID != requesterID {
+		return nil, ErrForbidden
+	}
+	if meta.IsTrashed() {
+		return nil, ErrFileNotFound
+	}
+	name := meta.Name
+	if newName != nil {
+		name = *newName
+	}
+	if err := validateName(name); err != nil {
+		return nil, err
+	}
+	parent := meta.ParentPath
+	if newParentPath != nil {
+		parent = normalizeParentPath(*newParentPath)
+	}
+
+	if parent == meta.ParentPath && name == meta.Name {
+		return meta, nil
+	}
+	if err := s.rejectIfDestinationOccupied(ctx, meta.PoolID, meta.OwnerID, parent, name); err != nil {
+		return nil, err
+	}
+
+	prov, err := s.providers.For(ctx, meta.PoolID)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
+	oldRel := physicalPath(meta.OwnerID, meta.ParentPath, meta.Name)
+	newRel := physicalPath(meta.OwnerID, parent, name)
+	if err := prov.Move(ctx, oldRel, newRel); err != nil {
+		return nil, fmt.Errorf("moviendo el contenido: %w", err)
+	}
+	if err := s.files.MoveFile(ctx, meta.ID, parent, name); err != nil {
+		_ = prov.Move(ctx, newRel, oldRel) // best-effort: deshace el movimiento físico si la BD falla
+		return nil, err
+	}
+	meta.ParentPath = parent
+	meta.Name = name
+	return meta, nil
+}
+
 // ListResult combina subcarpetas y archivos activos de una misma ruta
 // lógica, tal como los mostraría un explorador de archivos real.
 type ListResult struct {
@@ -488,15 +628,21 @@ func (s *FileService) ListTrash(ctx context.Context, ownerID string) (*TrashResu
 // idempotente para carpetas activas (crear una ya existente no es error,
 // igual que os.MkdirAll); si el nombre está ocupado por algo en la
 // papelera, se rechaza en vez de reutilizarlo en silencio (§128).
-func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name string) (*Directory, error) {
+// Mkdir crea una carpeta en poolID (vacío = pool por defecto, ver
+// resolveTargetPool). Un solo nivel: quien llame es responsable de
+// materializar los padres primero si hacen falta (mismo criterio que
+// FilesRepository.createDirectory en el cliente Flutter, ADR-012 punto 8) --
+// Mkdir en sí es idempotente (DO NOTHING en conflicto, ver más abajo), así
+// que repetir la llamada para una carpeta ya existente es seguro.
+func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name, poolID string) (*Directory, error) {
 	if err := validateName(name); err != nil {
 		return nil, err
 	}
 	parent := normalizeParentPath(parentPath)
 
-	pool, err := s.pools.DefaultPool(ctx)
+	pool, err := s.resolveTargetPool(ctx, poolID)
 	if err != nil {
-		return nil, fmt.Errorf("resolviendo storage pool por defecto: %w", err)
+		return nil, fmt.Errorf("resolviendo storage pool destino: %w", err)
 	}
 	prov, err := s.providers.For(ctx, pool.ID)
 	if err != nil {
@@ -529,6 +675,71 @@ func (s *FileService) Mkdir(ctx context.Context, ownerID, parentPath, name strin
 		return nil, err
 	}
 	return real, nil
+}
+
+// MoveDirectory (ADR-030, §85) reubica una carpeta y todo su árbol de
+// descendientes -- archivos y subcarpetas, cualquier profundidad -- a una
+// nueva ubicación y/o le cambia el nombre. Mismo criterio que MoveFile
+// (nunca sobrescribe un destino ocupado, nunca cambia de pool), más una
+// comprobación propia de las carpetas: no se puede mover una carpeta
+// dentro de sí misma ni de una de sus propias subcarpetas (ciclo sin
+// sentido en el árbol). El movimiento físico (`prov.Move` sobre el
+// directorio completo, un solo `os.Rename` en el provider local -- nunca
+// recorrido fichero a fichero) ocurre ANTES que la reescritura de la base
+// de datos (`MoveDirectoryTree`, transaccional): si la base de datos
+// fallara después, se deshace el movimiento físico en mejor esfuerzo
+// antes de devolver el error, mismo criterio que MoveFile.
+func (s *FileService) MoveDirectory(ctx context.Context, requesterID, dirID string, newParentPath, newName *string) (*Directory, error) {
+	target, err := s.directories.GetDirectoryByID(ctx, dirID)
+	if err != nil {
+		return nil, err
+	}
+	if target.OwnerID != requesterID {
+		return nil, ErrForbidden
+	}
+	if target.IsTrashed() {
+		return nil, ErrDirectoryNotFound
+	}
+	name := target.Name
+	if newName != nil {
+		name = *newName
+	}
+	if err := validateName(name); err != nil {
+		return nil, err
+	}
+	parent := target.ParentPath
+	if newParentPath != nil {
+		parent = normalizeParentPath(*newParentPath)
+	}
+
+	oldFullPath := path.Join(target.ParentPath, target.Name)
+	newFullPath := path.Join(parent, name)
+	if newFullPath == oldFullPath {
+		return target, nil
+	}
+	if strings.HasPrefix(newFullPath+"/", oldFullPath+"/") {
+		return nil, ErrInvalidMoveDestination
+	}
+	if err := s.rejectIfDestinationOccupied(ctx, target.PoolID, target.OwnerID, parent, name); err != nil {
+		return nil, err
+	}
+
+	prov, err := s.providers.For(ctx, target.PoolID)
+	if err != nil {
+		return nil, fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
+	oldRel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
+	newRel := physicalPath(target.OwnerID, parent, name)
+	if err := prov.Move(ctx, oldRel, newRel); err != nil {
+		return nil, fmt.Errorf("moviendo la carpeta física: %w", err)
+	}
+	if err := s.directories.MoveDirectoryTree(ctx, target.PoolID, target.OwnerID, target.ID, oldFullPath, parent, name, newFullPath); err != nil {
+		_ = prov.Move(ctx, newRel, oldRel) // best-effort: deshace el movimiento físico si la BD falla
+		return nil, err
+	}
+	target.ParentPath = parent
+	target.Name = name
+	return target, nil
 }
 
 // DeleteDirectory solo permite borrar carpetas vacías -- de contenido
@@ -638,16 +849,34 @@ func (s *FileService) RestoreDirectory(ctx context.Context, requesterID, dirID s
 
 // PurgeExpiredTrash elimina para siempre cualquier archivo/carpeta que
 // lleve en la papelera más tiempo que retention (§16 "limpieza
-// automática"). Pensado para invocarse periódicamente desde un ticker en
-// segundo plano (internal/server) y también bajo demanda.
-func (s *FileService) PurgeExpiredTrash(ctx context.Context, retention time.Duration) (purgedFiles, purgedDirs int, err error) {
+// automática"), y además, si maxTotalSizeBytes > 0, cualquier archivo
+// adicional que sobre para que el total ocupado por la papelera quepa en
+// ese límite -- empezando por el borrado más antiguo. Las dos políticas
+// componen como "el más restrictivo gana" (se poda si CUALQUIERA lo pide),
+// no como la retención de backups (ADR-017, "el más generoso gana"): un
+// límite de tamaño es protección de disco, no una promesa de cuánto
+// conservar -- ver ADR-023. Las carpetas nunca pesan (solo se puede
+// mover a papelera una carpeta ya vacía, ensureDirectoryEmpty), así que
+// solo se purgan por antigüedad. Pensado para invocarse periódicamente
+// desde un ticker en segundo plano (internal/server) y también bajo
+// demanda.
+func (s *FileService) PurgeExpiredTrash(ctx context.Context, retention time.Duration, maxTotalSizeBytes int64) (purgedFiles, purgedDirs int, err error) {
 	cutoff := time.Now().UTC().Add(-retention)
 
-	files, err := s.files.ListFilesDeletedBefore(ctx, cutoff)
+	trashed, err := s.files.ListAllTrashedFiles(ctx) // ya viene ordenado deleted_at DESC (borrado más reciente primero)
 	if err != nil {
-		return 0, 0, fmt.Errorf("listando archivos expirados: %w", err)
+		return 0, 0, fmt.Errorf("listando papelera para purga: %w", err)
 	}
-	for _, f := range files {
+	var cumulativeBytes int64
+	for _, f := range trashed {
+		cumulativeBytes += f.SizeBytes
+		prune := f.DeletedAt.Before(cutoff)
+		if maxTotalSizeBytes > 0 {
+			prune = prune || cumulativeBytes > maxTotalSizeBytes
+		}
+		if !prune {
+			continue
+		}
 		if err := s.permanentlyDeleteFile(ctx, f); err != nil {
 			return purgedFiles, purgedDirs, fmt.Errorf("purgando archivo %s: %w", f.ID, err)
 		}

@@ -38,10 +38,10 @@ type testEnv struct {
 // que las ejercitan directamente.
 func newTestEnv(t *testing.T, trashEnabled bool) *testEnv {
 	t.Helper()
-	return newTestEnvFull(t, trashEnabled, true, 10, true, true)
+	return newTestEnvFull(t, trashEnabled, true, 10, 0, 0, true, true)
 }
 
-func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersionsPerFile int, sharingEnabled, publicLinksEnabled bool) *testEnv {
+func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersionsPerFile, maxVersionAgeDays int, maxVersionsTotalSizeBytes int64, sharingEnabled, publicLinksEnabled bool) *testEnv {
 	t.Helper()
 	cfg := config.Defaults()
 	cfg.Database.Driver = "sqlite"
@@ -79,7 +79,7 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
-			trashEnabled, versioningEnabled, maxVersionsPerFile,
+			trashEnabled, versioningEnabled, maxVersionsPerFile, maxVersionAgeDays, maxVersionsTotalSizeBytes,
 			sharingEnabled, publicLinksEnabled),
 		files:       files,
 		directories: directories,
@@ -458,7 +458,7 @@ func TestPurgeExpiredTrashRemovesOnlyOldEnoughItems(t *testing.T) {
 		t.Fatalf("SoftDeleteFile falló: %v", err)
 	}
 
-	purgedFiles, _, err := env.svc.PurgeExpiredTrash(ctx, 24*time.Hour)
+	purgedFiles, _, err := env.svc.PurgeExpiredTrash(ctx, 24*time.Hour, 0)
 	if err != nil {
 		t.Fatalf("PurgeExpiredTrash falló: %v", err)
 	}
@@ -470,6 +470,88 @@ func TestPurgeExpiredTrashRemovesOnlyOldEnoughItems(t *testing.T) {
 	}
 	if _, err := env.files.GetFileByID(ctx, recentMeta.ID); err != nil {
 		t.Errorf("el archivo reciente no debería haberse purgado todavía: %v", err)
+	}
+}
+
+// TestPurgeExpiredTrashPrunesBySizeAloneEvenWhenRecentlyDeleted prueba la
+// mitad de la composición "el más restrictivo gana" (ADR-023) que el test
+// de arriba no cubre: con una retención por antigüedad generosísima (nada
+// se purgaría por antigüedad), un límite de tamaño ajustado debe purgar
+// igualmente el archivo más antiguo de la papelera para hacer sitio,
+// aunque ese archivo esté muy lejos de cumplir los 30 días.
+func TestPurgeExpiredTrashPrunesBySizeAloneEvenWhenRecentlyDeleted(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	grande, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "grande.bin", Content: bytes.NewReader([]byte("0123456789"))}) // 10 bytes
+	if err != nil {
+		t.Fatalf("upload grande falló: %v", err)
+	}
+	pequeno, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "pequeno.bin", Content: bytes.NewReader([]byte("abcde"))}) // 5 bytes
+	if err != nil {
+		t.Fatalf("upload pequeno falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, grande.ID); err != nil {
+		t.Fatalf("Delete grande falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, pequeno.ID); err != nil {
+		t.Fatalf("Delete pequeno falló: %v", err)
+	}
+	// Separamos los borrados para que quede claro cuál es el más antiguo de
+	// los dos -- ambos siguen muy lejos de los 30 días de retención.
+	if err := env.files.SoftDeleteFile(ctx, grande.ID, time.Now().UTC().Add(-1*time.Hour)); err != nil {
+		t.Fatalf("SoftDeleteFile falló: %v", err)
+	}
+
+	// Retención de 30 días (nadie la cumple) + límite de 12 bytes (los 15
+	// bytes totales no caben): el más antiguo (grande.bin, 10 bytes) debe
+	// podarse para que sobrevivan los 5 bytes más recientes (pequeno.bin).
+	purgedFiles, _, err := env.svc.PurgeExpiredTrash(ctx, 30*24*time.Hour, 12)
+	if err != nil {
+		t.Fatalf("PurgeExpiredTrash falló: %v", err)
+	}
+	if purgedFiles != 1 {
+		t.Fatalf("purgedFiles = %d, esperado 1 (grande.bin, por tamaño)", purgedFiles)
+	}
+	if _, err := env.files.GetFileByID(ctx, grande.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("grande.bin (el más antiguo) debería haberse purgado por tamaño pese a no cumplir la retención por antigüedad: err = %v", err)
+	}
+	if _, err := env.files.GetFileByID(ctx, pequeno.ID); err != nil {
+		t.Errorf("pequeno.bin (el más reciente) no debería haberse purgado: %v", err)
+	}
+}
+
+// TestPurgeExpiredTrashAgePrunesEvenWhenWellWithinSizeLimit es la otra
+// mitad: con un límite de tamaño generosísimo (nada se purgaría por
+// tamaño), la retención por antigüedad debe seguir purgando lo que lleve
+// más tiempo del permitido -- confirma que un límite de tamaño amplio
+// nunca "protege" de la purga por antigüedad.
+func TestPurgeExpiredTrashAgePrunesEvenWhenWellWithinSizeLimit(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	oldMeta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "viejo.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, oldMeta.ID); err != nil {
+		t.Fatalf("Delete falló: %v", err)
+	}
+	if err := env.files.SoftDeleteFile(ctx, oldMeta.ID, time.Now().UTC().Add(-48*time.Hour)); err != nil {
+		t.Fatalf("SoftDeleteFile falló: %v", err)
+	}
+
+	purgedFiles, _, err := env.svc.PurgeExpiredTrash(ctx, 24*time.Hour, 1024*1024)
+	if err != nil {
+		t.Fatalf("PurgeExpiredTrash falló: %v", err)
+	}
+	if purgedFiles != 1 {
+		t.Errorf("purgedFiles = %d, esperado 1 (por antigüedad, pese al límite de tamaño amplio)", purgedFiles)
+	}
+	if _, err := env.files.GetFileByID(ctx, oldMeta.ID); !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("el archivo viejo debería haberse purgado por antigüedad: err = %v", err)
 	}
 }
 
@@ -499,7 +581,7 @@ func TestMkdirCreatesAListableDirectory(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -521,10 +603,10 @@ func TestMkdirIsIdempotent(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); err != nil {
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", ""); err != nil {
 		t.Fatalf("primer Mkdir falló: %v", err)
 	}
-	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); err != nil {
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", ""); err != nil {
 		t.Errorf("crear una carpeta ya existente no debería fallar: %v", err)
 	}
 }
@@ -534,7 +616,7 @@ func TestDeleteDirectoryRejectsNonEmpty(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -552,7 +634,7 @@ func TestDeleteDirectoryRemovesEmptyDirectory(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Vacia")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Vacia", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -575,7 +657,7 @@ func TestDeleteDirectoryRejectsNonOwner(t *testing.T) {
 	victima := env.user(t, "victima")
 	atacante := env.user(t, "atacante")
 
-	dir, err := env.svc.Mkdir(ctx, victima, "/", "Privada")
+	dir, err := env.svc.Mkdir(ctx, victima, "/", "Privada", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -589,7 +671,7 @@ func TestRestoreDirectoryRecreatesPhysicalMarkerAndAllowsUploads(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -619,7 +701,7 @@ func TestMkdirRejectsNameOccupiedByTrash(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -627,7 +709,7 @@ func TestMkdirRejectsNameOccupiedByTrash(t *testing.T) {
 		t.Fatalf("DeleteDirectory falló: %v", err)
 	}
 
-	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos"); !errors.Is(err, ErrNameOccupiedByTrash) {
+	if _, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", ""); !errors.Is(err, ErrNameOccupiedByTrash) {
 		t.Errorf("err = %v, esperado ErrNameOccupiedByTrash", err)
 	}
 }
@@ -637,7 +719,7 @@ func TestPermanentlyDeleteDirectoryRemovesItForGood(t *testing.T) {
 	env := newTestEnv(t, true)
 	owner := env.user(t, "user-1")
 
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Efimera")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Efimera", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}
@@ -719,7 +801,7 @@ func TestUploadSkipsVersionWhenContentIdentical(t *testing.T) {
 
 func TestUploadSkipsVersioningWhenDisabled(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, false, 10, true, true)
+	env := newTestEnvFull(t, true, false, 10, 0, 0, true, true)
 	owner := env.user(t, "user-1")
 
 	first, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})
@@ -792,7 +874,7 @@ func TestRestoreVersionSwapsContentAndKeepsHistory(t *testing.T) {
 
 func TestEnforceMaxVersionsPurgesOldest(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, true, 2, true, true) // como mucho 2 versiones en el historial
+	env := newTestEnvFull(t, true, true, 2, 0, 0, true, true) // como mucho 2 versiones en el historial
 	owner := env.user(t, "user-1")
 
 	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("v1"))})
@@ -825,6 +907,151 @@ func TestEnforceMaxVersionsPurgesOldest(t *testing.T) {
 				t.Error("v1 debería haberse purgado por exceder maxVersionsPerFile, pero sigue presente")
 			}
 		}
+	}
+}
+
+// createSyntheticVersion inserta una fila de historial con un CreatedAt
+// controlado, saltándose Upload (que siempre usa time.Now() -- no puede
+// producir versiones "antiguas" a través de su API normal). Mismo criterio
+// que createSyntheticCompletedJob en internal/backup para backdatar jobs.
+// El contenido físico es real (mismo LocalFilesystemProvider que usa el
+// servicio, mismo layout que snapshotVersion), así que la purga
+// (prov.Delete) opera sobre un fichero real, no un StorageKey huérfano.
+func createSyntheticVersion(t *testing.T, env *testEnv, ownerID, fileID string, versionNum int, content string, createdAt time.Time) *FileVersion {
+	t.Helper()
+	ctx := context.Background()
+	key := versionStoragePath(ownerID, fileID, versionNum)
+	size, sha, err := env.provider.Write(ctx, key, bytes.NewReader([]byte(content)))
+	if err != nil {
+		t.Fatalf("escribiendo contenido sintético de versión: %v", err)
+	}
+	v := &FileVersion{
+		ID:         idgen.New(),
+		FileID:     fileID,
+		VersionNum: versionNum,
+		SizeBytes:  size,
+		SHA256:     sha,
+		MimeType:   "text/plain",
+		StorageKey: key,
+		CreatedAt:  createdAt,
+	}
+	if err := env.versions.CreateVersion(ctx, v); err != nil {
+		t.Fatalf("creando versión sintética: %v", err)
+	}
+	return v
+}
+
+// TestEnforceMaxVersionsPrunesByAgeAlone prueba la política de antigüedad
+// (MaxVersionAgeDays) en aislado -- cantidad y espacio desactivados (0).
+func TestEnforceMaxVersionsPrunesByAgeAlone(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, true, 0, 5, 0, true, true) // solo antigüedad: 5 días
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("actual"))})
+	if err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	now := time.Now().UTC()
+	createSyntheticVersion(t, env, owner, meta.ID, 1, "vieja", now.AddDate(0, 0, -10))
+	createSyntheticVersion(t, env, owner, meta.ID, 2, "reciente", now.AddDate(0, 0, -1))
+
+	if err := env.svc.enforceMaxVersions(ctx, meta.PoolID, meta.ID); err != nil {
+		t.Fatalf("enforceMaxVersions falló: %v", err)
+	}
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 1 || versions[0].VersionNum != 2 {
+		t.Fatalf("versions = %+v, esperada solo la versión 2 (la de 10 días debía podarse por antigüedad)", versions)
+	}
+}
+
+// TestEnforceMaxVersionsPrunesBySizeAlone prueba la política de espacio
+// total (MaxVersionsTotalSizeBytes) en aislado -- cantidad y antigüedad
+// desactivadas (0).
+func TestEnforceMaxVersionsPrunesBySizeAlone(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, true, 0, 0, 12, true, true) // solo espacio: 12 bytes totales
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("actual"))})
+	if err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	now := time.Now().UTC()
+	createSyntheticVersion(t, env, owner, meta.ID, 1, "0123456789", now) // 10 bytes, más antigua (version_num menor)
+	createSyntheticVersion(t, env, owner, meta.ID, 2, "abcde", now)      // 5 bytes, más nueva
+
+	if err := env.svc.enforceMaxVersions(ctx, meta.PoolID, meta.ID); err != nil {
+		t.Fatalf("enforceMaxVersions falló: %v", err)
+	}
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	// Recorrido nuevo->antiguo: v2 (5 bytes, acumulado=5, cabe) sobrevive;
+	// v1 (10 bytes, acumulado=15>12) se poda para hacer sitio.
+	if len(versions) != 1 || versions[0].VersionNum != 2 {
+		t.Fatalf("versions = %+v, esperada solo la versión 2 (la de 10 bytes debía podarse por espacio)", versions)
+	}
+}
+
+// TestEnforceMaxVersionsAgePrunesEvenWhenWellWithinSizeLimit confirma "el
+// más restrictivo gana" (ADR-024) en un sentido: con un presupuesto de
+// espacio generosísimo (nada se podría por tamaño), la antigüedad debe
+// seguir podando lo que lleve más tiempo del permitido.
+func TestEnforceMaxVersionsAgePrunesEvenWhenWellWithinSizeLimit(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, true, 0, 5, 1024*1024, true, true) // antigüedad estricta, espacio amplísimo
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("actual"))})
+	if err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	now := time.Now().UTC()
+	createSyntheticVersion(t, env, owner, meta.ID, 1, "vieja", now.AddDate(0, 0, -10))
+
+	if err := env.svc.enforceMaxVersions(ctx, meta.PoolID, meta.ID); err != nil {
+		t.Fatalf("enforceMaxVersions falló: %v", err)
+	}
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 0 {
+		t.Fatalf("versions = %+v, esperado que la versión de 10 días se podara por antigüedad pese al espacio de sobra", versions)
+	}
+}
+
+// TestEnforceMaxVersionsSizePrunesEvenWhenWellWithinAgeLimit es la otra
+// mitad: con una antigüedad máxima generosísima (nada se podría por
+// antigüedad), el límite de espacio debe seguir podando lo que sobre para
+// caber en el presupuesto, aunque sea reciente.
+func TestEnforceMaxVersionsSizePrunesEvenWhenWellWithinAgeLimit(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnvFull(t, true, true, 0, 3650, 12, true, true) // antigüedad amplísima (10 años), espacio estricto
+	owner := env.user(t, "user-1")
+
+	meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("actual"))})
+	if err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	now := time.Now().UTC()
+	createSyntheticVersion(t, env, owner, meta.ID, 1, "0123456789", now) // 10 bytes, recién creada -- pero es la más antigua de las dos
+	createSyntheticVersion(t, env, owner, meta.ID, 2, "abcde", now)      // 5 bytes, recién creada
+
+	if err := env.svc.enforceMaxVersions(ctx, meta.PoolID, meta.ID); err != nil {
+		t.Fatalf("enforceMaxVersions falló: %v", err)
+	}
+	versions, err := env.svc.ListVersions(ctx, owner, meta.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 1 || versions[0].VersionNum != 2 {
+		t.Fatalf("versions = %+v, esperada solo la versión 2 (la de 10 bytes debía podarse por espacio pese a ser reciente)", versions)
 	}
 }
 

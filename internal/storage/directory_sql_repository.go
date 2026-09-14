@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/porrii/nexuscloud/internal/db"
 )
@@ -117,6 +119,70 @@ func (r *SQLDirectoryRepository) DeleteDirectory(ctx context.Context, id string)
 	return nil
 }
 
+// MoveDirectoryTree ejecuta las 3 actualizaciones (la carpeta en sí +
+// subcarpetas descendientes + archivos descendientes) dentro de una
+// transacción real -- ver el comentario de la interfaz (directory.go)
+// sobre por qué esto vive aquí en vez de como una primitiva genérica.
+//
+// El reemplazo de prefijo (`newFullPath || substr(parent_path, N)`) es la
+// MISMA fórmula SQL para un descendiente directo (parent_path ==
+// oldFullPath exacto, substr devuelve "" ) y uno anidado (parent_path ==
+// oldFullPath+"/algo", substr devuelve "/algo") -- sin rama condicional
+// aparte. `substr`/`||` se comportan igual en sqlite y postgres (los dos
+// cuentan caracteres, no bytes -- por eso el offset se calcula con
+// utf8.RuneCountInString, no len(), o una ruta con letras acentuadas
+// (§179) cortaría a mitad de un carácter multi-byte).
+func (r *SQLDirectoryRepository) MoveDirectoryTree(ctx context.Context, poolID, ownerID, id, oldFullPath, newParentPath, newName, newFullPath string) error {
+	tx, err := r.conn.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("iniciando la transacción de mover carpeta: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op tras un Commit ya hecho
+
+	res, err := tx.ExecContext(ctx, `UPDATE directories SET parent_path = ?, name = ? WHERE id = ?`,
+		newParentPath, newName, id)
+	if err != nil {
+		return fmt.Errorf("moviendo la carpeta: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrDirectoryNotFound
+	}
+
+	// offset (en CARACTERES, 1-indexado para substr): todo lo que sigue a
+	// oldFullPath en el parent_path de un descendiente.
+	offset := utf8.RuneCountInString(oldFullPath) + 1
+	// escapeLikePattern es imprescindible aquí: validateName permite "%"
+	// y "_" en un nombre de carpeta (no están en invalidNameChars), y sin
+	// escapar serían comodines de LIKE -- una carpeta real llamada
+	// "100%" podría, sin esto, hacer que el patrón capturara descendientes
+	// de una ruta completamente distinta que coincidiera por casualidad.
+	likePattern := escapeLikePattern(oldFullPath) + `/%`
+
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE directories SET parent_path = ? || substr(parent_path, ?)
+		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
+		newFullPath, offset, poolID, ownerID, oldFullPath, likePattern,
+	); err != nil {
+		return fmt.Errorf("reescribiendo subcarpetas descendientes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE files SET parent_path = ? || substr(parent_path, ?)
+		WHERE pool_id = ? AND owner_id = ? AND (parent_path = ? OR parent_path LIKE ? ESCAPE '\')`,
+		newFullPath, offset, poolID, ownerID, oldFullPath, likePattern,
+	); err != nil {
+		return fmt.Errorf("reescribiendo archivos descendientes: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("confirmando la transacción de mover carpeta: %w", err)
+	}
+	return nil
+}
+
 func (r *SQLDirectoryRepository) ListDirectoriesDeletedBefore(ctx context.Context, cutoff time.Time) ([]*Directory, error) {
 	rows, err := r.conn.QueryContext(ctx,
 		directorySelectColumns+` WHERE deleted_at IS NOT NULL AND deleted_at < ?`, db.TimeToString(cutoff))
@@ -125,6 +191,17 @@ func (r *SQLDirectoryRepository) ListDirectoriesDeletedBefore(ctx context.Contex
 	}
 	defer rows.Close()
 	return scanDirectoryRows(rows)
+}
+
+// escapeLikePattern escapa "\", "%" y "_" (en ese orden -- si no, los "\"
+// recién insertados para escapar "%"/"_" se re-escaparían a sí mismos)
+// para poder usar un valor arbitrario como prefijo LITERAL en una
+// cláusula LIKE ... ESCAPE '\'.
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
 }
 
 const directorySelectColumns = `SELECT id, pool_id, owner_id, parent_path, name, created_at, deleted_at FROM directories`

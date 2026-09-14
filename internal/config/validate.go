@@ -71,9 +71,18 @@ func Validate(cfg *Config) error {
 	if cfg.Trash.Enabled && cfg.Trash.RetentionDays < 1 {
 		return fmt.Errorf("trash.retentionDays debe ser >= 1 cuando trash.enabled=true")
 	}
+	if cfg.Trash.MaxTotalSizeBytes < 0 {
+		return fmt.Errorf("trash.maxTotalSizeBytes no puede ser negativo (0 = sin límite)")
+	}
 
 	if cfg.Versioning.Enabled && cfg.Versioning.MaxVersionsPerFile < 1 {
 		return fmt.Errorf("versioning.maxVersionsPerFile debe ser >= 1 cuando versioning.enabled=true")
+	}
+	if cfg.Versioning.MaxVersionAgeDays < 0 {
+		return fmt.Errorf("versioning.maxVersionAgeDays no puede ser negativo (0 = sin límite)")
+	}
+	if cfg.Versioning.MaxVersionsTotalSizeBytes < 0 {
+		return fmt.Errorf("versioning.maxVersionsTotalSizeBytes no puede ser negativo (0 = sin límite)")
 	}
 
 	if cfg.Backup.Enabled && cfg.Backup.IntervalMinutes < 1 {
@@ -84,6 +93,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.Backup.RetentionDays < 0 {
 		return fmt.Errorf("backup.retentionDays no puede ser negativo (0 = sin límite)")
+	}
+	if d := cfg.Backup.RemoteDestination; d != "" && !strings.HasPrefix(d, "http://") && !strings.HasPrefix(d, "https://") {
+		return fmt.Errorf("backup.remoteDestination debe empezar por http:// o https:// (ADR-029), o dejarse vacío para un destino local")
 	}
 
 	if err := validateStorageAreas(cfg); err != nil {

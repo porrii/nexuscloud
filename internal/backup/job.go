@@ -15,6 +15,11 @@ var (
 	ErrNoEligiblePools   = errors.New("backup: no hay ningún storage pool elegible para respaldar")
 	ErrJobNotRestorable  = errors.New("backup: este backup no se completó correctamente y no se puede restaurar")
 	ErrIntegrityMismatch = errors.New("backup: el contenido copiado no coincide con el hash esperado")
+	ErrPoolNotActive     = errors.New("backup: el pool destino no está activo")
+	// ErrPassphraseRequired (ADR-028): --encrypt/backup.encrypt está activo,
+	// o el job a restaurar/verificar está cifrado, sin
+	// NEXUSCLOUD_BACKUP_PASSPHRASE definida en el entorno.
+	ErrPassphraseRequired = errors.New("backup: este backup está cifrado; define NEXUSCLOUD_BACKUP_PASSPHRASE")
 )
 
 const (

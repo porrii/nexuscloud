@@ -56,4 +56,24 @@ type FileRepository interface {
 	DeleteFile(ctx context.Context, id string) error
 	// ListFilesDeletedBefore alimenta la purga automática por retención.
 	ListFilesDeletedBefore(ctx context.Context, cutoff time.Time) ([]*FileMeta, error)
+	// ListAllTrashedFiles devuelve TODOS los archivos en papelera, de
+	// cualquier propietario, ordenados por deleted_at DESC (el borrado más
+	// reciente primero) -- a diferencia de ListTrashedFiles (acotado a un
+	// propietario, para la vista de papelera de un usuario), esto alimenta
+	// la purga automática por tamaño total (§16), que necesita ver el
+	// conjunto completo para poder aplicar el límite.
+	ListAllTrashedFiles(ctx context.Context) ([]*FileMeta, error)
+	// MoveFile (ADR-030) actualiza parent_path/name de la fila id, sin
+	// tocar sha256/size_bytes/updated_at -- es el MISMO archivo, solo
+	// cambia de ubicación lógica, así que el historial de versiones
+	// (indexado por file_id, nunca por ruta) sigue intacto sin ningún
+	// código adicional. UpsertFile no sirve para esto: actualiza por
+	// CLAVE NATURAL (pool+owner+parent+name), así que escribir el
+	// parent_path/name nuevos con UpsertFile insertaría una fila NUEVA en
+	// vez de mover la existente, dejando la vieja huérfana. Nunca
+	// actualiza updated_at a propósito: ese campo es la señal de "cambió
+	// el CONTENIDO" que todo el motor de sync del cliente ya usa -- un
+	// move no cambia contenido, actualizarlo dispararía descargas
+	// innecesarias en otros dispositivos que ya tengan este archivo.
+	MoveFile(ctx context.Context, id, newParentPath, newName string) error
 }

@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -109,11 +110,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
+		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
-	// backupManager solo lo consume el bucle automático de más abajo en este
-	// slice (ADR-016) -- todavía sin endpoint HTTP/UI, igual que en el Slice 1.
-	backupManager := backup.NewManager(poolRepo, fileRepo, providers, backup.NewSQLRepository(conn))
+	backupRepo := backup.NewSQLRepository(conn)
+	// backupManager lo consume el bucle automático de más abajo (ADR-016);
+	// backupRepo también lo usan los endpoints HTTP de backups entrantes
+	// (ADR-029, ver apiv1.Handlers.BackupRepo más abajo) -- backup manual
+	// desde CLI sigue sin endpoint HTTP/UI propio, igual que en el Slice 1.
+	backupManager := backup.NewManager(poolRepo, fileRepo, providers, backupRepo, fileSvc, cfg.Security.Argon2)
 
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
@@ -128,6 +133,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		AuditRepo:      auditRepo,
 		Logger:         logger,
 		TrustedProxies: cfg.Server.TrustedProxies,
+		// BackupsDir/BackupRepo/BackupReceiveToken (ADR-029): habilitan
+		// que ESTA instancia reciba backups de otro servidor NexusCloud.
+		// El token nunca vive en config.yaml (mismo criterio que
+		// NEXUSCLOUD_BACKUP_PASSPHRASE, ADR-028) -- con la variable vacía
+		// (por defecto), NewRouter ni registra esas rutas.
+		BackupsDir:         cfg.BackupsDir(),
+		BackupRepo:         backupRepo,
+		BackupReceiveToken: os.Getenv("NEXUSCLOUD_BACKUP_RECEIVE_TOKEN"),
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute
@@ -171,7 +184,13 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	stopBackup := make(chan struct{})
 	if cfg.Backup.Enabled {
-		startBackupScheduleLoop(backupManager, cfg.Backup, cfg.BackupsDir(), logger, stopBackup)
+		// La passphrase (ADR-028) y el token remoto (ADR-029) se leen UNA
+		// VEZ aquí, al arrancar el servidor -- el bucle automático no
+		// tiene terminal para pedirlos interactivamente, así que la única
+		// vía es la variable de entorno, leída antes de que el proceso
+		// pueda haber perdido de vista el entorno con el que arrancó.
+		startBackupScheduleLoop(backupManager, cfg.Backup, cfg.BackupsDir(),
+			os.Getenv("NEXUSCLOUD_BACKUP_PASSPHRASE"), os.Getenv("NEXUSCLOUD_BACKUP_REMOTE_TOKEN"), logger, stopBackup)
 	}
 
 	return &Server{
@@ -191,7 +210,7 @@ func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, l
 	runOnce := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		files, dirs, err := fileSvc.PurgeExpiredTrash(ctx, retention)
+		files, dirs, err := fileSvc.PurgeExpiredTrash(ctx, retention, cfg.MaxTotalSizeBytes)
 		if err != nil {
 			logger.Error("purgando papelera expirada", "error", err)
 			return
@@ -224,8 +243,14 @@ func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, l
 // actualizaciones) -- el primer backup automático llega tras el primer
 // intervalo completo; quien quiera uno inmediato ya tiene "nexuscloud backup
 // run" a mano.
-func startBackupScheduleLoop(manager *backup.Manager, cfg config.BackupConfig, destDir string, logger *slog.Logger, stop <-chan struct{}) {
+func startBackupScheduleLoop(manager *backup.Manager, cfg config.BackupConfig, destDir, passphrase, remoteToken string, logger *slog.Logger, stop <-chan struct{}) {
 	interval := time.Duration(cfg.IntervalMinutes) * time.Minute
+	// RemoteDestination (ADR-029) vacío = comportamiento de siempre
+	// (destDir local); no vacío sustituye el destino por otro servidor
+	// NexusCloud, mismo criterio que "--dest https://..." en el CLI.
+	if cfg.RemoteDestination != "" {
+		destDir = cfg.RemoteDestination
+	}
 
 	runOnce := func() {
 		// 30 minutos, no el time.Minute de la purga: un backup completo de un
@@ -234,6 +259,7 @@ func startBackupScheduleLoop(manager *backup.Manager, cfg config.BackupConfig, d
 		defer cancel()
 		job, err := manager.Run(ctx, backup.RunOptions{
 			DestinationPath: destDir, RetentionCount: cfg.RetentionCount, RetentionDays: cfg.RetentionDays,
+			Incremental: cfg.Incremental, Encrypt: cfg.Encrypt, Passphrase: passphrase, RemoteToken: remoteToken,
 		})
 		if err != nil {
 			logger.Error("backup automático falló", "error", err)

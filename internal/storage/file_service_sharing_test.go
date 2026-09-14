@@ -86,11 +86,11 @@ func TestSharedDirectoryAccessReachesNestedFile(t *testing.T) {
 	owner := env.user(t, "owner")
 	target := env.user(t, "target")
 
-	docs, err := env.svc.Mkdir(ctx, owner, "/", "Documentos")
+	docs, err := env.svc.Mkdir(ctx, owner, "/", "Documentos", "")
 	if err != nil {
 		t.Fatalf("Mkdir(/Documentos) falló: %v", err)
 	}
-	sub, err := env.svc.Mkdir(ctx, owner, "/Documentos", "Contratos")
+	sub, err := env.svc.Mkdir(ctx, owner, "/Documentos", "Contratos", "")
 	if err != nil {
 		t.Fatalf("Mkdir(/Documentos/Contratos) falló: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestPublicLinkDownloadCountConcurrencyRespectsLimit(t *testing.T) {
 
 func TestCreateShareRejectsLinkWhenPublicLinksDisabled(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, true, 10, true, false) // sharing.enabled=true, publicLinksEnabled=false
+	env := newTestEnvFull(t, true, true, 10, 0, 0, true, false) // sharing.enabled=true, publicLinksEnabled=false
 	owner := env.user(t, "owner")
 	target := env.user(t, "target")
 	meta, _ := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "a.txt", Content: bytes.NewReader([]byte("x"))})
@@ -319,7 +319,7 @@ func TestCreateShareRejectsLinkWhenPublicLinksDisabled(t *testing.T) {
 
 func TestCreateShareRejectsAllWhenSharingDisabled(t *testing.T) {
 	ctx := context.Background()
-	env := newTestEnvFull(t, true, true, 10, false, false)
+	env := newTestEnvFull(t, true, true, 10, 0, 0, false, false)
 	owner := env.user(t, "owner")
 	target := env.user(t, "target")
 	meta, _ := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "a.txt", Content: bytes.NewReader([]byte("x"))})
@@ -348,7 +348,7 @@ func TestUploadViaPublicShareEnforcesSizeLimit(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t, true)
 	owner := env.user(t, "owner")
-	dir, err := env.svc.Mkdir(ctx, owner, "/", "Buzon")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Buzon", "")
 	if err != nil {
 		t.Fatalf("Mkdir falló: %v", err)
 	}

@@ -5,6 +5,7 @@ import (
 
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
+	"github.com/porrii/nexuscloud/internal/backup"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
 )
@@ -24,4 +25,12 @@ type Handlers struct {
 	AuditRepo      audit.Repository
 	Logger         *slog.Logger
 	TrustedProxies []string
+	// BackupsDir/BackupRepo/BackupReceiveToken (ADR-029): solo se usan si
+	// esta instancia actúa de RECEPTORA de backups de otro servidor
+	// NexusCloud -- ver backup_remote_handlers.go. Con BackupReceiveToken
+	// vacío (por defecto), NewRouter ni siquiera registra esas rutas
+	// (secure by default, §3/§47).
+	BackupsDir         string
+	BackupRepo         backup.Repository
+	BackupReceiveToken string
 }

@@ -150,6 +150,32 @@ func (r *SQLFileRepository) ListFilesDeletedBefore(ctx context.Context, cutoff t
 	return scanFileRows(rows)
 }
 
+func (r *SQLFileRepository) MoveFile(ctx context.Context, id, newParentPath, newName string) error {
+	res, err := r.conn.ExecContext(ctx, `UPDATE files SET parent_path = ?, name = ? WHERE id = ?`,
+		newParentPath, newName, id)
+	if err != nil {
+		return fmt.Errorf("moviendo archivo: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrFileNotFound
+	}
+	return nil
+}
+
+func (r *SQLFileRepository) ListAllTrashedFiles(ctx context.Context) ([]*FileMeta, error) {
+	rows, err := r.conn.QueryContext(ctx,
+		fileSelectColumns+` WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("listando toda la papelera para purga por tamaño: %w", err)
+	}
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
 const fileSelectColumns = `SELECT id, pool_id, owner_id, parent_path, name, size_bytes, sha256, mime_type, created_at, updated_at, deleted_at FROM files`
 
 func scanFile(row *sql.Row) (*FileMeta, error) { return scanFileRow(row) }

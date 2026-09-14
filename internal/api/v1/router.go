@@ -53,12 +53,14 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Post("/files", h.UploadFile)
 		r.Get("/files/{id}", h.DownloadFile)
 		r.Delete("/files/{id}", h.DeleteFile)
+		r.Patch("/files/{id}", h.MoveFile)
 		r.Post("/files/{id}/restore", h.RestoreFile)
 		r.Get("/files/{id}/versions", h.ListFileVersions)
 		r.Get("/files/{id}/versions/{versionNum}", h.DownloadFileVersion)
 		r.Post("/files/{id}/versions/{versionNum}/restore", h.RestoreFileVersion)
 		r.Post("/directories", h.Mkdir)
 		r.Delete("/directories/{id}", h.DeleteDirectory)
+		r.Patch("/directories/{id}", h.MoveDirectory)
 		r.Post("/directories/{id}/restore", h.RestoreDirectory)
 
 		r.Get("/trash", h.ListTrash)
@@ -87,6 +89,21 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Get("/storage/disks", h.ListDisks)
 		})
 	})
+
+	// Backups entrantes de otro servidor NexusCloud (ADR-029): fuera del
+	// árbol de sesión de usuario, protegido solo por requireBackupToken.
+	// Con BackupReceiveToken vacío (por defecto), esta capacidad ni se
+	// registra -- secure by default, mismo criterio que publicLinksEnabled.
+	if h.BackupReceiveToken != "" {
+		r.Route("/backups/inbound/{jobID}", func(r chi.Router) {
+			r.Use(h.requireBackupToken)
+			r.Put("/files/*", h.UploadInboundBackupFile)
+			r.Get("/files/*", h.DownloadInboundBackupFile)
+			r.Delete("/files/*", h.DeleteInboundBackupFile)
+			r.Post("/complete", h.CompleteInboundBackup)
+			r.Delete("/", h.DeleteInboundBackupJob)
+		})
+	}
 
 	return r
 }

@@ -133,12 +133,58 @@ func (h *Handlers) Mkdir(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "name es obligatorio.")
 		return
 	}
-	dir, err := h.Files.Mkdir(r.Context(), u.ID, req.ParentPath, req.Name)
+	dir, err := h.Files.Mkdir(r.Context(), u.ID, req.ParentPath, req.Name, "")
 	if err != nil {
 		writeFileError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toDirectoryResponse(dir))
+}
+
+// moveRequest usa punteros para distinguir "campo omitido" (nil -- ver
+// FileService.MoveFile/MoveDirectory, ADR-030: mantiene el valor actual)
+// de "campo presente" -- omitir parent_path es "renombrar en el sitio",
+// omitir name es "mover sin renombrar", mismo espíritu que un rename() de
+// filesystem.
+type moveRequest struct {
+	ParentPath *string `json:"parent_path"`
+	Name       *string `json:"name"`
+}
+
+func (h *Handlers) MoveFile(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	var req moveRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Cuerpo de la petición inválido.")
+		return
+	}
+	meta, err := h.Files.MoveFile(r.Context(), u.ID, id, req.ParentPath, req.Name)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	h.AuditLog.Record(r.Context(), audit.EventMove, u.ID, "file", id, security.ClientIP(r, h.TrustedProxies),
+		map[string]any{"parent_path": meta.ParentPath, "name": meta.Name})
+	writeJSON(w, http.StatusOK, toFileResponse(meta))
+}
+
+func (h *Handlers) MoveDirectory(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	var req moveRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Cuerpo de la petición inválido.")
+		return
+	}
+	dir, err := h.Files.MoveDirectory(r.Context(), u.ID, id, req.ParentPath, req.Name)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	h.AuditLog.Record(r.Context(), audit.EventMove, u.ID, "directory", id, security.ClientIP(r, h.TrustedProxies),
+		map[string]any{"parent_path": dir.ParentPath, "name": dir.Name})
+	writeJSON(w, http.StatusOK, toDirectoryResponse(dir))
 }
 
 // DeleteDirectory solo borra carpetas vacías -- de contenido activo --
@@ -186,6 +232,10 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "not_empty", "La carpeta no está vacía.")
 	case errors.Is(err, storage.ErrNameOccupiedByTrash):
 		writeError(w, http.StatusConflict, "name_occupied_by_trash", err.Error())
+	case errors.Is(err, storage.ErrDestinationOccupied):
+		writeError(w, http.StatusConflict, "destination_occupied", err.Error())
+	case errors.Is(err, storage.ErrInvalidMoveDestination):
+		writeError(w, http.StatusBadRequest, "invalid_move_destination", err.Error())
 	case errors.Is(err, storage.ErrVersionNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Versión no encontrada.")
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):

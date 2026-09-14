@@ -1,0 +1,29 @@
+# ADR-025: Restaurar un Backup Directamente a un Pool Activo (§18)
+
+## Estado
+
+Aceptado.
+
+## Contexto
+
+ADR-015 dejó `backup restore` extrayendo solo a una carpeta elegida, sin reinsertar metadatos ni tocar la base de datos -- alcance explícito de aquel slice. Un administrador que perdió datos reales (no solo quiere inspeccionar el backup) necesita que los ficheros vuelvan a aparecer como archivos activos normales -- navegables, descargables, versionables -- en un pool activo, sin subirlos a mano uno por uno desde la carpeta extraída.
+
+## Decisión
+
+1. **Pool destino siempre explícito (`--pool <id-o-nombre>`), nunca el original del manifiesto.** El manifiesto ya guarda el `PoolID`/`PoolName` original de cada fichero, pero ese pool puede ya no existir o estar inactivo -- precisamente el escenario de desastre que esta feature cubre. En vez de "restaurar a su pool original y fallar si no existe", `RestoreToPool` exige un pool destino resuelto de antemano (mismo `resolvePoolRef` que ya usa `backup run --pool`) y valida que esté `Status == "active"` antes de tocar nada.
+2. **Reutiliza `FileService.Upload`/`Mkdir`, no reimplementa su lógica.** `internal/storage` es "el ÚNICO punto de acceso a archivos de usuario"; pasar por él hereda gratis validación de nombre/ruta, el rechazo si el path está ocupado por la papelera, y el versionado automático (ADR-007) si el path ya tiene un archivo activo con contenido distinto -- mismo comportamiento que cualquier subida normal, sin una segunda semántica de conflicto que mantener sincronizada con la primera.
+3. **`UploadInput` y `Mkdir` ganan un `PoolID`/`poolID` opcional** (`""` = pool por defecto, comportamiento idéntico al de siempre). Antes de este ADR, ambos resolvían siempre `DefaultPool()` internamente sin ninguna forma de apuntar a otro pool -- necesario para poder restaurar a un pool que no sea el por defecto. Un helper interno `resolveTargetPool` centraliza la resolución para las dos funciones.
+4. **Materialización de carpetas intermedias, nivel a nivel.** `FileService.Upload` nunca crea filas de `directories` para rutas padre inexistentes (mismo comportamiento, ya conocido, que obligó al cliente Flutter a añadir `FilesRepository.createDirectory` en ADR-012 punto 8). Sin este mismo paso aquí, un fichero restaurado en una carpeta anidada existiría en la base de datos pero sería invisible navegando carpeta a carpeta desde la raíz. `Manager.materializeAncestors` recorre `parentPath` segmento a segmento llamando a `Mkdir` (ya idempotente, DO NOTHING en conflicto) por cada nivel.
+5. **Mismo criterio que `Restore` (extraer a carpeta), no el de `Run`: mejor esfuerzo, nunca todo-o-nada.** Se intenta restaurar todo lo que se pueda; los fallos se acumulan por fichero (`RestoreToPoolResult.Errors`) en vez de abortar el resto. Un propietario que ya no existe (viola la FK `files.owner_id -> users.id`, §14) hace fallar solo ese fichero -- se confía en la FK real de la base de datos para detectarlo, sin comprobación manual redundante.
+6. **Verificación de hash ANTES de subir, no después.** A diferencia de `copyVerified` (usado por `Restore`, que sí compara contra un hash esperado), `Upload` calcula su propio SHA-256 del contenido que se le da y nunca lo compara con nada externo. Para conservar la misma protección contra bitrot en el disco de backup que tienen `Restore`/`Verify`, `RestoreToPool` llama a `verifyFileHash` contra el manifiesto ANTES de abrir el fichero y pasarlo a `Upload` -- nunca confía en que `Upload` lo note por su cuenta.
+
+## Hallazgo colateral: bug latente en `Run` con cero ficheros elegibles
+
+Al verificar esta feature E2E (backup de un pool tras borrar su único archivo activo, para simular que el original ya no existe), `backup run` falló con `"escribiendo manifest.json: ... no such file or directory"` pese a completarse sin ningún archivo. Causa: `jobDir` nunca se creaba explícitamente -- dependía enteramente de que `copyVerified` lo hiciera como efecto secundario al respaldar el primer fichero (`os.MkdirAll(filepath.Dir(destPath))`). Con cero ficheros en todos los pools candidatos, ese efecto secundario nunca ocurre. Corregido con un `os.MkdirAll(jobDir, ...)` explícito al principio de `Run`, antes de escribir nada -- un backup de cero ficheros es un backup válido (job completado, manifiesto vacío), no un error. No relacionado con el resto de este ADR salvo en que el mismo E2E lo destapó; cubierto con `TestRunSucceedsWithZeroEligibleFiles`.
+
+## Consecuencias
+
+- Nuevo comando `nexuscloud backup restore-to-pool <job-id> --pool <id-o-nombre>`.
+- `Manager` gana una referencia a `*storage.FileService`; `NewManager` gana ese parámetro -- los 3 call sites (servidor, CLI, tests) actualizados. `internal/cli/backup_cmd.go` (`openBackupManager`) ahora construye un `FileService` completo (antes solo tenía `files`/`resolver`), con los mismos flags de trash/versioning/sharing ya cargados desde `cfg`, para que una restauración a pool se comporte igual que subir con el servidor corriendo.
+- 8 tests nuevos en `internal/backup` (reconstrucción en un pool distinto, materialización de carpetas anidadas y navegables, versionado sobre un path ya ocupado, pool inactivo/inexistente rechazado antes de tocar nada, propietario inexistente falla solo ese fichero, bitrot falla solo ese fichero) + 1 de regresión para el hallazgo colateral.
+- **Verificado E2E contra un servidor real (Docker)**: archivo real subido con ruta anidada (`/docs/2024/informe.pdf`), backup real, archivo original borrado (simulando que ya no existe), `backup restore-to-pool` a un SEGUNDO Storage Pool real creado con `storage add`. Confirmado vía API real: la carpeta `docs` aparece navegable desde la raíz, el fichero se descarga con código 200, y su contenido es byte a byte idéntico al original subido.

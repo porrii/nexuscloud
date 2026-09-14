@@ -301,6 +301,29 @@ paths:
               schema: { type: string, format: binary }
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+    patch:
+      summary: Mover y/o renombrar un archivo (ADR-030, §85)
+      description: Mismo archivo (mismo id): el historial de versiones y las comparticiones sobreviven intactos. Omitir un campo mantiene su valor actual -- omitir parent_path es "renombrar en el sitio", omitir name es "mover sin renombrar". Nunca sobrescribe un destino ya ocupado.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parent_path: { type: string }
+                name: { type: string }
+      responses:
+        "200":
+          description: Movido; devuelve el archivo actualizado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "Ya hay un archivo o carpeta con ese nombre en el destino" }
     delete:
       summary: Eliminar un archivo
       description: Por defecto lo mueve a la papelera (§16); con permanent=true (o si trash.enabled=false) lo borra directamente para siempre.
@@ -400,6 +423,29 @@ paths:
         "409": { description: "El nombre está ocupado por un elemento en la papelera" }
 
   /directories/{id}:
+    patch:
+      summary: Mover y/o renombrar una carpeta (ADR-030, §85)
+      description: Mueve TODO el árbol de descendientes (archivos y subcarpetas, cualquier profundidad) con ella. Omitir un campo mantiene su valor actual, mismo criterio que PATCH /files/{id}. Rechaza mover una carpeta dentro de sí misma o de una de sus propias subcarpetas.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                parent_path: { type: string }
+                name: { type: string }
+      responses:
+        "200":
+          description: Movida; devuelve la carpeta actualizada
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Directory" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "409": { description: "Ya hay un archivo o carpeta con ese nombre en el destino" }
     delete:
       summary: Eliminar una carpeta vacía (de contenido activo)
       description: Por defecto la mueve a la papelera (§16); con permanent=true (o si trash.enabled=false) la borra directamente para siempre.

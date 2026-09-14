@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,13 +71,13 @@ func newBackupTestEnv(t *testing.T) *backupTestEnv {
 	userRepo := users.NewSQLRepository(conn)
 
 	svc := storage.NewFileService(files, directories, versions, shares, pools, resolver,
-		&testPasswordHasher{}, true, true, 10, true, true)
+		&testPasswordHasher{}, true, true, 10, 0, 0, true, true)
 	backupRepo := NewSQLRepository(conn)
 
 	return &backupTestEnv{
 		t: t, svc: svc, files: files, pools: pools, resolver: resolver,
 		backupRepo: backupRepo,
-		manager:    NewManager(pools, files, resolver, backupRepo),
+		manager:    NewManager(pools, files, resolver, backupRepo, svc, cfg.Security.Argon2),
 		userSvc:    users.NewService(userRepo),
 		poolDir:    poolDir,
 		destDir:    t.TempDir(),
@@ -168,7 +169,7 @@ func TestRunBackupsMultiplePoolsMultipleOwners(t *testing.T) {
 		t.Errorf("FileCount = %d, esperado 3 (uno.txt + dos.txt + tres.txt, en 2 pools distintos)", job.FileCount)
 	}
 
-	manifest, err := readManifest(filepath.Join(env.destDir, job.ID))
+	manifest, err := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
 	if err != nil {
 		t.Fatalf("leyendo manifest.json: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestRunExcludesPoolWithBackupOffButIncludesInherit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run falló: %v", err)
 	}
-	manifest, err := readManifest(filepath.Join(env.destDir, job.ID))
+	manifest, err := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
 	if err != nil {
 		t.Fatalf("leyendo manifest.json: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestRunExcludesTrashedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run falló: %v", err)
 	}
-	manifest, _ := readManifest(filepath.Join(env.destDir, job.ID))
+	manifest, _ := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
 	names := map[string]bool{}
 	for _, pm := range manifest.Pools {
 		for _, fm := range pm.Files {
@@ -279,6 +280,169 @@ func TestRunExcludesTrashedFiles(t *testing.T) {
 	}
 	if names["papelera.txt"] {
 		t.Errorf("papelera.txt está en la papelera y no debía respaldarse")
+	}
+}
+
+// TestRunSucceedsWithZeroEligibleFiles cubre un caso encontrado de verdad
+// vía E2E (no en la suite unitaria original): un pool recién creado o ya
+// vaciado no tiene ningún efecto secundario que cree jobDir (eso ocurría
+// solo como consecuencia de copyVerified al respaldar el primer fichero),
+// así que writeManifest fallaba con "no such file or directory" en vez de
+// completar un backup vacío pero válido.
+func TestRunSucceedsWithZeroEligibleFiles(t *testing.T) {
+	env := newBackupTestEnv(t)
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run con cero ficheros elegibles falló: %v", err)
+	}
+	if job.Status != StatusCompleted {
+		t.Fatalf("Status = %q, esperado %q", job.Status, StatusCompleted)
+	}
+	if job.FileCount != 0 {
+		t.Errorf("FileCount = %d, esperado 0", job.FileCount)
+	}
+	manifest, err := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
+	if err != nil {
+		t.Fatalf("leyendo manifest.json: %v", err)
+	}
+	if len(manifest.Pools) != 1 || len(manifest.Pools[0].Files) != 0 {
+		t.Errorf("manifest.Pools = %+v, esperado 1 pool sin ficheros", manifest.Pools)
+	}
+}
+
+// --- Incremental (ADR-026) ----------------------------------------------
+
+func TestRunIncrementalWithoutPreviousBackupActsAsFull(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("jack")
+	original := env.upload(owner, "/", "a.txt", "contenido")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, Incremental: true})
+	if err != nil {
+		t.Fatalf("Run incremental sin backup previo falló: %v", err)
+	}
+	if job.FileCount != 1 {
+		t.Fatalf("FileCount = %d, esperado 1", job.FileCount)
+	}
+	restoreDir := t.TempDir()
+	if err := env.manager.Restore(context.Background(), RestoreOptions{JobID: job.ID, DestinationPath: restoreDir}); err != nil {
+		t.Fatalf("Restore falló: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(restoreDir, env.defaultPoolID(), owner, "a.txt"))
+	if err != nil {
+		t.Fatalf("leyendo el archivo restaurado: %v", err)
+	}
+	if sha256Hex(got) != original.SHA256 {
+		t.Errorf("sha256 restaurado no coincide con el original")
+	}
+}
+
+// TestRunIncrementalHardlinksUnchangedRecopiesChangedCopiesNew cubre los
+// tres casos centrales de ADR-026 en un único escenario realista: dos
+// backups incrementales consecutivos, con un fichero que no cambia entre
+// medias, uno que sí cambia, y uno que se sube después del primer backup.
+func TestRunIncrementalHardlinksUnchangedRecopiesChangedCopiesNew(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("kate")
+	env.upload(owner, "/", "sin-cambios.txt", "contenido estable")
+	env.upload(owner, "/", "cambia.txt", "contenido original")
+
+	job1, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, Incremental: true})
+	if err != nil {
+		t.Fatalf("primer Run incremental falló: %v", err)
+	}
+
+	// Cambia el contenido de un fichero y sube uno nuevo antes del segundo
+	// backup -- exactamente lo que un incremental real tiene que
+	// distinguir de "sin cambios".
+	env.upload(owner, "/", "cambia.txt", "contenido MODIFICADO")
+	env.upload(owner, "/", "nuevo.txt", "recién llegado")
+
+	job2, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, Incremental: true})
+	if err != nil {
+		t.Fatalf("segundo Run incremental falló: %v", err)
+	}
+	if job2.FileCount != 3 {
+		t.Fatalf("FileCount del segundo job = %d, esperado 3 (el manifiesto sigue siendo completo)", job2.FileCount)
+	}
+
+	poolID := env.defaultPoolID()
+	pathIn := func(jobID, name string) string {
+		return filepath.Join(env.destDir, jobID, "data", poolID, owner, name)
+	}
+	sameInode := func(t *testing.T, pathA, pathB string) bool {
+		t.Helper()
+		fiA, err := os.Stat(pathA)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", pathA, err)
+		}
+		fiB, err := os.Stat(pathB)
+		if err != nil {
+			t.Fatalf("Stat(%s): %v", pathB, err)
+		}
+		return os.SameFile(fiA, fiB)
+	}
+
+	// sin-cambios.txt: el segundo job debe COMPARTIR inodo con el primero
+	// (enlazado, no recopiado) -- la prueba real de que la deduplicación
+	// funcionó, no solo que el contenido coincide por casualidad.
+	if !sameInode(t, pathIn(job1.ID, "sin-cambios.txt"), pathIn(job2.ID, "sin-cambios.txt")) {
+		t.Error("sin-cambios.txt debía compartir inodo entre ambos backups (enlazado), no recopiarse")
+	}
+	// cambia.txt: el segundo job debe tener un inodo DISTINTO (se
+	// recopió de verdad, no se enlazó al contenido antiguo).
+	if sameInode(t, pathIn(job1.ID, "cambia.txt"), pathIn(job2.ID, "cambia.txt")) {
+		t.Error("cambia.txt no debía compartir inodo: su contenido cambió, tenía que recopiarse")
+	}
+	gotCambiado, err := os.ReadFile(pathIn(job2.ID, "cambia.txt"))
+	if err != nil {
+		t.Fatalf("leyendo cambia.txt del segundo backup: %v", err)
+	}
+	if string(gotCambiado) != "contenido MODIFICADO" {
+		t.Errorf("cambia.txt en el segundo backup = %q, esperado el contenido modificado", gotCambiado)
+	}
+	// nuevo.txt: no existía en el primer backup -- debe existir en el
+	// segundo con su propio contenido (copia normal, no hay nada que
+	// enlazar).
+	gotNuevo, err := os.ReadFile(pathIn(job2.ID, "nuevo.txt"))
+	if err != nil {
+		t.Fatalf("leyendo nuevo.txt del segundo backup: %v", err)
+	}
+	if string(gotNuevo) != "recién llegado" {
+		t.Errorf("nuevo.txt en el segundo backup = %q, esperado el contenido subido", gotNuevo)
+	}
+}
+
+// TestRunIncrementalFallsBackToCopyWhenLinkSourceMissing confirma que un
+// enlace que no se puede hacer (aquí, forzado borrando a mano la copia del
+// backup anterior) nunca aborta el job -- la incrementalidad es una
+// optimización, no una condición de éxito (ADR-026).
+func TestRunIncrementalFallsBackToCopyWhenLinkSourceMissing(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("liam")
+	env.upload(owner, "/", "a.txt", "contenido")
+
+	job1, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, Incremental: true})
+	if err != nil {
+		t.Fatalf("primer Run incremental falló: %v", err)
+	}
+	// Borra a mano la copia del primer backup -- simula que ya no está
+	// disponible para enlazar (disco parcialmente dañado, movido, etc.).
+	firstCopy := filepath.Join(env.destDir, job1.ID, "data", env.defaultPoolID(), owner, "a.txt")
+	if err := os.Remove(firstCopy); err != nil {
+		t.Fatalf("borrando la copia del primer backup: %v", err)
+	}
+
+	job2, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir, Incremental: true})
+	if err != nil {
+		t.Fatalf("segundo Run incremental debía completarse pese al enlace fallido: %v", err)
+	}
+	if job2.Status != StatusCompleted || job2.FileCount != 1 {
+		t.Fatalf("job2 = %+v, esperado completado con 1 fichero (recopiado tras fallar el enlace)", job2)
+	}
+	if _, err := os.Stat(filepath.Join(env.destDir, job2.ID, "data", env.defaultPoolID(), owner, "a.txt")); err != nil {
+		t.Errorf("a.txt debía existir en el segundo backup (recopiado): %v", err)
 	}
 }
 
@@ -299,7 +463,7 @@ func TestRunWithExplicitPoolIDsLimitsScope(t *testing.T) {
 	if len(job.PoolIDs) != 1 || job.PoolIDs[0] != env.defaultPoolID() {
 		t.Errorf("PoolIDs = %v, esperado solo el pool por defecto", job.PoolIDs)
 	}
-	manifest, _ := readManifest(filepath.Join(env.destDir, job.ID))
+	manifest, _ := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
 	for _, pm := range manifest.Pools {
 		if pm.PoolID == otro.ID {
 			t.Errorf("el pool no pedido explícitamente no debía aparecer: %+v", pm)
@@ -337,7 +501,7 @@ func TestRunFailsWholeJobOnHashMismatch(t *testing.T) {
 	if len(jobs) != 1 || jobs[0].Status != StatusFailed {
 		t.Fatalf("jobs = %+v, esperado 1 job con status=failed", jobs)
 	}
-	if _, statErr := os.Stat(manifestPath(filepath.Join(env.destDir, jobs[0].ID))); !os.IsNotExist(statErr) {
+	if _, statErr := os.Stat(filepath.Join(env.destDir, jobs[0].ID, "manifest.json")); !os.IsNotExist(statErr) {
 		t.Errorf("manifest.json no debía escribirse en un job fallido (err=%v)", statErr)
 	}
 }
@@ -439,6 +603,249 @@ func TestRestoreDetectsBitrotInBackupDestination(t *testing.T) {
 	}
 }
 
+// --- RestoreToPool (ADR-025) --------------------------------------------
+
+func TestRestoreToPoolReconstructsFilesInTargetPool(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("carol")
+	original := env.upload(owner, "/", "informe.txt", "contenido del informe")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	destino := env.newPool("destino-restauracion", "")
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: destino.ID})
+	if err != nil {
+		t.Fatalf("RestoreToPool falló: %v", err)
+	}
+	if result.Restored != 1 || len(result.Errors) != 0 {
+		t.Fatalf("result = %+v, esperado 1 restaurado sin errores", result)
+	}
+
+	meta, err := env.files.GetFileByNaturalKey(context.Background(), destino.ID, owner, "/", "informe.txt")
+	if err != nil {
+		t.Fatalf("el archivo restaurado no aparece en el pool destino: %v", err)
+	}
+	if meta.SHA256 != original.SHA256 {
+		t.Errorf("SHA256 restaurado = %s, esperado %s (el del original)", meta.SHA256, original.SHA256)
+	}
+	if _, rc, err := env.svc.Download(context.Background(), owner, meta.ID); err != nil {
+		t.Errorf("Download del archivo restaurado falló: %v", err)
+	} else {
+		rc.Close()
+	}
+}
+
+func TestRestoreToPoolMaterializesNestedDirectories(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("dave")
+	original := env.upload(owner, "/a/b", "archivo.txt", "contenido anidado")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+	// Simula el escenario real de esta feature (el pool original ya no
+	// tiene el archivo, p.ej. se perdió) -- si se dejara activo, List (que
+	// no filtra por pool: la unicidad de nombre es POR POOL, §10) mostraría
+	// dos ficheros con el mismo owner+ruta, uno por pool, y el assert de
+	// abajo dejaría de ser inequívoco. No es un fallo de RestoreToPool, es
+	// una consecuencia del propio multi-pool ya existente.
+	if err := env.svc.Delete(context.Background(), owner, original.ID); err != nil {
+		t.Fatalf("Delete del original falló: %v", err)
+	}
+	destino := env.newPool("destino-anidado", "")
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: destino.ID})
+	if err != nil {
+		t.Fatalf("RestoreToPool falló: %v", err)
+	}
+	if result.Restored != 1 {
+		t.Fatalf("result = %+v, esperado 1 restaurado", result)
+	}
+
+	// El fichero restaurado debe ser NAVEGABLE carpeta a carpeta desde la
+	// raíz, no solo estar presente en la base de datos con un parent_path
+	// que apunte a carpetas sin fila propia (mismo problema que ADR-012
+	// punto 8 resolvió en el cliente Flutter).
+	top, err := env.svc.List(context.Background(), owner, "/")
+	if err != nil {
+		t.Fatalf("List(/) falló: %v", err)
+	}
+	if len(top.Directories) != 1 || top.Directories[0].Name != "a" {
+		t.Fatalf("List(/) = %+v, esperada la carpeta \"a\" navegable", top.Directories)
+	}
+	sub, err := env.svc.List(context.Background(), owner, "/a")
+	if err != nil {
+		t.Fatalf("List(/a) falló: %v", err)
+	}
+	if len(sub.Directories) != 1 || sub.Directories[0].Name != "b" {
+		t.Fatalf("List(/a) = %+v, esperada la carpeta \"b\" navegable", sub.Directories)
+	}
+	nested, err := env.svc.List(context.Background(), owner, "/a/b")
+	if err != nil {
+		t.Fatalf("List(/a/b) falló: %v", err)
+	}
+	if len(nested.Files) != 1 || nested.Files[0].Name != "archivo.txt" {
+		t.Fatalf("List(/a/b) = %+v, esperado archivo.txt", nested.Files)
+	}
+}
+
+func TestRestoreToPoolVersionsAnAlreadyOccupiedPath(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("erin")
+	env.upload(owner, "/", "doc.txt", "contenido de backup")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	// El pool destino ya tiene un archivo ACTIVO en ese mismo path, con
+	// contenido distinto -- FileService.Upload (ADR-007) debe versionarlo
+	// en vez de perderlo, exactamente igual que cualquier subida normal.
+	destino := env.newPool("destino-conflicto", "")
+	vigente, err := env.svc.Upload(context.Background(), storage.UploadInput{
+		OwnerID: owner, ParentPath: "/", Name: "doc.txt", Content: bytes.NewReader([]byte("contenido ya vigente en destino")), PoolID: destino.ID,
+	})
+	if err != nil {
+		t.Fatalf("Upload previo al pool destino falló: %v", err)
+	}
+
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: destino.ID})
+	if err != nil {
+		t.Fatalf("RestoreToPool falló: %v", err)
+	}
+	if result.Restored != 1 || len(result.Errors) != 0 {
+		t.Fatalf("result = %+v, esperado 1 restaurado sin errores", result)
+	}
+
+	versions, err := env.svc.ListVersions(context.Background(), owner, vigente.ID)
+	if err != nil {
+		t.Fatalf("ListVersions falló: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("versions = %+v, esperada 1 versión (el contenido que había antes de restaurar)", versions)
+	}
+}
+
+func TestRestoreToPoolRejectsInactivePool(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("frank")
+	env.upload(owner, "/", "a.txt", "x")
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	inactivo := env.newPool("inactivo", "")
+	if err := env.pools.SetPoolStatus(context.Background(), inactivo.ID, "disabled"); err != nil {
+		t.Fatalf("desactivando el pool: %v", err)
+	}
+
+	if _, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: inactivo.ID}); !errors.Is(err, ErrPoolNotActive) {
+		t.Errorf("err = %v, esperado ErrPoolNotActive", err)
+	}
+	// No debe haber tocado ningún fichero: el archivo original sigue
+	// siendo el único con ese nombre (ninguna versión nueva creada).
+	if _, err := env.files.GetFileByNaturalKey(context.Background(), inactivo.ID, owner, "/", "a.txt"); err == nil {
+		t.Error("no debía haberse escrito nada en el pool inactivo")
+	}
+}
+
+func TestRestoreToPoolRejectsUnknownPool(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("grace")
+	env.upload(owner, "/", "a.txt", "x")
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+	if _, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: "no-existe"}); err == nil {
+		t.Error("esperado un error al resolver un pool inexistente")
+	}
+}
+
+func TestRestoreToPoolFailsOnlyTheFileWithUnknownOwner(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("heidi2")
+	env.upload(owner, "/", "bueno.txt", "contenido bueno")
+	env.upload(owner, "/", "huerfano.txt", "contenido huérfano")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	// Simula que el propietario de un fichero ya no existe (p.ej. borrado
+	// tras el backup): edita el manifiesto a mano para apuntar a un ID que
+	// no tiene fila en users -- viola la FK files.owner_id -> users.id
+	// (§14) al intentar reinsertarlo, sin necesidad de ejercitar el borrado
+	// real de un usuario (fuera de alcance de este test).
+	dest := NewLocalDestination(env.destDir)
+	manifest, err := readManifest(context.Background(), dest, job.ID)
+	if err != nil {
+		t.Fatalf("leyendo manifest.json: %v", err)
+	}
+	for i := range manifest.Pools {
+		for j := range manifest.Pools[i].Files {
+			if manifest.Pools[i].Files[j].Name == "huerfano.txt" {
+				manifest.Pools[i].Files[j].OwnerID = idgen.New()
+			}
+		}
+	}
+	if err := writeManifest(context.Background(), dest, job.ID, manifest); err != nil {
+		t.Fatalf("reescribiendo manifest.json: %v", err)
+	}
+
+	destino := env.newPool("destino-huerfano", "")
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: destino.ID})
+	if err != nil {
+		t.Fatalf("RestoreToPool falló: %v", err)
+	}
+	if result.Restored != 1 {
+		t.Errorf("Restored = %d, esperado 1 (bueno.txt; huerfano.txt debía fallar)", result.Restored)
+	}
+	if len(result.Errors) != 1 {
+		t.Fatalf("Errors = %+v, esperado exactamente 1 error (huerfano.txt)", result.Errors)
+	}
+	if _, err := env.files.GetFileByNaturalKey(context.Background(), destino.ID, owner, "/", "bueno.txt"); err != nil {
+		t.Errorf("bueno.txt debía restaurarse igualmente: %v", err)
+	}
+}
+
+func TestRestoreToPoolDetectsBitrotAndContinuesWithOthers(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("ivan2")
+	env.upload(owner, "/", "bueno.txt", "intacto")
+	env.upload(owner, "/", "afectado.txt", "contenido original")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+	backedUpPath := filepath.Join(env.destDir, job.ID, "data", env.defaultPoolID(), owner, "afectado.txt")
+	if err := os.WriteFile(backedUpPath, []byte("bytes distintos tras el backup"), 0o600); err != nil {
+		t.Fatalf("corrompiendo la copia de backup: %v", err)
+	}
+
+	destino := env.newPool("destino-bitrot", "")
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{JobID: job.ID, PoolID: destino.ID})
+	if err != nil {
+		t.Fatalf("RestoreToPool falló: %v", err)
+	}
+	if result.Restored != 1 {
+		t.Errorf("Restored = %d, esperado 1 (bueno.txt)", result.Restored)
+	}
+	if len(result.Errors) != 1 || !errors.Is(result.Errors[0], ErrIntegrityMismatch) {
+		t.Fatalf("Errors = %+v, esperado exactamente 1 error envolviendo ErrIntegrityMismatch", result.Errors)
+	}
+	if _, err := env.files.GetFileByNaturalKey(context.Background(), destino.ID, owner, "/", "afectado.txt"); err == nil {
+		t.Error("afectado.txt no debía reinsertarse en el pool destino")
+	}
+}
+
 // --- Verify -----------------------------------------------------------
 
 func TestVerifyReportsOKForIntactBackup(t *testing.T) {
@@ -452,7 +859,7 @@ func TestVerifyReportsOKForIntactBackup(t *testing.T) {
 		t.Fatalf("Run falló: %v", err)
 	}
 
-	result, err := env.manager.Verify(context.Background(), job.ID)
+	result, err := env.manager.Verify(context.Background(), VerifyOptions{JobID: job.ID})
 	if err != nil {
 		t.Fatalf("Verify falló: %v", err)
 	}
@@ -492,7 +899,7 @@ func TestVerifyDetectsCorruptedFileWithoutAbortingTheRest(t *testing.T) {
 		t.Fatalf("corrompiendo la copia de backup: %v", err)
 	}
 
-	result, err := env.manager.Verify(context.Background(), job.ID)
+	result, err := env.manager.Verify(context.Background(), VerifyOptions{JobID: job.ID})
 	if err != nil {
 		t.Fatalf("Verify (la llamada en sí) no debía fallar, solo reportar el problema: %v", err)
 	}
@@ -535,14 +942,14 @@ func TestVerifyRejectsNonCompletedJob(t *testing.T) {
 		t.Fatalf("List = %v, %+v", err, jobs)
 	}
 
-	if _, err := env.manager.Verify(context.Background(), jobs[0].ID); !errors.Is(err, ErrJobNotRestorable) {
+	if _, err := env.manager.Verify(context.Background(), VerifyOptions{JobID: jobs[0].ID}); !errors.Is(err, ErrJobNotRestorable) {
 		t.Errorf("Verify sobre un job failed: err = %v, esperado ErrJobNotRestorable", err)
 	}
 }
 
 func TestVerifyRejectsUnknownJob(t *testing.T) {
 	env := newBackupTestEnv(t)
-	if _, err := env.manager.Verify(context.Background(), "no-existe"); !errors.Is(err, ErrJobNotFound) {
+	if _, err := env.manager.Verify(context.Background(), VerifyOptions{JobID: "no-existe"}); !errors.Is(err, ErrJobNotFound) {
 		t.Errorf("err = %v, esperado ErrJobNotFound", err)
 	}
 }
@@ -781,6 +1188,211 @@ func TestRunRetentionNeverPrunesFailedJobs(t *testing.T) {
 	}
 }
 
+// --- Cifrado (ADR-028) -----------------------------------------------
+
+func TestRunEncryptedRoundTripsThroughRestoreRestoreToPoolAndVerify(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("erin")
+	const plaintext = "contenido muy secreto que nadie debe leer en claro"
+	const passphrase = "correcto-caballo-grapadora-batería"
+	original := env.upload(owner, "/", "secreto.txt", plaintext)
+
+	job, err := env.manager.Run(context.Background(), RunOptions{
+		DestinationPath: env.destDir, Encrypt: true, Passphrase: passphrase,
+	})
+	if err != nil {
+		t.Fatalf("Run cifrado falló: %v", err)
+	}
+
+	manifest, err := readManifest(context.Background(), NewLocalDestination(env.destDir), job.ID)
+	if err != nil {
+		t.Fatalf("leyendo manifest.json: %v", err)
+	}
+	if !manifest.Encrypted || manifest.Salt == "" {
+		t.Fatalf("manifest = %+v, esperado Encrypted=true con Salt no vacío", manifest)
+	}
+	if len(manifest.Pools) != 1 || len(manifest.Pools[0].Files) != 1 || manifest.Pools[0].Files[0].IV == "" {
+		t.Fatalf("manifest.Pools = %+v, esperado 1 fichero con IV no vacío", manifest.Pools)
+	}
+
+	// Prueba real de que el contenido se cifró: los bytes en disco no deben
+	// coincidir con el plaintext.
+	backedUpPath := filepath.Join(env.destDir, job.ID, "data", env.defaultPoolID(), owner, "secreto.txt")
+	onDisk, err := os.ReadFile(backedUpPath)
+	if err != nil {
+		t.Fatalf("leyendo la copia respaldada: %v", err)
+	}
+	if string(onDisk) == plaintext {
+		t.Fatal("el contenido en disco coincide con el plaintext -- no se cifró")
+	}
+
+	restoreDir := t.TempDir()
+	if err := env.manager.Restore(context.Background(), RestoreOptions{
+		JobID: job.ID, DestinationPath: restoreDir, Passphrase: passphrase,
+	}); err != nil {
+		t.Fatalf("Restore con la passphrase correcta falló: %v", err)
+	}
+	gotRestore, err := os.ReadFile(filepath.Join(restoreDir, env.defaultPoolID(), owner, "secreto.txt"))
+	if err != nil {
+		t.Fatalf("leyendo el fichero restaurado: %v", err)
+	}
+	if string(gotRestore) != plaintext {
+		t.Errorf("Restore = %q, esperado el plaintext original %q", gotRestore, plaintext)
+	}
+
+	destino := env.newPool("destino-cifrado", "")
+	result, err := env.manager.RestoreToPool(context.Background(), RestoreToPoolOptions{
+		JobID: job.ID, PoolID: destino.ID, Passphrase: passphrase,
+	})
+	if err != nil {
+		t.Fatalf("RestoreToPool con la passphrase correcta falló: %v", err)
+	}
+	if result.Restored != 1 || len(result.Errors) != 0 {
+		t.Fatalf("result = %+v, esperado 1 restaurado sin errores", result)
+	}
+	meta, err := env.files.GetFileByNaturalKey(context.Background(), destino.ID, owner, "/", "secreto.txt")
+	if err != nil {
+		t.Fatalf("el archivo restaurado no aparece en el pool destino: %v", err)
+	}
+	if meta.SHA256 != original.SHA256 {
+		t.Errorf("SHA256 tras RestoreToPool = %s, esperado %s (el del plaintext original)", meta.SHA256, original.SHA256)
+	}
+	_, rc, err := env.svc.Download(context.Background(), owner, meta.ID)
+	if err != nil {
+		t.Fatalf("Download del archivo restaurado falló: %v", err)
+	}
+	gotDownload, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("leyendo el contenido descargado: %v", err)
+	}
+	if string(gotDownload) != plaintext {
+		t.Errorf("contenido descargado tras RestoreToPool = %q, esperado el plaintext original %q", gotDownload, plaintext)
+	}
+
+	verifyResult, err := env.manager.Verify(context.Background(), VerifyOptions{JobID: job.ID, Passphrase: passphrase})
+	if err != nil {
+		t.Fatalf("Verify con la passphrase correcta falló: %v", err)
+	}
+	if !verifyResult.OK {
+		t.Errorf("Verify.OK = false, esperado true para un backup cifrado intacto: %+v", verifyResult.Files)
+	}
+}
+
+func TestRunEncryptRequiresPassphraseAndFailsBeforeWritingAnything(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("frank")
+	env.upload(owner, "/", "a.txt", "contenido")
+
+	_, err := env.manager.Run(context.Background(), RunOptions{
+		DestinationPath: env.destDir, Encrypt: true, Passphrase: "",
+	})
+	if !errors.Is(err, ErrPassphraseRequired) {
+		t.Fatalf("err = %v, esperado ErrPassphraseRequired", err)
+	}
+
+	entries, err := os.ReadDir(env.destDir)
+	if err != nil {
+		t.Fatalf("leyendo destDir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("destDir = %v, esperado vacío -- Run no debía crear nada antes de fallar", entries)
+	}
+	jobs, err := env.manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("List falló: %v", err)
+	}
+	if len(jobs) != 0 {
+		t.Errorf("List = %+v, esperado ningún job registrado -- falló antes de crear la fila", jobs)
+	}
+}
+
+func TestRestoreWithWrongPassphraseReportsIntegrityMismatchNotPanic(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("gina")
+	env.upload(owner, "/", "confidencial.txt", "contenido confidencial")
+
+	job, err := env.manager.Run(context.Background(), RunOptions{
+		DestinationPath: env.destDir, Encrypt: true, Passphrase: "passphrase-correcta",
+	})
+	if err != nil {
+		t.Fatalf("Run cifrado falló: %v", err)
+	}
+
+	restoreDir := t.TempDir()
+	err = env.manager.Restore(context.Background(), RestoreOptions{
+		JobID: job.ID, DestinationPath: restoreDir, Passphrase: "passphrase-incorrecta",
+	})
+	if !errors.Is(err, ErrIntegrityMismatch) {
+		t.Fatalf("err = %v, esperado que envuelva ErrIntegrityMismatch (descifrar con la clave incorrecta produce basura que no verifica, igual que un bitrot)", err)
+	}
+	if _, err := os.Stat(filepath.Join(restoreDir, env.defaultPoolID(), owner, "confidencial.txt")); !os.IsNotExist(err) {
+		t.Errorf("el fichero con hash inválido no debía quedar en el destino, err = %v", err)
+	}
+}
+
+func TestRunEncryptDisablesIncrementalHardlinkBetweenTwoEncryptedRuns(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("hugo")
+	env.upload(owner, "/", "estable.txt", "contenido que nunca cambia")
+
+	opts := RunOptions{DestinationPath: env.destDir, Incremental: true, Encrypt: true, Passphrase: "misma-passphrase"}
+	job1, err := env.manager.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("primer Run cifrado+incremental falló: %v", err)
+	}
+	job2, err := env.manager.Run(context.Background(), opts)
+	if err != nil {
+		t.Fatalf("segundo Run cifrado+incremental falló: %v", err)
+	}
+
+	pathIn := func(jobID string) string {
+		return filepath.Join(env.destDir, jobID, "data", env.defaultPoolID(), owner, "estable.txt")
+	}
+	fi1, err := os.Stat(pathIn(job1.ID))
+	if err != nil {
+		t.Fatalf("Stat del primer backup: %v", err)
+	}
+	fi2, err := os.Stat(pathIn(job2.ID))
+	if err != nil {
+		t.Fatalf("Stat del segundo backup: %v", err)
+	}
+	if os.SameFile(fi1, fi2) {
+		t.Error("los dos backups cifrados comparten inodo -- el hardlink de Incremental debía quedar desactivado con Encrypt=true (ADR-028)")
+	}
+}
+
+func TestUnencryptedManifestStillRestoresAsPlaintextEvenWithPassphraseGiven(t *testing.T) {
+	env := newBackupTestEnv(t)
+	owner := env.user("ines")
+	env.upload(owner, "/", "plano.txt", "contenido en claro")
+
+	// Un manifiesto sin cifrar -- Encrypted/Salt/IV en su cero-valor, igual
+	// que uno de antes de ADR-028 gracias a "omitempty" -- debe restaurarse
+	// como plaintext sin ningún cambio de comportamiento, incluso si se da
+	// una passphrase de más (p.ej. un scheduler que siempre exporta la
+	// variable de entorno): RestoreOptions.Passphrase documenta que se
+	// ignora sin más cuando el backup no está cifrado.
+	job, err := env.manager.Run(context.Background(), RunOptions{DestinationPath: env.destDir})
+	if err != nil {
+		t.Fatalf("Run falló: %v", err)
+	}
+
+	restoreDir := t.TempDir()
+	if err := env.manager.Restore(context.Background(), RestoreOptions{
+		JobID: job.ID, DestinationPath: restoreDir, Passphrase: "passphrase-que-sobra",
+	}); err != nil {
+		t.Fatalf("Restore falló: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(restoreDir, env.defaultPoolID(), owner, "plano.txt"))
+	if err != nil {
+		t.Fatalf("leyendo el fichero restaurado: %v", err)
+	}
+	if string(got) != "contenido en claro" {
+		t.Errorf("contenido restaurado = %q, esperado %q", got, "contenido en claro")
+	}
+}
+
 // writeFileToPool sube contenido directamente al Provider de un pool
 // concreto + su fila de metadatos, sin pasar por el pool activo por defecto
 // que usa FileService.Upload -- necesario en los tests para dirigir un
@@ -825,11 +1437,7 @@ func (e *backupTestEnv) createSyntheticCompletedJob(destinationPath string, star
 	if err := e.backupRepo.CreateJob(ctx, job); err != nil {
 		e.t.Fatalf("CreateJob (sintético) falló: %v", err)
 	}
-	jobDir := filepath.Join(destinationPath, job.ID)
-	if err := os.MkdirAll(jobDir, 0o750); err != nil {
-		e.t.Fatalf("creando la carpeta del job sintético: %v", err)
-	}
-	if err := writeManifest(jobDir, &Manifest{JobID: job.ID, CreatedAt: startedAt}); err != nil {
+	if err := writeManifest(ctx, NewLocalDestination(destinationPath), job.ID, &Manifest{JobID: job.ID, CreatedAt: startedAt}); err != nil {
 		e.t.Fatalf("writeManifest (sintético) falló: %v", err)
 	}
 	return job.ID
