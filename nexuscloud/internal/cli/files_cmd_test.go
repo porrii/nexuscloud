@@ -206,3 +206,172 @@ func TestFilesRmRejectsNonexistentPath(t *testing.T) {
 		t.Fatalf("esperaba error \"no existe\", obtuve: %v", err)
 	}
 }
+
+func TestFilesTrashListAndRestoreFile(t *testing.T) {
+	username := newCLITestUser(t)
+	localSrc := filepath.Join(t.TempDir(), "papelera.txt")
+	if err := os.WriteFile(localSrc, []byte("x"), 0o600); err != nil {
+		t.Fatalf("escribiendo fichero local: %v", err)
+	}
+	if _, err := runFiles(t, "upload", "--username", username, localSrc, "/papelera.txt"); err != nil {
+		t.Fatalf("upload falló: %v", err)
+	}
+	if _, err := runFiles(t, "rm", "--username", username, "/papelera.txt"); err != nil {
+		t.Fatalf("rm falló: %v", err)
+	}
+
+	listOut, err := runFiles(t, "trash", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("trash list falló: %v", err)
+	}
+	if !strings.Contains(listOut, "papelera.txt") {
+		t.Fatalf("esperaba \"papelera.txt\" en la papelera, obtuve:\n%s", listOut)
+	}
+	id := firstColumn(t, listOut)
+
+	if out, err := runFiles(t, "trash", "restore", "--username", username, id); err != nil {
+		t.Fatalf("trash restore falló: %v (salida: %s)", err, out)
+	}
+
+	out, err := runFiles(t, "list", "--username", username)
+	if err != nil {
+		t.Fatalf("list falló: %v", err)
+	}
+	if !strings.Contains(out, "papelera.txt") {
+		t.Fatalf("esperaba \"papelera.txt\" de vuelta en el listado activo, obtuve:\n%s", out)
+	}
+}
+
+func TestFilesTrashListAndRestoreDirectory(t *testing.T) {
+	username := newCLITestUser(t)
+	if _, err := runFiles(t, "mkdir", "--username", username, "/CarpetaBorrada"); err != nil {
+		t.Fatalf("mkdir falló: %v", err)
+	}
+	if _, err := runFiles(t, "rm", "--username", username, "/CarpetaBorrada"); err != nil {
+		t.Fatalf("rm falló: %v", err)
+	}
+
+	listOut, err := runFiles(t, "trash", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("trash list falló: %v", err)
+	}
+	if !strings.Contains(listOut, "CarpetaBorrada") {
+		t.Fatalf("esperaba \"CarpetaBorrada\" en la papelera, obtuve:\n%s", listOut)
+	}
+	id := firstColumn(t, listOut)
+
+	if out, err := runFiles(t, "trash", "restore", "--username", username, id); err != nil {
+		t.Fatalf("trash restore falló: %v (salida: %s)", err, out)
+	}
+	out, err := runFiles(t, "list", "--username", username)
+	if err != nil {
+		t.Fatalf("list falló: %v", err)
+	}
+	if !strings.Contains(out, "CarpetaBorrada") {
+		t.Fatalf("esperaba \"CarpetaBorrada\" de vuelta en el listado activo, obtuve:\n%s", out)
+	}
+}
+
+func TestFilesTrashRestoreRejectsUnknownID(t *testing.T) {
+	username := newCLITestUser(t)
+	_, err := runFiles(t, "trash", "restore", "--username", username, "id-que-no-existe")
+	if err == nil || !strings.Contains(err.Error(), "no encuentro") {
+		t.Fatalf("esperaba error \"no encuentro\", obtuve: %v", err)
+	}
+}
+
+func TestFilesTrashListEmptyByDefault(t *testing.T) {
+	username := newCLITestUser(t)
+	out, err := runFiles(t, "trash", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("trash list falló: %v", err)
+	}
+	if !strings.Contains(out, "vacía") {
+		t.Fatalf("esperaba \"(papelera vacía)\", obtuve:\n%s", out)
+	}
+}
+
+func TestFilesVersionsListDownloadAndRestore(t *testing.T) {
+	username := newCLITestUser(t)
+	dir := t.TempDir()
+	v1 := filepath.Join(dir, "v1.txt")
+	v2 := filepath.Join(dir, "v2.txt")
+	if err := os.WriteFile(v1, []byte("contenido versión 1"), 0o600); err != nil {
+		t.Fatalf("escribiendo v1: %v", err)
+	}
+	if err := os.WriteFile(v2, []byte("contenido versión 2, más largo"), 0o600); err != nil {
+		t.Fatalf("escribiendo v2: %v", err)
+	}
+	if _, err := runFiles(t, "upload", "--username", username, v1, "/versionado.txt"); err != nil {
+		t.Fatalf("primer upload falló: %v", err)
+	}
+	if _, err := runFiles(t, "upload", "--username", username, v2, "/versionado.txt"); err != nil {
+		t.Fatalf("segundo upload falló: %v", err)
+	}
+
+	listOut, err := runFiles(t, "versions", "list", "--username", username, "/versionado.txt")
+	if err != nil {
+		t.Fatalf("versions list falló: %v", err)
+	}
+	if !strings.Contains(listOut, "1") {
+		t.Fatalf("esperaba la versión 1 en el listado, obtuve:\n%s", listOut)
+	}
+
+	downloaded := filepath.Join(dir, "descargada-v1.txt")
+	if out, err := runFiles(t, "versions", "download", "--username", username, "/versionado.txt", "1", downloaded); err != nil {
+		t.Fatalf("versions download falló: %v (salida: %s)", err, out)
+	}
+	got, err := os.ReadFile(downloaded)
+	if err != nil {
+		t.Fatalf("leyendo la versión descargada: %v", err)
+	}
+	if string(got) != "contenido versión 1" {
+		t.Fatalf("contenido de la versión 1 descargada no coincide: %q", string(got))
+	}
+
+	if out, err := runFiles(t, "versions", "restore", "--username", username, "/versionado.txt", "1"); err != nil {
+		t.Fatalf("versions restore falló: %v (salida: %s)", err, out)
+	}
+	restoredLocal := filepath.Join(dir, "tras-restaurar.txt")
+	if _, err := runFiles(t, "download", "--username", username, "/versionado.txt", restoredLocal); err != nil {
+		t.Fatalf("download tras restore falló: %v", err)
+	}
+	got, err = os.ReadFile(restoredLocal)
+	if err != nil {
+		t.Fatalf("leyendo el fichero tras restaurar: %v", err)
+	}
+	if string(got) != "contenido versión 1" {
+		t.Fatalf("tras \"versions restore 1\", el contenido activo debería volver a ser el de la versión 1, obtuve: %q", string(got))
+	}
+}
+
+func TestFilesVersionsListRejectsDirectory(t *testing.T) {
+	username := newCLITestUser(t)
+	if _, err := runFiles(t, "mkdir", "--username", username, "/UnaCarpeta"); err != nil {
+		t.Fatalf("mkdir falló: %v", err)
+	}
+	_, err := runFiles(t, "versions", "list", "--username", username, "/UnaCarpeta")
+	if err == nil || !strings.Contains(err.Error(), "carpeta") {
+		t.Fatalf("esperaba error indicando que es una carpeta, obtuve: %v", err)
+	}
+}
+
+// firstColumn extrae el primer campo (separado por espacios) de la
+// PRIMERA línea de datos real de una tabla impresa por el CLI -- se salta
+// la cabecera (empieza por "ID") y cualquier línea vacía.
+func firstColumn(t *testing.T, tableOutput string) string {
+	t.Helper()
+	for _, line := range strings.Split(tableOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "ID ") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		return fields[0]
+	}
+	t.Fatalf("no encontré ninguna fila de datos en la tabla:\n%s", tableOutput)
+	return ""
+}

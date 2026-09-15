@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/db"
@@ -61,6 +62,69 @@ func openFileService(cfg *config.Config, migrate bool) (*sql.DB, *storage.FileSe
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
 	return sqlDB, fileSvc, users.NewSQLRepository(conn), nil
+}
+
+// openAuditRepo abre la base de datos configurada y devuelve el
+// repositorio de auditoría real -- el más simple de los helpers de este
+// fichero: ListEvents no tiene ninguna lógica de negocio intermedia que
+// replicar (backlog "todo por comandos", 2ª tanda, 2026-09-15).
+func openAuditRepo(cfg *config.Config, migrate bool) (*sql.DB, audit.Repository, error) {
+	sqlDB, err := db.Open(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if migrate {
+		if err := db.Migrate(cfg, sqlDB); err != nil {
+			sqlDB.Close()
+			return nil, nil, err
+		}
+	}
+	return sqlDB, audit.NewSQLRepository(db.Wrap(cfg.Database.Driver, sqlDB)), nil
+}
+
+// openSessionRepo abre la base de datos configurada y devuelve tanto el
+// repositorio de sesiones como el de usuarios (para resolver --username a
+// un ownerID, igual que el resto de comandos de administrador local) --
+// backlog "todo por comandos", 2ª tanda (2026-09-15).
+func openSessionRepo(cfg *config.Config, migrate bool) (*sql.DB, auth.SessionRepository, users.Repository, error) {
+	sqlDB, err := db.Open(cfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if migrate {
+		if err := db.Migrate(cfg, sqlDB); err != nil {
+			sqlDB.Close()
+			return nil, nil, nil, err
+		}
+	}
+	conn := db.Wrap(cfg.Database.Driver, sqlDB)
+	return sqlDB, auth.NewSQLSessionRepository(conn), users.NewSQLRepository(conn), nil
+}
+
+// openInvitationService abre la base de datos configurada y construye un
+// auth.InvitationService completo -- list/revoke usan el repositorio en
+// crudo directamente (sin pasar por el servicio, mismo criterio que ya
+// usa el handler HTTP de invitaciones), solo create necesita el Service
+// completo. Devuelve también users.Repository para poder resolver
+// --created-by a un ID real (backlog "todo por comandos", 2ª tanda,
+// 2026-09-15).
+func openInvitationService(cfg *config.Config, migrate bool) (*sql.DB, *auth.InvitationService, auth.InvitationRepository, users.Repository, error) {
+	sqlDB, err := db.Open(cfg)
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+	if migrate {
+		if err := db.Migrate(cfg, sqlDB); err != nil {
+			sqlDB.Close()
+			return nil, nil, nil, nil, err
+		}
+	}
+	conn := db.Wrap(cfg.Database.Driver, sqlDB)
+	userRepo := users.NewSQLRepository(conn)
+	invRepo := auth.NewSQLInvitationRepository(conn)
+	hasher := auth.NewHasher(cfg.Security.Argon2)
+	svc := auth.NewInvitationService(invRepo, users.NewService(userRepo), hasher)
+	return sqlDB, svc, invRepo, userRepo, nil
 }
 
 // resolveOwnerID traduce --username a un ID de usuario real, con un

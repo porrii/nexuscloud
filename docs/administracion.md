@@ -1,4 +1,4 @@
-# Administración: usuarios, grupos, doble factor
+# Administración: usuarios, grupos, sesiones, compartición, doble factor
 
 Todo lo de aquí se hace por CLI, siempre como el usuario de servicio
 (`sudo -u nexuscloud ...` en Linux) o directamente en Windows. Referencia
@@ -26,17 +26,104 @@ $ nexuscloud --config config.yaml users list
 1cb35768-8452-4773-aa72-ea9e387ed639  maria                 active      maria
 ```
 
-### Deshabilitar un usuario
+### Deshabilitar / reactivar un usuario
 
 ```sh
 nexuscloud --config config.yaml users disable maria
+nexuscloud --config config.yaml users enable maria
 ```
 
-Bloquea el login inmediatamente; sus archivos y configuración no se
-tocan. No existe todavía un comando para volver a habilitarlo por CLI (ver
-"Lo que falta" más abajo) — mientras tanto, la API HTTP sí lo permite
-(`PATCH /api/v1/users/{id}` con `{"status": "active"}`, ver
-[`nexuscloud/docs/api.md`](../nexuscloud/docs/api.md)).
+`disable` bloquea el login inmediatamente; sus archivos y configuración
+no se tocan, y `enable` lo devuelve exactamente al estado anterior.
+
+### Editar nombre visible o email
+
+```sh
+nexuscloud --config config.yaml users edit maria --display-name "María Real" --email maria@ejemplo.com
+```
+
+Al menos uno de los dos flags es obligatorio; el que omitas no se toca.
+
+### Borrar un usuario para siempre
+
+```sh
+nexuscloud --config config.yaml users delete maria --confirm
+```
+
+**Irreversible y en cascada**: sesiones, pertenencia a grupos,
+invitaciones que hubiera creado, y sus comparticiones desaparecen con
+él; los METADATOS de todos sus archivos y carpetas también — pero el
+contenido físico en el Storage Pool **no se borra solo, queda huérfano
+en disco** (limitación real, no un efecto secundario de este comando:
+la API HTTP tiene exactamente la misma limitación). Sin `--confirm`, el
+comando se niega a hacer nada y explica lo que borraría. Ante la duda,
+usa `disable` en su lugar — se puede deshacer, esto no.
+
+## Invitaciones
+
+Alternativa a `users create` cuando quieres que sea la otra persona
+quien elija su contraseña, en vez de crearle tú la cuenta directamente:
+
+```sh
+$ nexuscloud --config config.yaml users invitation create --created-by admin --max-uses 1 --ttl-hours 24
+Invitación creada (id=b0672a58-b591-4b58-b728-8f00be49454f)
+Token (dáselo a la persona que se va a dar de alta; se muestra una sola vez): <token>
+Expira: 2026-09-16 14:30:00 -- usos máximos: 1
+
+$ nexuscloud --config config.yaml users invitation list
+ID                                    ROL             USOS  EXPIRA                ESTADO      CREADA POR
+b0672a58-b591-4b58-b728-8f00be49454f  user (def.)      0/1  2026-09-16 14:30:00   usable      <id-de-admin>
+
+$ nexuscloud --config config.yaml users invitation revoke b0672a58-b591-4b58-b728-8f00be49454f
+Invitación b0672a58-b591-4b58-b728-8f00be49454f revocada.
+```
+
+`--created-by` es obligatorio (identifica al administrador real que la
+crea; si ese administrador se borra después, la invitación se borra en
+cascada con él). El canje en sí (`POST /api/v1/invitations/redeem`) es
+público y sin comando CLI a propósito: es la propia persona invitada
+quien lo hace, con su usuario y contraseña elegidos, desde la web o por
+API. Revocar antes de canjear invalida el token para siempre, aunque
+todavía tuviera usos disponibles.
+
+## Sesiones activas de un usuario
+
+```sh
+$ nexuscloud --config config.yaml sessions list --username maria
+ID                                    DISPOSITIVO           IP               CREADA                ÚLTIMA ACTIVIDAD      ESTADO
+54cb7325-9248-42e7-9cdd-15b1e8a17965  Mozilla/5.0 ...       203.0.113.9      2026-09-15 14:20:00   2026-09-15 14:35:00   activa
+
+$ nexuscloud --config config.yaml sessions revoke --username maria 54cb7325-9248-42e7-9cdd-15b1e8a17965
+Sesión 54cb7325-9248-42e7-9cdd-15b1e8a17965 revocada.
+```
+
+Revocar invalida ese token de sesión al instante — la próxima petición
+con él da 401, sin que "maria" tenga que hacer nada. Útil si sospechas
+que alguien más tiene acceso a su sesión, o simplemente cambió de
+equipo y quieres limpiar accesos viejos.
+
+## Compartición
+
+```sh
+$ nexuscloud --config config.yaml files upload --username maria informe.txt /Documentos/informe.txt
+$ nexuscloud --config config.yaml shares create --username maria /Documentos/informe.txt --share-type user --target-username juan
+Share creado (id=...)
+
+$ nexuscloud --config config.yaml shares list --username juan --with-me
+ID    TIPO  RECURSO       DESTINO  EXPIRA  ESTADO
+...   user  informe.txt   ...      -       activo
+```
+
+Comparticiones con un grupo entero (en vez de usuario por usuario) usan
+`--share-type group --target-group <nombre>` — cualquier miembro actual
+del grupo ve el recurso en su `shares list --with-me`, sin tener que
+compartir con cada persona por separado. Un enlace público
+(`--share-type link`) imprime un token en claro una sola vez; quien lo
+tenga accede sin sesión (`GET /api/v1/public/shares/<token>/download`) —
+exige `sharing.publicLinksEnabled: true` en `config.yaml` (desactivado
+por defecto). Ver [`comandos.md`](comandos.md#compartir-archivos-y-carpetas-shares)
+para todas las opciones (`--can-upload`, `--password`, `--expires-at`,
+límites de descarga/tamaño).
 
 ## Grupos
 
@@ -97,18 +184,21 @@ recuperación si se perdió el teléfono con la app, o el secreto se copió
 mal. En un servidor headless de un solo administrador, esto es
 importante: no hay ninguna otra forma de deshacerlo.
 
-## Lo que falta por CLI (backlog documentado, no bloquea el uso diario)
+## Papelera y versiones de otro usuario
 
-Estas operaciones existen en la API HTTP pero todavía no tienen comando
-equivalente — ninguna es necesaria para el uso diario de una instalación
-de un solo administrador, por eso quedaron fuera de la primera vuelta:
+El administrador puede gestionar la papelera y el historial de
+versiones de CUALQUIER usuario sin que ese usuario intervenga —
+ver [`comandos.md`](comandos.md#archivos-de-un-usuario-files)
+(`files trash list/restore`, `files versions list/download/restore`).
 
-- Reactivar/editar/borrar un usuario ya creado (`PATCH`/`DELETE /users/{id}`).
-- Gestionar sesiones activas de OTRO usuario (revocarlas a distancia).
-- Ver/restaurar la papelera o el historial de versiones de OTRO usuario.
-- Invitaciones (crear/listar/revocar) — la vía de alta directa
-  (`admin create-user` / `users create`) cubre el mismo caso de uso.
-- Consultar el registro de auditoría (`GET /api/v1/audit`).
+## Registro de auditoría
 
-Para cualquiera de estas, usa la API directamente — ver
-[`nexuscloud/docs/api.md`](../nexuscloud/docs/api.md).
+```sh
+nexuscloud --config config.yaml audit list --limit 50
+```
+
+Login, altas/bajas, compartición, etc. — ver
+[`comandos.md`](comandos.md#registro-de-auditoría-audit). Solo las
+acciones que pasan por la API HTTP se auditan (login incluido); las
+operaciones puramente de CLI de esta página no generan eventos de
+auditoría hoy.

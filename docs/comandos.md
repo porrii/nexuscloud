@@ -49,13 +49,39 @@ directamente). El primero creado recibe `super_admin` automáticamente si no
 se indica `--role`. Nunca se permite `admin`/`admin` ni una contraseña de
 menos de 8 caracteres.
 
-## Usuarios, grupos y doble factor (`users`)
+## Usuarios, grupos, invitaciones y doble factor (`users`)
 
 ```
 nexuscloud users list
 nexuscloud users create --username <usuario> [--password '...'] [--role user]
 nexuscloud users disable <usuario>
+nexuscloud users enable <usuario>
+nexuscloud users edit <usuario> [--display-name <n>] [--email <e>]
+nexuscloud users delete <usuario> --confirm
 ```
+
+`delete` es **irreversible** y en cascada (sesiones, pertenencia a
+grupos, invitaciones creadas por ese usuario, comparticiones, y los
+METADATOS de todos sus archivos/carpetas) — por eso exige `--confirm`
+explícito, y por eso mismo el contenido físico de esos archivos en el
+Storage Pool **no se borra solo, queda huérfano en disco** (limitación ya
+existente en la API HTTP, no de este comando). Ante la duda, usa
+`disable` en su lugar.
+
+Invitaciones (alternativa a `users create` para que otra persona elija su
+propia contraseña; sigue sin haber registro público):
+
+```
+nexuscloud users invitation create --created-by <admin> [--role <rol>] [--max-uses <n>] [--ttl-hours <n>]
+nexuscloud users invitation list
+nexuscloud users invitation revoke <id>
+```
+
+`create` imprime el token en claro **una sola vez**; quien lo recibe lo
+canjea por la web o por API (`POST /api/v1/invitations/redeem`, pública,
+sin comando CLI a propósito — es autoalta, no una operación de
+administrador). `revoke` antes de canjear invalida el token para
+siempre.
 
 Grupos (para poder compartir carpetas/archivos con varias personas a la
 vez en vez de una por una):
@@ -87,7 +113,7 @@ nexuscloud users totp disable --username <usuario>   # recupera el acceso si alg
 ## Archivos de un usuario (`files`)
 
 El día a día: subir, bajar, listar, mover y borrar archivos, en nombre de
-un usuario concreto (por eso `--username` es obligatorio en los seis
+un usuario concreto (por eso `--username` es obligatorio en todos los
 subcomandos — es una herramienta de administrador, no un login).
 
 ```
@@ -97,6 +123,17 @@ nexuscloud files upload --username <usuario> <local> <ruta-remota>
 nexuscloud files download --username <usuario> <ruta-remota> <local>
 nexuscloud files mv --username <usuario> <origen> <destino>
 nexuscloud files rm --username <usuario> <ruta> [--permanent]  # por defecto va a la papelera
+```
+
+Papelera y versiones **de cualquier usuario**, gestionadas por el
+administrador sin que ese usuario tenga que hacer nada:
+
+```
+nexuscloud files trash list --username <usuario>
+nexuscloud files trash restore --username <usuario> <id>          # el id lo da "files trash list"
+nexuscloud files versions list --username <usuario> <ruta>
+nexuscloud files versions download --username <usuario> <ruta> <num-versión> <local>
+nexuscloud files versions restore --username <usuario> <ruta> <num-versión>
 ```
 
 Ejemplo real, de principio a fin:
@@ -155,6 +192,55 @@ ID                                    NOMBRE         ESTADO   UTILIZACIÓN  PRIO
 ya gestiona — NexusCloud no implementa RAID ni snapshots propios, delega en
 mdadm/Storage Spaces/ZFS/Btrfs/VSS, según lo que ya tengas montado.
 
+## Sesiones activas de un usuario (`sessions`)
+
+```
+nexuscloud sessions list --username <usuario>
+nexuscloud sessions revoke --username <usuario> <session-id>       # el id lo da "sessions list"
+```
+
+Revocar por CLI invalida de verdad el token de esa sesión en el acto —
+la próxima petición HTTP con ese token da 401, aunque el usuario no haya
+cerrado sesión él mismo (útil si sospechas que a alguien le robaron el
+acceso, o simplemente cambió de equipo).
+
+## Compartir archivos y carpetas (`shares`)
+
+```
+nexuscloud shares create --username <owner> <ruta> --share-type user|group|link
+    [--target-username <u>] [--target-group <g>] [--label <l>]
+    [--can-upload] [--no-download] [--password <p>]
+    [--expires-at <RFC3339>] [--max-downloads <n>] [--max-upload-size-bytes <n>]
+nexuscloud shares list --username <usuario> [--with-me]
+nexuscloud shares revoke --username <usuario> <share-id>
+```
+
+- `--share-type user`/`group` exige `--target-username`/`--target-group`
+  respectivamente; en ambos casos la subida no aplica (`--can-upload` se
+  ignora), esas opciones son solo de enlaces.
+- `--share-type link` imprime el **token en claro una sola vez** — es lo
+  que hay que compartir para poder acceder sin sesión
+  (`GET /api/v1/public/shares/<token>/download`). Exige
+  `sharing.publicLinksEnabled: true` en `config.yaml` (desactivado por
+  defecto).
+- `shares list` sin `--with-me` muestra lo que TÚ has compartido; con
+  `--with-me`, lo que otros han compartido contigo (directo, o vía un
+  grupo del que seas miembro). Un share revocado deja de aparecer en
+  ambos listados (el historial vive en el registro de auditoría, no
+  aquí).
+
+## Registro de auditoría (`audit`)
+
+```
+nexuscloud audit list [--limit <n>] [--offset <n>]
+```
+
+Login, altas/bajas de usuario, compartición, etc. — por defecto los 100
+más recientes (`--limit` se ajusta solo si es `<= 0` o `> 500`, nunca da
+error). Solo lo que ya pasa por la API HTTP se audita (login incluido);
+las operaciones puramente de CLI (`files`, `users create`, etc.) no
+generan eventos de auditoría hoy, al no pasar por esa capa.
+
 ## Backup Manager (`backup`)
 
 Ver [`backup-y-recuperacion.md`](backup-y-recuperacion.md) para la guía
@@ -182,10 +268,13 @@ En Linux, `install.sh` ya usa la unit de systemd de referencia
 `service install` directamente — usa `service install` tú mismo solo si
 prefieres gestionarlo a mano o estás en un sistema sin `install.sh`.
 
-## Lo que todavía no tiene CLI (a propósito, backlog documentado)
+## Lo que todavía no tiene CLI
 
-Cubre operaciones raras en una instalación de un solo administrador:
-gestionar sesiones/papelera/versiones de OTRO usuario, invitaciones,
-reactivar/editar/borrar un usuario ya creado, y consultar el registro de
-auditoría. Para esas, de momento, la API HTTP
-([`nexuscloud/docs/api.md`](../nexuscloud/docs/api.md)) es la única vía.
+Prácticamente todo lo relevante para el uso diario de una instalación de
+un solo administrador ya tiene comando — lo único que queda solo por API
+es lo que no encaja bien en un CLI de un solo paso: canjear una
+invitación (autoalta, pública), y resolver/navegar/descargar un enlace
+público (eso lo hace quien lo recibe, con un navegador o `curl`, no el
+administrador). Para eso, la API HTTP
+([`nexuscloud/docs/api.md`](../nexuscloud/docs/api.md)) sigue siendo la
+vía.
