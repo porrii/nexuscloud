@@ -26,6 +26,8 @@ type Repository interface {
 	HasRole(ctx context.Context, userID, roleID string) (bool, error)
 
 	CreateGroup(ctx context.Context, g *Group) error
+	GetGroupByID(ctx context.Context, id string) (*Group, error)
+	GetGroupByName(ctx context.Context, name string) (*Group, error)
 	ListGroups(ctx context.Context) ([]*Group, error)
 	AddUserToGroup(ctx context.Context, userID, groupID string) error
 	GroupsForUser(ctx context.Context, userID string) ([]Group, error)

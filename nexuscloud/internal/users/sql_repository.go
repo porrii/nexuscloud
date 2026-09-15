@@ -166,6 +166,42 @@ func (r *SQLRepository) CreateGroup(ctx context.Context, g *Group) error {
 	return nil
 }
 
+// GetGroupByID y GetGroupByName completan el mismo par que ya existe para
+// User (GetUserByID/GetUserByUsername) -- hasta ahora Group solo tenía
+// ListGroups, insuficiente para que el handler HTTP de "añadir miembro"
+// (POST /groups/{id}/members) pueda devolver 404 real en vez de dejar que
+// una violación de FK en AddUserToGroup se filtre como error 500 genérico.
+func (r *SQLRepository) GetGroupByID(ctx context.Context, id string) (*Group, error) {
+	row := r.conn.QueryRowContext(ctx, `SELECT id, name, quota_bytes, created_at FROM `+groupsTable(r.conn.Driver)+` WHERE id = ?`, id)
+	return scanGroup(row)
+}
+
+func (r *SQLRepository) GetGroupByName(ctx context.Context, name string) (*Group, error) {
+	row := r.conn.QueryRowContext(ctx, `SELECT id, name, quota_bytes, created_at FROM `+groupsTable(r.conn.Driver)+` WHERE name = ?`, name)
+	return scanGroup(row)
+}
+
+func scanGroup(row *sql.Row) (*Group, error) {
+	g := &Group{}
+	var quota sql.NullInt64
+	var createdAt string
+	if err := row.Scan(&g.ID, &g.Name, &quota, &createdAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if quota.Valid {
+		g.QuotaBytes = &quota.Int64
+	}
+	var err error
+	g.CreatedAt, err = db.StringToTime(createdAt)
+	if err != nil {
+		return nil, err
+	}
+	return g, nil
+}
+
 func (r *SQLRepository) ListGroups(ctx context.Context) ([]*Group, error) {
 	rows, err := r.conn.QueryContext(ctx, `SELECT id, name, quota_bytes, created_at FROM `+groupsTable(r.conn.Driver)+` ORDER BY name`)
 	if err != nil {

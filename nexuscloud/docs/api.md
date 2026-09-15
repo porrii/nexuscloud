@@ -54,6 +54,8 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | POST | `/api/v1/directories/{id}/restore` | sesión, propietario | Saca una carpeta de la papelera (recrea su marcador físico) |
 | GET | `/api/v1/trash` | sesión | `{directories: [...], files: [...]}` con todo lo eliminado del usuario (vista plana) |
 | GET | `/api/v1/groups` | sesión | Lista de grupos (para elegir destino al compartir, §37) |
+| POST | `/api/v1/groups` | admin | Crea un grupo (`{name}`); 409 si ya existe uno con ese nombre |
+| POST | `/api/v1/groups/{id}/members` | admin | Añade un usuario a un grupo (`{user_id}`); 404 si el grupo o el usuario no existen |
 | POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace |
 | GET | `/api/v1/shares?direction=by-me\|with-me` | sesión | "Compartido por mí" (por defecto) o "compartido conmigo" |
 | DELETE | `/api/v1/shares/{id}` | sesión, propietario | Revoca una compartición (soft, `revoked_at`) |

@@ -26,6 +26,8 @@ const (
 	EventShareCreate       = "share_create"
 	EventShareRevoke       = "share_revoke"
 	EventConfigChanged     = "config_changed"
+	EventGroupCreated      = "group_created"
+	EventGroupMemberAdded  = "group_member_added"
 )
 
 type Event struct {

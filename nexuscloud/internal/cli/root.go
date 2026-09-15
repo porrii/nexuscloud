@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 		newStorageCmd(),
 		newBackupCmd(),
 		newSecurityCmd(),
+		newFilesCmd(),
 	)
 	return root
 }

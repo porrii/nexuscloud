@@ -303,7 +303,7 @@ paths:
         "404": { $ref: "#/components/responses/Error" }
     patch:
       summary: Mover y/o renombrar un archivo (ADR-030, §85)
-      description: Mismo archivo (mismo id): el historial de versiones y las comparticiones sobreviven intactos. Omitir un campo mantiene su valor actual -- omitir parent_path es "renombrar en el sitio", omitir name es "mover sin renombrar". Nunca sobrescribe un destino ya ocupado.
+      description: 'Mismo archivo (mismo id): el historial de versiones y las comparticiones sobreviven intactos. Omitir un campo mantiene su valor actual -- omitir parent_path es "renombrar en el sitio", omitir name es "mover sin renombrar". Nunca sobrescribe un destino ya ocupado.'
       parameters:
         - $ref: "#/components/parameters/idParam"
       requestBody:
@@ -500,6 +500,46 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Group" }
+    post:
+      summary: Crear un grupo (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: { type: string }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Group" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { description: "Ya existe un grupo con ese nombre" }
+
+  /groups/{id}/members:
+    post:
+      summary: Añadir un usuario a un grupo (admin)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user_id]
+              properties:
+                user_id: { type: string, format: uuid }
+      responses:
+        "204": { description: "Añadido (idempotente: repetir la misma llamada no falla)" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { description: "El grupo o el usuario no existen" }
 
   /shares:
     post:
