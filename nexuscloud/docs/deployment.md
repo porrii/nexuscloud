@@ -70,9 +70,17 @@ sudo ./install.sh
 #    genera /etc/nexuscloud/config.yaml, aplica migraciones, hace 'enable'
 #    del servicio (NO lo arranca todavía: revisa la config primero).
 #
+# Con la interfaz web (Node.js LTS se instala solo si hace falta, igual
+# que Go): sudo ./install.sh --web  -- sin la bandera (por defecto), el
+# binario NO incluye la web y web.enabled queda en false (secure/lean by
+# default). Añadirla más adelante a una instalación ya hecha, sin
+# reinstalar desde cero: sudo nexuscloud/deploy/scripts/enable-web.sh
+#
 # Con un binario ya compilado (go build -o nexuscloud ./cmd/nexuscloud,
 # cruzado a otra arquitectura, o descargado) en vez de compilar aquí:
 #   sudo ./install.sh /ruta/al/binario
+#   (--web no tiene efecto en este caso -- la web solo se puede embeber
+#   compilando desde código; usa enable-web.sh sobre el resultado)
 
 sudo -e /etc/nexuscloud/config.yaml
 sudo -u nexuscloud /usr/local/bin/nexuscloud \
@@ -85,6 +93,12 @@ journalctl -u nexuscloud -f
 - Actualizar: `sudo nexuscloud/deploy/scripts/update.sh ./nexuscloud-nuevo`
   (para el servicio, guarda copia del binario anterior, migra, y revierte
   el binario si la migración falla).
+- Añadir la web a una instalación ya hecha sin ella:
+  `sudo nexuscloud/deploy/scripts/enable-web.sh` (Node.js si falta, compila
+  la web, recompila el binario, activa `web.enabled` y llama a `update.sh`
+  por debajo). Quitarla de nuevo: recompila con `install.sh` normal (sin
+  `--web`) y pasa ese binario a `update.sh` -- no hace falta un script
+  aparte para eso, ya funciona con lo que existe.
 - Desinstalar: `sudo nexuscloud/deploy/scripts/uninstall.sh`
   (conserva datos y config; `--purge` los borra también).
 - Reubicar rutas: `NX_PREFIX`, `NX_CONFIG_DIR`, `NX_DATA_DIR`, `NX_USER`
@@ -105,6 +119,10 @@ ruta a `ReadWritePaths=`.
 install.bat
 :: -> copia a "Archivos de programa\NexusCloud", genera
 ::    ProgramData\NexusCloud\config.yaml, migra y registra el servicio.
+::
+:: Con la interfaz web (Node.js LTS se instala solo si hace falta, igual
+:: que Go): install.bat /web  -- sin la bandera (por defecto), el binario
+:: NO incluye la web y web.enabled queda en false (secure/lean by default).
 ```
 
 ```powershell
@@ -114,7 +132,12 @@ install.bat
 ```
 
 El servicio se gestiona con `nexuscloud service {start|stop|restart|status}`
-o desde `services.msc`. Desinstalar:
+o desde `services.msc`.
+Actualizar: `nexuscloud\deploy\scripts\update.ps1 C:\ruta\a\nexuscloud-nuevo.exe`
+(equivalente Windows de `update.sh`: para el servicio si estaba corriendo,
+guarda copia del binario anterior, migra, reinicia).
+Añadir la web a una instalación ya hecha sin ella:
+`nexuscloud\deploy\scripts\enable-web.ps1`. Desinstalar:
 `nexuscloud\deploy\scripts\uninstall.ps1` (`-Purge` borra datos y config).
 
 Por debajo, `nexuscloud service …` usa `github.com/kardianos/service`, que

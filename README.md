@@ -58,18 +58,23 @@ del sistema (systemd en Linux, servicio de Windows).
 ```bash
 git clone https://github.com/porrii/nexuscloud.git
 cd nexuscloud
-sudo ./install.sh          # Linux
+sudo ./install.sh          # Linux (añade --web si también quieres la interfaz web)
 ```
 
 ```bat
 git clone https://github.com/porrii/nexuscloud.git
 cd nexuscloud
-install.bat                :: Windows -- desde una consola de Administrador
+install.bat                :: Windows -- desde una consola de Administrador (añade /web para la interfaz web)
 ```
 
 Al terminar, el servicio queda instalado pero **parado** a propósito: revisa
 la configuración generada, crea tu primer usuario y arráncalo siguiendo las
 instrucciones que el propio instalador imprime al final.
+
+La interfaz web es opcional y viene **desactivada por defecto** (secure/lean
+by default): sin `--web`/`/web`, el binario ni siquiera la incluye. Añadirla
+más adelante a una instalación ya hecha, sin reinstalar desde cero:
+`nexuscloud/deploy/scripts/enable-web.sh` (o `enable-web.ps1` en Windows).
 
 Para desinstalar o actualizar más adelante, usa
 `nexuscloud/deploy/scripts/uninstall.sh`/`update.sh` (o sus equivalentes
