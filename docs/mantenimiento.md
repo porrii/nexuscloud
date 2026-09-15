@@ -26,6 +26,23 @@ nexuscloud --config config.yaml config validate    # solo la configuración, sin
 nexuscloud --config config.yaml migrate status     # versión de esquema actual, "dirty" o no
 ```
 
+## Verificar la detección de RAID/ZFS/Btrfs en tu máquina real
+
+`nexuscloud storage raid`/`storage snapshots` **detectan** RAID/ZFS/Btrfs
+ya existentes; no los crean. Si quieres comprobar que la detección
+funciona de verdad en tu servidor real (no solo confiar en la teoría),
+hay un script que crea un array/pool/subvolumen de usar y tirar sobre
+ficheros de bucle (nunca toca tus discos reales) y compara contra lo que
+`nexuscloud` detecta:
+
+```sh
+sudo nexuscloud/deploy/scripts/verify-raid-zfs-btrfs.sh
+```
+
+Si tu sistema no tiene alguno de los tres instalado (p.ej. no usas ZFS),
+esa parte se salta sin contar como fallo — solo avisa si algo que SÍ
+tienes instalado no se detectó correctamente.
+
 ## Logs
 
 ```sh

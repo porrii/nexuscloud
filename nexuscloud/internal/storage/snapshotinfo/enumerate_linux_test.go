@@ -71,6 +71,37 @@ func TestParseZfsSnapshotsUnparsableCreationLeavesZeroTime(t *testing.T) {
 	}
 }
 
+// TestParseZfsSnapshotsRealZfsFuseOutputWithoutDashP es la única línea de
+// este fichero capturada de verdad contra un pool/dataset/snapshot ZFS REAL
+// (zfs-fuse, "zpool create testpool <fichero>" + "zfs create testpool/datos"
+// + "zfs snapshot testpool/datos@snap1" -- backlog 2026-09-15, ver ADR-021).
+// zfs-fuse (proyecto real pero muy antiguo, ~2011-2013) es el único ZFS
+// funcional posible en un contenedor Docker sobre el kernel de WSL2 (sin
+// módulo zfs.ko cargable); su "zfs" no soporta "-p" en absoluto ("invalid
+// option 'p'"), así que esta captura confirma dos cosas reales que las
+// demás pruebas de este fichero, sintéticas, solo asumían: (1) el separador
+// es TAB de verdad entre nombre y creation, y (2) la convención
+// "dataset@nombre-de-snapshot" es real, no inventada. NO confirma el
+// formato exacto de -p (epoch Unix) porque ningún ZFS real y ejecutable en
+// este entorno lo soporta -- por eso esta línea, capturada SIN -p, cae
+// correctamente en el mismo camino de degradación que
+// TestParseZfsSnapshotsUnparsableCreationLeavesZeroTime (CreatedAt en
+// cero), no en el de éxito.
+func TestParseZfsSnapshotsRealZfsFuseOutputWithoutDashP(t *testing.T) {
+	const output = "testpool/datos@snap1\tTue Sep 15 18:59 2026\n"
+	snaps := parseZfsSnapshots([]byte(output))
+	if len(snaps) != 1 {
+		t.Fatalf("esperaba 1 snapshot, got %d: %+v", len(snaps), snaps)
+	}
+	s := snaps[0]
+	if s.ID != "testpool/datos@snap1" || s.VolumeName != "testpool/datos" {
+		t.Errorf("ID/VolumeName mal parseados de la captura real: %+v", s)
+	}
+	if !s.CreatedAt.IsZero() {
+		t.Errorf("sin -p, creation no es un epoch Unix -- CreatedAt debía quedar en cero, salió %v", s.CreatedAt)
+	}
+}
+
 // --- Btrfs --------------------------------------------------------------
 
 func TestParseBtrfsSubvolumesSingle(t *testing.T) {
