@@ -67,13 +67,21 @@ cd nexuscloud
 install.bat                :: Windows -- desde una consola de Administrador (añade /web para la interfaz web)
 ```
 
-Al terminar, el servicio queda instalado pero **parado** a propósito: revisa
-la configuración generada, crea tu primer usuario y arráncalo siguiendo las
-instrucciones que el propio instalador imprime al final.
+Con una terminal/consola real por delante, el propio instalador te
+pregunta lo poco que hace falta (¿interfaz web?, usuario y contraseña del
+administrador) y **deja NexusCloud funcionando** al terminar: admin
+creado, servicio arrancado, con la URL a abrir en el navegador impresa al
+final -- no hace falta saber de systemd, `admin create-user` ni nada por
+el estilo. Para el uso avanzado/scriptado (Docker, CI, aprovisionamiento
+automático, sin preguntas) sigue disponible `--unattended`/`/unattended`
+(deja el servicio instalado pero parado, como antes) o fijar
+`NX_ADMIN_USERNAME`/`NX_ADMIN_PASSWORD` por variable de entorno para que
+tampoco pregunte nada pero SÍ cree el admin y arranque.
 
-La interfaz web es opcional y viene **desactivada por defecto** (secure/lean
-by default): sin `--web`/`/web`, el binario ni siquiera la incluye. Añadirla
-más adelante a una instalación ya hecha, sin reinstalar desde cero:
+La interfaz web es opcional; en el camino interactivo se pregunta con
+"sí" por defecto (Enter la acepta) porque sin ella no hay forma de usar
+NexusCloud sin la línea de comandos. Añadirla más adelante a una
+instalación ya hecha, sin reinstalar desde cero:
 `nexuscloud/deploy/scripts/enable-web.sh` (o `enable-web.ps1` en Windows).
 
 Para desinstalar o actualizar más adelante, usa

@@ -12,25 +12,32 @@ Desde la raíz del repositorio clonado:
 sudo ./install.sh
 ```
 
-Esto, en un solo paso: instala Go si hace falta (descarga oficial de
-go.dev, nunca el paquete de la distro), compila el binario, crea el
-usuario de servicio `nexuscloud`, genera `/etc/nexuscloud/config.yaml` con
-valores seguros por defecto, aplica las migraciones de base de datos, e
-instala (pero **no arranca**) el servicio de systemd.
+Con una terminal real por delante, el propio script pregunta lo poco que
+hace falta (¿interfaz web?, usuario y contraseña del administrador) y al
+terminar deja NexusCloud **funcionando de verdad**: además de compilar
+(instala Go si hace falta, descarga oficial de go.dev), instalar el
+servicio de systemd y generar `/etc/nexuscloud/config.yaml`, también crea
+ese administrador y arranca el servicio — imprime la URL a abrir en el
+navegador al final. Ninguno de los pasos 2 a 5 de esta guía hace falta ya
+a mano; se conservan aquí como referencia de qué ha pasado por dentro, y
+para poder repetir cualquiera de ellos por separado más adelante.
 
-¿Quieres también la interfaz web (útil si vas a administrar NexusCloud
-desde el navegador de otro equipo en tu red, no solo por comandos)?
-
-```sh
-sudo ./install.sh --web
-```
-
-Instala Node.js LTS si hace falta y compila la web real. Sin `--web`
-(el caso por defecto), el binario ni siquiera la incluye — puedes añadirla
-después sin reinstalar desde cero, ver
+¿Quieres también la interfaz web? Contesta "s" a esa pregunta (es la
+opción por defecto, basta con pulsar Enter) — instala Node.js LTS si hace
+falta y compila la web real. Sin ella, el binario ni siquiera la incluye
+— puedes añadirla después sin reinstalar desde cero, ver
 [`mantenimiento.md`](mantenimiento.md#añadir-o-quitar-la-interfaz-web).
 
-## 2. Revisar la configuración
+Para el uso avanzado/scriptado de siempre (sin preguntas, pensado para
+Docker/CI/aprovisionamiento automático) sigue disponible:
+
+```sh
+sudo ./install.sh --unattended              # comportamiento clásico: no crea admin, no arranca
+sudo NX_ADMIN_USERNAME=admin NX_ADMIN_PASSWORD=... ./install.sh   # crea admin y arranca sin preguntar nada
+sudo ./install.sh --web                     # incluye la web sin pasar por las preguntas
+```
+
+## 2. Revisar la configuración (opcional -- ya no es un paso obligatorio)
 
 ```sh
 sudo -e /etc/nexuscloud/config.yaml
@@ -47,7 +54,11 @@ Lo que más vale la pena mirar en un primer arranque:
 No hace falta tocar nada para empezar — los valores por defecto son
 seguros (sin web pública, sin registro público, rate limiting activo).
 
-## 3. Crear el primer usuario
+## 3. Crear el primer usuario (ya hecho por el instalador -- esto es para añadir más)
+
+`install.sh` ya te preguntó el usuario/contraseña del administrador y lo
+creó. Para un segundo usuario (o para recrear el admin si usaste
+`--unattended`):
 
 ```sh
 sudo -u nexuscloud nexuscloud --config /etc/nexuscloud/config.yaml admin create-user
@@ -55,8 +66,8 @@ sudo -u nexuscloud nexuscloud --config /etc/nexuscloud/config.yaml admin create-
 
 Sin `--username`/`--password`, los pide de forma interactiva (la
 contraseña sin eco en pantalla). El primer usuario creado en la instancia
-recibe automáticamente el rol `super_admin`. Nunca se permite `admin` como
-contraseña, ni contraseñas de menos de 8 caracteres.
+recibe automáticamente el rol `super_admin`; nunca se permiten
+contraseñas de menos de 8 caracteres.
 
 ## 4. Comprobar que todo está en orden
 
@@ -80,7 +91,7 @@ El `WARNING` de HTTPS es normal si NexusCloud solo va a vivir dentro de tu
 red local (LAN) — solo hace falta resolverlo si vas a exponerlo a
 Internet. Cualquier `FAIL` hay que arreglarlo antes de seguir.
 
-## 5. Arrancar
+## 5. Arrancar (ya hecho por el instalador -- esto es para pararlo/reiniciarlo)
 
 ```sh
 sudo systemctl start nexuscloud

@@ -68,13 +68,23 @@ Igual con cualquier método:
 sudo ./install.sh
 # -> crea el usuario de servicio, instala el binario en /usr/local/bin,
 #    genera /etc/nexuscloud/config.yaml, aplica migraciones, hace 'enable'
-#    del servicio (NO lo arranca todavía: revisa la config primero).
+#    del servicio. Con una terminal real por delante, ADEMAS pregunta
+#    interfaz web/usuario/contraseña del admin, lo crea y arranca el
+#    servicio ya mismo (imprime la URL al terminar) -- los comandos de
+#    abajo (revisar config, crear admin, arrancar) pasan a ser opcionales,
+#    solo hacen falta para repetir cualquiera de esos pasos a mano.
 #
 # Con la interfaz web (Node.js LTS se instala solo si hace falta, igual
-# que Go): sudo ./install.sh --web  -- sin la bandera (por defecto), el
-# binario NO incluye la web y web.enabled queda en false (secure/lean by
-# default). Añadirla más adelante a una instalación ya hecha, sin
-# reinstalar desde cero: sudo nexuscloud/deploy/scripts/enable-web.sh
+# que Go): sudo ./install.sh --web  -- sin la bandera, en el camino
+# interactivo se pregunta igualmente (con "sí" por defecto). Sin ella
+# (ni por pregunta ni por bandera), el binario NO incluye la web y
+# web.enabled queda en false (secure/lean by default). Añadirla más
+# adelante a una instalación ya hecha, sin reinstalar desde cero:
+# sudo nexuscloud/deploy/scripts/enable-web.sh
+#
+# Camino scriptado, sin preguntar nada (Docker/CI/aprovisionamiento):
+#   sudo ./install.sh --unattended                      # como antes: no crea admin, no arranca
+#   sudo NX_ADMIN_USERNAME=admin NX_ADMIN_PASSWORD=... ./install.sh   # crea admin y arranca sin preguntar
 #
 # Con un binario ya compilado (go build -o nexuscloud ./cmd/nexuscloud,
 # cruzado a otra arquitectura, o descargado) en vez de compilar aquí:
@@ -119,10 +129,20 @@ ruta a `ReadWritePaths=`.
 install.bat
 :: -> copia a "Archivos de programa\NexusCloud", genera
 ::    ProgramData\NexusCloud\config.yaml, migra y registra el servicio.
+::    Con una consola real por delante, ADEMAS pregunta usuario/
+::    contraseña del admin, lo crea y arranca el servicio ya mismo
+::    (imprime la URL al terminar) -- los comandos de abajo pasan a ser
+::    opcionales, solo hacen falta para repetirlos a mano.
 ::
 :: Con la interfaz web (Node.js LTS se instala solo si hace falta, igual
-:: que Go): install.bat /web  -- sin la bandera (por defecto), el binario
-:: NO incluye la web y web.enabled queda en false (secure/lean by default).
+:: que Go): install.bat /web  -- sin la bandera, el propio
+:: install-windows.ps1 pregunta igualmente (con "sí" por defecto). Sin
+:: ella (ni por pregunta ni por bandera), el binario NO incluye la web y
+:: web.enabled queda en false (secure/lean by default).
+::
+:: Camino scriptado, sin preguntar nada:
+::   install.bat /unattended                              :: como antes
+::   set NX_ADMIN_USERNAME=admin & set NX_ADMIN_PASSWORD=... & install.bat
 ```
 
 ```powershell

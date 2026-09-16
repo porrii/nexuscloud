@@ -4,21 +4,39 @@ REM Instala NexusCloud en Windows: compila desde codigo fuente (instalando
 REM Go si hace falta) y lo registra como servicio de Windows. Prioridad
 REM menor que install.sh (Linux) -- mismo criterio.
 REM
-REM Uso:
-REM   install.bat        (consola de Administrador) -- compila sin la interfaz web
-REM   install.bat /web   (consola de Administrador) -- igual, pero incluye tambien la web
+REM Uso normal (interactivo): clic derecho -> "Ejecutar como
+REM administrador" sobre este fichero. Con una consola real por delante,
+REM el paso final (nexuscloud\deploy\scripts\install-windows.ps1) pregunta
+REM lo poco que hace falta (usuario y contrasena del administrador) y deja
+REM NexusCloud funcionando de verdad -- admin creado, servicio arrancado,
+REM sin ningun paso manual mas.
+REM
+REM Uso avanzado / scriptado (sin preguntas):
+REM   install.bat /unattended     -- comportamiento clasico: sin admin, sin arrancar
+REM   set NX_ADMIN_USERNAME=admin
+REM   set NX_ADMIN_PASSWORD=...
+REM   install.bat                 -- crea admin y arranca sin preguntar nada
+REM   install.bat /web            -- incluye tambien la interfaz web
 REM
 REM /web es opt-in a proposito (secure/lean by default, mismo criterio que
-REM install.sh en Linux): sin el, el binario embebe solo un placeholder
-REM vacio, y web.enabled queda en "false" en el config.yaml generado. Para
-REM anadir la web mas adelante a una instalacion ya hecha, sin reinstalar
-REM desde cero: nexuscloud\deploy\scripts\enable-web.ps1
+REM install.sh en Linux) EN EL CAMINO SCRIPTADO -- en el camino
+REM interactivo (install-windows.ps1) se pregunta con "si" por defecto,
+REM porque sin ella no hay forma de usar NexusCloud sin la linea de
+REM comandos. Sin la web (ni por pregunta ni por /web), el binario embebe
+REM solo un placeholder vacio, y web.enabled queda en "false". Para
+REM anadirla mas adelante a una instalacion ya hecha, sin reinstalar desde
+REM cero: nexuscloud\deploy\scripts\enable-web.ps1
 REM
 REM Nota de estilo: usa goto en vez de bloques if/else multilinea a
 REM proposito -- un bloque "( ... )" que contiene lineas con parentesis
 REM propios (como el codigo PowerShell que genera mas abajo) es una fuente
 REM clasica de errores de parseo en cmd.exe; goto evita ese problema por
-REM completo, cada linea se interpreta por separado.
+REM completo, cada linea se interpreta por separado. Por el mismo motivo,
+REM la parte final (preguntas + admin + arranque, con bucles de
+REM validacion) vive en un fichero .ps1 real
+REM (nexuscloud\deploy\scripts\install-windows.ps1) en vez de generarse
+REM linea a linea como el resto de este fichero -- esa logica ya no
+REM encaja bien en "un echo por linea".
 REM
 REM Para actualizar o desinstalar mas adelante, usa
 REM nexuscloud\deploy\scripts\update.ps1 / uninstall.ps1.
@@ -27,9 +45,14 @@ set "MIN_GO_VERSION=1.25"
 set "MIN_NODE_MAJOR=20"
 set "SCRIPT_DIR=%~dp0"
 set "CODE_DIR=%SCRIPT_DIR%nexuscloud"
+if not defined NX_PORT set "NX_PORT=8080"
 
 set "WITH_WEB=0"
-if /i "%~1"=="/web" set "WITH_WEB=1"
+set "UNATTENDED=0"
+for %%A in (%*) do (
+    if /i "%%A"=="/web" set "WITH_WEB=1"
+    if /i "%%A"=="/unattended" set "UNATTENDED=1"
+)
 
 net session >nul 2>&1
 if not "%ERRORLEVEL%"=="0" goto :err_not_admin
@@ -129,63 +152,15 @@ if not "%ERRORLEVEL%"=="0" goto :err_build
 popd
 echo     binario listo
 
-REM ---- Instalar como servicio (antes delegado en un
-REM nexuscloud\deploy\scripts\install.ps1 separado -- unificado aqui en un
-REM unico script, mismo criterio que install.sh en Linux). Generado como
-REM .ps1 temporal en vez de -Command en linea, por el mismo motivo que el
-REM paso de Go de arriba: evita mezclar el quoting de batch con el de
-REM PowerShell en una sola linea larga.
+REM ---- Instalar como servicio, preguntar admin y arrancar: vive en un
+REM fichero .ps1 real (nexuscloud\deploy\scripts\install-windows.ps1),
+REM no generado linea a linea -- ver la nota de estilo de la cabecera.
 echo ==^> Instalando el servicio
-set "INSTALL_PS1=%TEMP%\nexuscloud-install-%RANDOM%.ps1"
-> "%INSTALL_PS1%" echo $ErrorActionPreference = 'Stop'
->>"%INSTALL_PS1%" echo $InstallDir = Join-Path $env:ProgramFiles 'NexusCloud'
->>"%INSTALL_PS1%" echo $ConfigDir  = Join-Path $env:ProgramData  'NexusCloud'
->>"%INSTALL_PS1%" echo $DataDir    = Join-Path $env:ProgramData  'NexusCloud\data'
->>"%INSTALL_PS1%" echo $exe        = Join-Path $InstallDir 'nexuscloud.exe'
->>"%INSTALL_PS1%" echo $configFile = Join-Path $ConfigDir  'config.yaml'
->>"%INSTALL_PS1%" echo Write-Host "==^> Directorios"
->>"%INSTALL_PS1%" echo New-Item -ItemType Directory -Force -Path $InstallDir, $ConfigDir, $DataDir ^| Out-Null
->>"%INSTALL_PS1%" echo Write-Host "==^> Binario -^> $exe"
->>"%INSTALL_PS1%" echo Copy-Item -Path '%BUILD_DIR%\nexuscloud.exe' -Destination $exe -Force
->>"%INSTALL_PS1%" echo Write-Host "==^> Configuracion"
->>"%INSTALL_PS1%" echo if (Test-Path $configFile^) {
->>"%INSTALL_PS1%" echo     Write-Host "    $configFile ya existe, no se toca"
->>"%INSTALL_PS1%" echo } else {
->>"%INSTALL_PS1%" echo     ^& $exe config init --out $configFile
-if "%WITH_WEB%"=="1" goto :ps1_enable_web
-goto :ps1_config_done
-:ps1_enable_web
-REM config init no tiene una bandera para esto -- se activa aqui sobre el
-REM YAML ya generado, mismo criterio que la unit de systemd en Linux (sed
-REM sobre una plantilla ya escrita). Solo toca la linea "enabled:" que va
-REM INMEDIATAMENTE despues de "web:", no cualquier otra seccion que tambien
-REM tenga un campo "enabled".
->>"%INSTALL_PS1%" echo     $lines = Get-Content $configFile
->>"%INSTALL_PS1%" echo     for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -eq 'web:' -and $i + 1 -lt $lines.Count -and $lines[$i+1] -match 'enabled: false') { $lines[$i+1] = '  enabled: true' } }
->>"%INSTALL_PS1%" echo     Set-Content $configFile $lines
-:ps1_config_done
->>"%INSTALL_PS1%" echo     Write-Host "    revisa $configFile antes de arrancar (docs/security.md)"
->>"%INSTALL_PS1%" echo }
->>"%INSTALL_PS1%" echo Write-Host "==^> Migraciones de base de datos"
->>"%INSTALL_PS1%" echo $env:NEXUSCLOUD_DATA_DIR = $DataDir
->>"%INSTALL_PS1%" echo ^& $exe --config $configFile migrate up
->>"%INSTALL_PS1%" echo Write-Host "==^> Servicio de Windows"
->>"%INSTALL_PS1%" echo ^& $exe service install --config $configFile
->>"%INSTALL_PS1%" echo Write-Host ""
->>"%INSTALL_PS1%" echo Write-Host "NexusCloud instalado. El servicio NO se ha arrancado todavia."
->>"%INSTALL_PS1%" echo Write-Host "  1. Revisa   $configFile"
->>"%INSTALL_PS1%" echo Write-Host "  2. Crea un admin:  ^&$exe --config $configFile admin create-user"
->>"%INSTALL_PS1%" echo Write-Host "  3. Arranca:  ^&$exe service start   (o desde services.msc)"
->>"%INSTALL_PS1%" echo Write-Host ""
-set "WEBMSG=NO incluida (binario sin ese codigo; web.enabled: false) -- para anadirla despues, nexuscloud\deploy\scripts\enable-web.ps1"
-if "%WITH_WEB%"=="1" set "WEBMSG=incluida y activada (web.enabled: true)"
->>"%INSTALL_PS1%" echo Write-Host "Interfaz web: %WEBMSG%"
->>"%INSTALL_PS1%" echo Write-Host ""
->>"%INSTALL_PS1%" echo Write-Host "Actualizar:   nexuscloud\deploy\scripts\update.ps1 <ruta-al-exe-nuevo>"
->>"%INSTALL_PS1%" echo Write-Host "Desinstalar:  nexuscloud\deploy\scripts\uninstall.ps1   (-Purge borra tambien los datos)"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_PS1%"
+set "PS_SWITCHES="
+if "%WITH_WEB%"=="1" set "PS_SWITCHES=%PS_SWITCHES% -WithWeb"
+if "%UNATTENDED%"=="1" set "PS_SWITCHES=%PS_SWITCHES% -Unattended"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%CODE_DIR%\deploy\scripts\install-windows.ps1" -Port %NX_PORT% -BinPath "%BUILD_DIR%\nexuscloud.exe"%PS_SWITCHES%
 set "INSTALL_RESULT=%ERRORLEVEL%"
-del /f /q "%INSTALL_PS1%" >nul 2>&1
 rmdir /s /q "%BUILD_DIR%" >nul 2>&1
 exit /b %INSTALL_RESULT%
 
