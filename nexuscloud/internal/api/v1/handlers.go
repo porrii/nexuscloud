@@ -6,6 +6,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/backup"
+	"github.com/porrii/nexuscloud/internal/clientupdates"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
 )
@@ -33,4 +34,9 @@ type Handlers struct {
 	BackupsDir         string
 	BackupRepo         backup.Repository
 	BackupReceiveToken string
+	// ClientUpdatesProxy (ADR-032): solo se usa si clientUpdates.enabled=true
+	// en config.yaml -- ver client_updates_handlers.go. Con nil (por
+	// defecto), NewRouter ni siquiera registra esas rutas, mismo criterio
+	// exacto que BackupReceiveToken vacío.
+	ClientUpdatesProxy *clientupdates.Proxy
 }

@@ -67,6 +67,12 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := lookupBool("NEXUSCLOUD_WEB_ENABLED"); ok {
 		cfg.Web.Enabled = v
 	}
+	if v, ok := lookupBool("NEXUSCLOUD_CLIENT_UPDATES_ENABLED"); ok {
+		cfg.ClientUpdates.Enabled = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_CLIENT_UPDATES_GITHUB_REPO"); ok {
+		cfg.ClientUpdates.GithubRepo = v
+	}
 	if v, ok := lookup("NEXUSCLOUD_CORS_ALLOWED_ORIGINS"); ok {
 		cfg.Security.CORSAllowedOrigins = splitAndTrim(v)
 	}

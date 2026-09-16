@@ -705,6 +705,48 @@ paths:
         "410": { description: "Enlace revocado, expirado o agotado" }
         "413": { description: "El archivo supera el límite de tamaño del enlace" }
 
+  /public/client-updates/releases.json:
+    get:
+      summary: Feed de actualizaciones del cliente de escritorio (Velopack, ADR-032)
+      description: >
+        Sin sesión, a propósito (instalar/actualizar debe funcionar antes de
+        poder haber iniciado sesión). Reenvía releases.<channel>.json desde
+        GitHub Releases del propio proyecto -- el cliente nunca habla con
+        GitHub directamente ni lleva ningún token propio. Solo existe si
+        clientUpdates.enabled=true en esta instancia.
+      security: []
+      responses:
+        "200":
+          description: Feed JSON de Velopack, tal cual lo publicó "vpk upload github"
+          content:
+            application/json:
+              schema: { type: object }
+        "404": { description: "clientUpdates.enabled=false en esta instancia" }
+        "502": { $ref: "#/components/responses/Error" }
+
+  /public/client-updates/download/{assetName}:
+    get:
+      summary: Descargar un asset exacto de esa misma release (ADR-032)
+      description: >
+        assetName debe coincidir EXACTO con un asset real de la última
+        release resuelta -- nunca una URL o ruta arbitraria, para que esto
+        no se pueda usar para pedirle a GitHub cualquier otro fichero del
+        repositorio.
+      security: []
+      parameters:
+        - name: assetName
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Contenido del asset (paquete o instalador)
+          content:
+            application/octet-stream:
+              schema: { type: string, format: binary }
+        "404": { description: "clientUpdates.enabled=false, o ese asset no existe en la última release" }
+        "502": { $ref: "#/components/responses/Error" }
+
   /audit:
     get:
       summary: Listar eventos de auditoría (admin)

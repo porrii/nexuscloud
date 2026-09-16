@@ -36,6 +36,19 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Get("/public/shares/{token}/download", h.DownloadPublicShare)
 		r.Get("/public/shares/{token}/browse", h.BrowsePublicShare)
 		r.Post("/public/shares/{token}/upload", h.UploadPublicShare)
+
+		// Actualizaciones del cliente de escritorio (ADR-032): sin sesión a
+		// propósito, igual que los enlaces públicos -- instalar/actualizar
+		// debe funcionar antes de poder haber iniciado sesión. El canal
+		// (releases.<channel>.json) es un detalle de configuración del
+		// SERVIDOR (ClientUpdatesProxy ya sabe cuál es el suyo), así que la
+		// URL no lo expone -- el cliente solo pide "el feed", sin más. Con
+		// ClientUpdatesProxy == nil (clientUpdates.enabled=false, por
+		// defecto), estas dos rutas ni se registran.
+		if h.ClientUpdatesProxy != nil {
+			r.Get("/public/client-updates/releases.json", h.GetClientUpdatesFeed)
+			r.Get("/public/client-updates/download/{assetName}", h.DownloadClientUpdateAsset)
+		}
 	})
 
 	r.Group(func(r chi.Router) {

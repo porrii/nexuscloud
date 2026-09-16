@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/di/service_locator.dart';
+import 'package:nexuscloud_client/core/network/api_client.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
+import 'package:nexuscloud_client/core/network/session_expiry_notifier.dart';
+import 'package:nexuscloud_client/core/storage/token_store.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/app_user.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/auto_login_outcome.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/login_result.dart';
@@ -12,6 +15,16 @@ import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/files/presentation/pages/file_browser_page.dart';
+import 'package:nexuscloud_client/features/update/data/update_check_service.dart';
+
+class _FakeTokenStore implements TokenStore {
+  @override
+  Future<void> save(String token) async {}
+  @override
+  Future<String?> read() async => null;
+  @override
+  Future<void> clear() async {}
+}
 
 class _FakeAuthRepository implements AuthRepository {
   @override
@@ -146,6 +159,21 @@ void main() {
     await sl.reset();
     sl.registerSingleton<AuthRepository>(_FakeAuthRepository());
     sl.registerSingleton<FilesRepository>(_FakeFilesRepository());
+    // FileBrowserPage lanza una comprobación de actualizaciones silenciosa
+    // en segundo plano al abrirse (ver ADR-032) -- sin baseUrl configurada
+    // a propósito, para que la petición falle rápido (sin red real) y
+    // UpdateCheckService.check() degrade a "unavailable" sin más, que es
+    // justo lo que este grupo de tests necesita: ni lo prueban ni les
+    // debe importar.
+    sl.registerSingleton<UpdateCheckService>(
+      UpdateCheckService(
+        apiClient: ApiClient(
+          tokenStore: _FakeTokenStore(),
+          sessionExpiryNotifier: SessionExpiryNotifier(),
+        ),
+        currentVersion: '0.0.0',
+      ),
+    );
   });
 
   testWidgets('muestra el estado vacío cuando la carpeta no tiene contenido',

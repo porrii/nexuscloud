@@ -98,6 +98,16 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("backup.remoteDestination debe empezar por http:// o https:// (ADR-029), o dejarse vacío para un destino local")
 	}
 
+	if cfg.ClientUpdates.Enabled {
+		owner, repo, ok := strings.Cut(cfg.ClientUpdates.GithubRepo, "/")
+		if !ok || owner == "" || repo == "" {
+			return fmt.Errorf(`clientUpdates.githubRepo debe tener el formato "propietario/repositorio" cuando clientUpdates.enabled=true`)
+		}
+		if cfg.ClientUpdates.Channel == "" {
+			return fmt.Errorf("clientUpdates.channel no puede estar vacío cuando clientUpdates.enabled=true")
+		}
+	}
+
 	if err := validateStorageAreas(cfg); err != nil {
 		return err
 	}

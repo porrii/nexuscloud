@@ -65,6 +65,8 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/public/shares/{token}/browse?path=` | — | Lista el contenido de un enlace de carpeta (o una subcarpeta suya) |
 | POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
+| GET | `/api/v1/public/client-updates/releases.json` | — | Feed de actualizaciones del cliente de escritorio (Velopack), reenviado desde GitHub Releases; solo si `clientUpdates.enabled=true` (§ADR-032) |
+| GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |
 
 Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propio handler/repositorio, no solo la autenticación — acceder a un archivo ajeno por ID adivinado devuelve `403`, nunca el contenido (§198 IDOR).
 

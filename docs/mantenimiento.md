@@ -80,6 +80,36 @@ datos, así que actualizar es seguro incluso si el esquema cambió. Aun así,
 para una actualización importante, haz copia de `storage.dataDir` (o al
 menos de la base de datos) antes.
 
+## Activar la auto-actualización del cliente de escritorio (Windows)
+
+Por defecto está desactivada (secure by default, igual que la web o los
+enlaces públicos). Para que el cliente pueda avisar de versiones nuevas y
+actualizarse solo (ver [`cliente-de-escritorio.md`](cliente-de-escritorio.md#actualizar-windows)),
+el servidor necesita reenviar el feed desde GitHub Releases del
+repositorio del proyecto — el cliente nunca lleva ningún token propio
+(ADR-032 en `nexuscloud/docs/architecture/decisions/`).
+
+En `config.yaml`:
+
+```yaml
+clientUpdates:
+  enabled: true
+  githubRepo: "tu-usuario/tu-fork-de-nexuscloud"
+  channel: win
+```
+
+Y en el entorno del servidor (nunca en `config.yaml`, igual que la
+passphrase de backup o su token remoto):
+
+```sh
+export NEXUSCLOUD_CLIENT_UPDATES_GITHUB_TOKEN='un-token-de-github-con-acceso-a-releases'
+```
+
+Si el repositorio es privado (lo normal en un fork propio), el token es
+obligatorio — sin él, GitHub aplica el límite de peticiones sin
+autenticar y las releases privadas no son descargables de todos modos.
+Reinicia el servicio tras cambiar esto.
+
 ## Añadir o quitar la interfaz web
 
 Sin reinstalar desde cero, sobre una instalación que ya tienes funcionando

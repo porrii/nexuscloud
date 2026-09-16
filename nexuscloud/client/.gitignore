@@ -32,6 +32,9 @@ migrate_working_dir/
 .pub/
 /build/
 /coverage/
+# Salida de deploy/scripts/package-client-windows.ps1 (vpk pack, ADR-032).
+/Releases/
+/Releases-*/
 
 # Symbolication related
 app.*.symbols

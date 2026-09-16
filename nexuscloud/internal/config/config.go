@@ -19,19 +19,20 @@ const CurrentConfigVersion = 1
 
 // Config es el árbol completo de configuración de una instancia NexusCloud.
 type Config struct {
-	ConfigVersion int              `yaml:"configVersion"`
-	General       GeneralConfig    `yaml:"general"`
-	Server        ServerConfig     `yaml:"server"`
-	Database      DatabaseConfig   `yaml:"database"`
-	Storage       StorageConfig    `yaml:"storage"`
-	Security      SecurityConfig   `yaml:"security"`
-	Trash         TrashConfig      `yaml:"trash"`
-	Versioning    VersioningConfig `yaml:"versioning"`
-	Sharing       SharingConfig    `yaml:"sharing"`
-	Backup        BackupConfig     `yaml:"backup"`
-	API           APIConfig        `yaml:"api"`
-	Web           WebConfig        `yaml:"web"`
-	Logging       LoggingConfig    `yaml:"logging"`
+	ConfigVersion int                 `yaml:"configVersion"`
+	General       GeneralConfig       `yaml:"general"`
+	Server        ServerConfig        `yaml:"server"`
+	Database      DatabaseConfig      `yaml:"database"`
+	Storage       StorageConfig       `yaml:"storage"`
+	Security      SecurityConfig      `yaml:"security"`
+	Trash         TrashConfig         `yaml:"trash"`
+	Versioning    VersioningConfig    `yaml:"versioning"`
+	Sharing       SharingConfig       `yaml:"sharing"`
+	Backup        BackupConfig        `yaml:"backup"`
+	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
+	API           APIConfig           `yaml:"api"`
+	Web           WebConfig           `yaml:"web"`
+	Logging       LoggingConfig       `yaml:"logging"`
 }
 
 type GeneralConfig struct {
@@ -189,6 +190,26 @@ type BackupConfig struct {
 	RemoteDestination string `yaml:"remoteDestination"`
 }
 
+// ClientUpdatesConfig gobierna el proxy de auto-actualización del cliente de
+// escritorio (Velopack, ADR-032): el propio servidor NexusCloud reenvía el
+// feed de versiones y los paquetes desde GitHub Releases del repositorio del
+// proyecto, para que el cliente instalado nunca necesite hablar con GitHub
+// ni llevar ningún token propio -- mismo motivo de fondo que
+// backup.remoteDestination (secreto fuera del cliente/config.yaml). Enabled
+// es false por defecto (secure-by-default, igual que web.enabled y
+// sharing.publicLinksEnabled): es una superficie pública sin sesión nueva,
+// el administrador debe activarla a propósito. El token de GitHub tampoco
+// vive aquí -- se lee de NEXUSCLOUD_CLIENT_UPDATES_GITHUB_TOKEN al arrancar
+// el servidor, mismo criterio exacto que NEXUSCLOUD_BACKUP_REMOTE_TOKEN.
+type ClientUpdatesConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// GithubRepo, formato "propietario/repositorio" (p.ej. "porrii/nexuscloud").
+	GithubRepo string `yaml:"githubRepo"`
+	// Channel es el canal de Velopack a servir (releases.<channel>.json).
+	// "win" es el único canal que produce hoy el empaquetado de Windows.
+	Channel string `yaml:"channel"`
+}
+
 type RateLimitConfig struct {
 	LoginPerMinute      int `yaml:"loginPerMinute"`
 	APIPerMinute        int `yaml:"apiPerMinute"`
@@ -246,13 +267,14 @@ func Defaults() *Config {
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
 		},
-		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
-		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
-		Sharing:    SharingConfig{Enabled: true, PublicLinksEnabled: false},
-		Backup:     BackupConfig{Enabled: false, IntervalMinutes: 1440},
-		API:        APIConfig{Enabled: true},
-		Web:        WebConfig{Enabled: false},
-		Logging:    LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
+		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
+		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
+		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false},
+		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
+		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
+		API:           APIConfig{Enabled: true},
+		Web:           WebConfig{Enabled: false},
+		Logging:       LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
 	}
 }
 

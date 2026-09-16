@@ -16,6 +16,9 @@ import '../../../sharing/presentation/pages/share_page.dart';
 import '../../../sharing/presentation/pages/shared_with_me_page.dart';
 import '../../../sync/presentation/pages/local_trash_page.dart';
 import '../../../sync/presentation/pages/sync_settings_page.dart';
+import '../../../update/data/update_check_service.dart';
+import '../../../update/domain/entities/update_check_result.dart';
+import '../../../update/presentation/pages/updates_page.dart';
 import '../widgets/breadcrumb_bar.dart';
 import 'file_versions_page.dart';
 import 'trash_page.dart';
@@ -57,11 +60,25 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
   _LoadState _state = _LoadState.loading;
   String? _errorMessage;
   final List<_Transfer> _transfers = [];
+  bool _updateAvailable = false;
 
   @override
   void initState() {
     super.initState();
     _load(_currentPath);
+    _checkForUpdatesSilently();
+  }
+
+  /// Silenciosa a propósito (§ plan de esta feature): solo enciende el
+  /// puntito del icono si hay algo nuevo, nunca descarga ni muestra un
+  /// error si la comprobación falla -- es una capacidad opcional del
+  /// servidor, no algo que deba interrumpir el arranque normal de la app.
+  Future<void> _checkForUpdatesSilently() async {
+    final result = await sl<UpdateCheckService>().check();
+    if (!mounted) return;
+    if (result.status == UpdateCheckStatus.updateAvailable) {
+      setState(() => _updateAvailable = true);
+    }
   }
 
   Future<void> _load(String path) async {
@@ -210,6 +227,13 @@ class _FileBrowserPageState extends State<FileBrowserPage> {
             icon: const Icon(Icons.sync),
             onPressed: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SyncSettingsPage()),
+            ),
+          ),
+          IconButton(
+            tooltip: 'Actualizaciones',
+            icon: Badge(isLabelVisible: _updateAvailable, child: const Icon(Icons.system_update)),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const UpdatesPage()),
             ),
           ),
           IconButton(

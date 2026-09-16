@@ -22,6 +22,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/backup"
+	"github.com/porrii/nexuscloud/internal/clientupdates"
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/db"
 	"github.com/porrii/nexuscloud/internal/security"
@@ -120,6 +121,20 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// desde CLI sigue sin endpoint HTTP/UI propio, igual que en el Slice 1.
 	backupManager := backup.NewManager(poolRepo, fileRepo, providers, backupRepo, fileSvc, cfg.Security.Argon2)
 
+	// clientUpdatesProxy (ADR-032): solo se construye si clientUpdates.enabled
+	// = true. El token de GitHub nunca vive en config.yaml, mismo criterio
+	// exacto que NEXUSCLOUD_BACKUP_RECEIVE_TOKEN un poco más abajo -- con
+	// clientUpdates.enabled=false (por defecto), queda en nil y NewRouter ni
+	// registra esas rutas.
+	var clientUpdatesProxy *clientupdates.Proxy
+	if cfg.ClientUpdates.Enabled {
+		clientUpdatesProxy = clientupdates.NewProxy(
+			cfg.ClientUpdates.GithubRepo,
+			cfg.ClientUpdates.Channel,
+			os.Getenv("NEXUSCLOUD_CLIENT_UPDATES_GITHUB_TOKEN"),
+		)
+	}
+
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
 		Hasher:         hasher,
@@ -141,6 +156,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		BackupsDir:         cfg.BackupsDir(),
 		BackupRepo:         backupRepo,
 		BackupReceiveToken: os.Getenv("NEXUSCLOUD_BACKUP_RECEIVE_TOKEN"),
+		ClientUpdatesProxy: clientUpdatesProxy,
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute

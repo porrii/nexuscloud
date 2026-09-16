@@ -7,12 +7,27 @@ por la web cada vez.
 
 ## Instalar
 
-- **Windows**: instalador MSIX (ver los releases del repositorio), o
-  compilar desde código: `flutter build windows` dentro de
-  `nexuscloud/client/`.
+- **Windows**: instalador `NexusCloud-win-Setup.exe` (ver los releases
+  del repositorio), o compilar desde código:
+  `nexuscloud/deploy/scripts/package-client-windows.ps1`. Al no estar
+  firmado, la primera vez que lo ejecutes Windows SmartScreen puede
+  avisar — "Más información" → "Ejecutar de todas formas".
 - **Linux**: compilar desde código: `flutter build linux` dentro de
   `nexuscloud/client/`. (Necesitas el SDK de Flutter instalado; no lo
   gestiona `install.sh`, que es solo para el servidor.)
+
+## Actualizar (Windows)
+
+El propio cliente comprueba si hay una versión nueva al abrirse (sin
+descargar nada solo) y avisa con un puntito en el icono de
+"Actualizaciones" de la barra superior. Desde ahí, "Descargar" y luego
+"Reiniciar y actualizar" — la app se cierra, se actualiza y se vuelve a
+abrir sola, sin instalador aparte.
+
+Esto requiere que tu servidor tenga activada la comprobación de
+actualizaciones (`clientUpdates.enabled: true` en `config.yaml`, ver
+[`administracion.md`](administracion.md)) — si no, el icono no muestra
+nunca ningún aviso, sin que sea un error.
 
 ## Primer login
 
