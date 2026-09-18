@@ -49,7 +49,7 @@ func newTestEnv(t *testing.T) *testEnv {
 }
 
 func (e *testEnv) authenticator() *Authenticator {
-	return NewAuthenticator(e.users, e.sessions, e.hasher, 24, nil)
+	return NewAuthenticator(e.users, e.sessions, e.webauthnCreds, e.hasher, 24, nil)
 }
 
 func (e *testEnv) webAuthnService(t *testing.T) *WebAuthnService {

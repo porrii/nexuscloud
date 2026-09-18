@@ -86,6 +86,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	userRepo := users.NewSQLRepository(conn)
 	sessionRepo := auth.NewSQLSessionRepository(conn)
 	invitationRepo := auth.NewSQLInvitationRepository(conn)
+	webauthnCredRepo := auth.NewSQLWebAuthnCredentialRepository(conn)
+	webauthnCeremonyRepo := auth.NewSQLWebAuthnCeremonyRepository(conn)
 	poolRepo := storage.NewSQLPoolRepository(conn)
 	fileRepo := storage.NewSQLFileRepository(conn)
 	directoryRepo := storage.NewSQLDirectoryRepository(conn)
@@ -107,7 +109,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	hasher := auth.NewHasher(cfg.Security.Argon2)
 	userSvc := users.NewService(userRepo)
-	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
+	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, webauthnCredRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
@@ -135,6 +137,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		)
 	}
 
+	// webauthnSvc (§25, ADR-033): solo se construye si
+	// security.webAuthn.enabled = true -- config.Validate ya exige RPID/
+	// RPOrigin no vacíos en ese caso, así que webauthn.New (dentro de
+	// NewWebAuthnService) nunca falla aquí por config incompleta. Con
+	// enabled=false (por defecto), queda en nil y NewRouter ni registra
+	// esas rutas, mismo criterio exacto que clientUpdatesProxy.
+	var webauthnSvc *auth.WebAuthnService
+	if cfg.Security.WebAuthn.Enabled {
+		webauthnSvc, err = auth.NewWebAuthnService(cfg.Security.WebAuthn, webauthnCredRepo, webauthnCeremonyRepo, userRepo)
+		if err != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("configurando WebAuthn: %w", err)
+		}
+	}
+
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
 		Hasher:         hasher,
@@ -157,6 +174,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		BackupRepo:         backupRepo,
 		BackupReceiveToken: os.Getenv("NEXUSCLOUD_BACKUP_RECEIVE_TOKEN"),
 		ClientUpdatesProxy: clientUpdatesProxy,
+		WebAuthn:           webauthnSvc,
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute

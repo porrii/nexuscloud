@@ -28,6 +28,9 @@ const (
 	EventConfigChanged     = "config_changed"
 	EventGroupCreated      = "group_created"
 	EventGroupMemberAdded  = "group_member_added"
+
+	EventWebAuthnCredentialRegistered = "webauthn_credential_registered"
+	EventWebAuthnCredentialRevoked    = "webauthn_credential_revoked"
 )
 
 type Event struct {

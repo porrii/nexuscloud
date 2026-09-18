@@ -46,6 +46,13 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 		status, code, msg := http.StatusUnauthorized, "unauthorized", "Usuario o contraseña incorrectos."
 		switch {
+		case errors.Is(err, auth.ErrWebAuthnRequired):
+			// La contraseña ya era correcta: el cliente debe repetir la
+			// verificación contra /auth/webauthn/login/begin (con el mismo
+			// username+password) para completar el segundo factor -- ver el
+			// comentario de Authenticator.Login sobre por qué WebAuthn no
+			// puede resolverse en esta misma llamada como TOTP.
+			code, msg = "webauthn_required", "Se requiere un passkey (WebAuthn)."
 		case errors.Is(err, auth.ErrTOTPRequired):
 			code, msg = "totp_required", "Se requiere código de doble factor."
 		case errors.Is(err, auth.ErrTOTPInvalid):

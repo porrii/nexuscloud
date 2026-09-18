@@ -12,6 +12,7 @@ import (
 
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/config"
+	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/users"
 )
 
@@ -190,6 +191,70 @@ func TestUsersTotpVerifyRequiresSecret(t *testing.T) {
 	_, err := runUsers(t, "totp", "verify", "--username", username, "123456")
 	if err == nil || !strings.Contains(err.Error(), "--secret") {
 		t.Fatalf("esperaba error sobre --secret, obtuve: %v", err)
+	}
+}
+
+func TestUsersWebauthnListAndRevoke(t *testing.T) {
+	username := newCLITestUser(t)
+
+	out, err := runUsers(t, "webauthn", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("list falló: %v (salida: %s)", err, out)
+	}
+	if !strings.Contains(out, "no tiene passkeys") {
+		t.Errorf("salida = %q, esperaba el aviso de que no tiene passkeys", out)
+	}
+
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load falló: %v", err)
+	}
+	sqlDB, userRepo, err := openUsersRepo(cfg, false)
+	if err != nil {
+		t.Fatalf("openUsersRepo falló: %v", err)
+	}
+	u, err := userRepo.GetUserByUsername(context.Background(), username)
+	if err != nil {
+		t.Fatalf("GetUserByUsername falló: %v", err)
+	}
+	// Inserción directa: no hay ceremonia real que completar desde el CLI
+	// (el registro de un passkey solo ocurre vía web/API, ver plan Fase 6
+	// slice 1) -- aquí solo se prueba listar/revocar lo ya registrado,
+	// para recuperar acceso si el usuario se ha quedado bloqueado.
+	cred := &auth.WebAuthnCredential{
+		ID: idgen.New(), UserID: u.ID, CredentialID: "cred-" + idgen.New(),
+		PublicKey: "pk", Label: "llave de prueba", CreatedAt: time.Now().UTC(),
+	}
+	if err := openWebAuthnCredRepo(cfg, sqlDB).CreateCredential(context.Background(), cred); err != nil {
+		t.Fatalf("insertando credencial de prueba: %v", err)
+	}
+	sqlDB.Close()
+
+	out, err = runUsers(t, "webauthn", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("list falló: %v (salida: %s)", err, out)
+	}
+	if !strings.Contains(out, cred.ID) || !strings.Contains(out, "llave de prueba") {
+		t.Errorf("salida = %q, esperaba ver la credencial insertada", out)
+	}
+
+	if out, err := runUsers(t, "webauthn", "revoke", cred.ID, "--username", username); err != nil {
+		t.Fatalf("revoke falló: %v (salida: %s)", err, out)
+	}
+
+	out, err = runUsers(t, "webauthn", "list", "--username", username)
+	if err != nil {
+		t.Fatalf("list falló: %v (salida: %s)", err, out)
+	}
+	if !strings.Contains(out, "no tiene passkeys") {
+		t.Errorf("salida tras revocar = %q, esperaba que ya no tenga passkeys", out)
+	}
+}
+
+func TestUsersWebauthnRevokeRejectsUnknownCredential(t *testing.T) {
+	username := newCLITestUser(t)
+	if _, err := runUsers(t, "webauthn", "revoke", "credencial-que-no-existe", "--username", username); err == nil {
+		t.Fatal("esperaba error al revocar una credencial inexistente")
 	}
 }
 

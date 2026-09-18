@@ -39,4 +39,9 @@ type Handlers struct {
 	// defecto), NewRouter ni siquiera registra esas rutas, mismo criterio
 	// exacto que BackupReceiveToken vacío.
 	ClientUpdatesProxy *clientupdates.Proxy
+	// WebAuthn (§25, ADR-033): solo se usa si security.webAuthn.enabled=true
+	// en config.yaml -- ver webauthn_handlers.go. Con nil (por defecto),
+	// NewRouter ni siquiera registra esas rutas, mismo criterio exacto que
+	// ClientUpdatesProxy.
+	WebAuthn *auth.WebAuthnService
 }

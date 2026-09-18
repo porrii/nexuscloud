@@ -16,6 +16,7 @@ var (
 	ErrUserDisabled         = errors.New("auth: usuario deshabilitado")
 	ErrTOTPRequired         = errors.New("auth: se requiere código TOTP")
 	ErrTOTPInvalid          = errors.New("auth: código TOTP inválido")
+	ErrWebAuthnRequired     = errors.New("auth: se requiere un passkey (WebAuthn)")
 )
 
 // Authenticator orquesta login/logout/validación de sesión combinando
@@ -24,28 +25,32 @@ var (
 // internal/users) porque es este paquete el que depende de users, nunca al
 // revés.
 type Authenticator struct {
-	users      users.Repository
-	sessions   SessionRepository
-	hasher     *Hasher
-	sessionTTL time.Duration
-	logger     *slog.Logger
+	users         users.Repository
+	sessions      SessionRepository
+	webauthnCreds WebAuthnCredentialRepository
+	hasher        *Hasher
+	sessionTTL    time.Duration
+	logger        *slog.Logger
 }
 
-func NewAuthenticator(userRepo users.Repository, sessionRepo SessionRepository, hasher *Hasher, sessionTTLHours int, logger *slog.Logger) *Authenticator {
+// webauthnCreds es opcional (nil-safe): si es nil, Login se comporta
+// exactamente como antes de que existiera WebAuthn (solo contraseña+TOTP).
+func NewAuthenticator(userRepo users.Repository, sessionRepo SessionRepository, webauthnCreds WebAuthnCredentialRepository, hasher *Hasher, sessionTTLHours int, logger *slog.Logger) *Authenticator {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Authenticator{
-		users:      userRepo,
-		sessions:   sessionRepo,
-		hasher:     hasher,
-		sessionTTL: time.Duration(sessionTTLHours) * time.Hour,
-		logger:     logger,
+		users:         userRepo,
+		sessions:      sessionRepo,
+		webauthnCreds: webauthnCreds,
+		hasher:        hasher,
+		sessionTTL:    time.Duration(sessionTTLHours) * time.Hour,
+		logger:        logger,
 	}
 }
 
-func NewAuthenticatorFromConfig(userRepo users.Repository, sessionRepo SessionRepository, cfg *config.Config, logger *slog.Logger) *Authenticator {
-	return NewAuthenticator(userRepo, sessionRepo, NewHasher(cfg.Security.Argon2), cfg.Security.SessionTTLHours, logger)
+func NewAuthenticatorFromConfig(userRepo users.Repository, sessionRepo SessionRepository, webauthnCreds WebAuthnCredentialRepository, cfg *config.Config, logger *slog.Logger) *Authenticator {
+	return NewAuthenticator(userRepo, sessionRepo, webauthnCreds, NewHasher(cfg.Security.Argon2), cfg.Security.SessionTTLHours, logger)
 }
 
 type LoginResult struct {
@@ -54,11 +59,13 @@ type LoginResult struct {
 	Session *Session
 }
 
-// Login verifica usuario+contraseña (y TOTP si está habilitado) y crea una
-// nueva sesión. Siempre devuelve el mismo error genérico ante usuario
-// inexistente o contraseña incorrecta, para no permitir enumeración de
-// usuarios por temporización o mensaje (§27, §170).
-func (a *Authenticator) Login(ctx context.Context, username, password, totpCode, device, ip string) (*LoginResult, error) {
+// VerifyPassword comprueba usuario+contraseña sin completar el login (no
+// crea sesión, no exige segundo factor). La usa el paso "begin" de una
+// ceremonia WebAuthn de login con usuario ya conocido (2FA): necesita
+// saber qué usuario es antes de emitir el reto, pero completar la sesión
+// todavía no corresponde a ese paso -- FinishLogin es quien de verdad
+// autentica. Mismo criterio anti-enumeración que Login (§27, §170).
+func (a *Authenticator) VerifyPassword(ctx context.Context, username, password string) (*users.User, error) {
 	u, err := a.users.GetUserByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, users.ErrNotFound) {
@@ -72,6 +79,39 @@ func (a *Authenticator) Login(ctx context.Context, username, password, totpCode,
 	if err := a.hasher.Verify(password, u.PasswordHash); err != nil {
 		return nil, ErrAuthenticationFailed
 	}
+	return u, nil
+}
+
+// Login verifica usuario+contraseña y el segundo factor que corresponda
+// -- WebAuthn si el usuario tiene algún passkey registrado (más fuerte y
+// resistente a phishing, tiene prioridad sobre TOTP si tiene ambos, §25),
+// TOTP en otro caso -- y crea una nueva sesión. Siempre devuelve el mismo
+// error genérico ante usuario inexistente o contraseña incorrecta, para
+// no permitir enumeración de usuarios por temporización o mensaje (§27,
+// §170).
+//
+// Cuando devuelve ErrWebAuthnRequired, la contraseña ya es correcta pero
+// el login no se completa aquí: el cliente debe repetir la verificación
+// de contraseña contra /auth/webauthn/login/begin (vía
+// Authenticator.VerifyPassword) para obtener el reto, y solo entonces
+// FinishLogin crea la sesión real. WebAuthn, a diferencia de TOTP, no se
+// puede completar en la misma llamada porque exige un reto servidor
+// primero -- no hay un "código" que el cliente ya tenga de antemano.
+func (a *Authenticator) Login(ctx context.Context, username, password, totpCode, device, ip string) (*LoginResult, error) {
+	u, err := a.VerifyPassword(ctx, username, password)
+	if err != nil {
+		return nil, err
+	}
+
+	if a.webauthnCreds != nil {
+		creds, err := a.webauthnCreds.ListCredentialsForUser(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(creds) > 0 {
+			return nil, ErrWebAuthnRequired
+		}
+	}
 	if u.HasTOTP() {
 		if totpCode == "" {
 			return nil, ErrTOTPRequired
@@ -81,6 +121,16 @@ func (a *Authenticator) Login(ctx context.Context, username, password, totpCode,
 		}
 	}
 
+	return a.completeLogin(ctx, u, device, ip)
+}
+
+// completeLogin crea la sesión real y actualiza LastLoginAt, una vez que
+// el usuario ya está plenamente autenticado (contraseña + el segundo
+// factor que correspondiera, cualquiera que haya sido). La usan tanto
+// Login (tras pasar TOTP) como los handlers de FinishLogin/
+// FinishDiscoverableLogin de WebAuthn (tras validar el passkey) -- ambos
+// caminos terminan exactamente igual, así que esta cola no se duplica.
+func (a *Authenticator) completeLogin(ctx context.Context, u *users.User, device, ip string) (*LoginResult, error) {
 	token, err := idgen.Token()
 	if err != nil {
 		return nil, err
@@ -107,6 +157,14 @@ func (a *Authenticator) Login(ctx context.Context, username, password, totpCode,
 	}
 
 	return &LoginResult{User: u, Token: token, Session: sess}, nil
+}
+
+// CompleteWebAuthnLogin crea la sesión real tras una ceremonia WebAuthn de
+// login válida (segundo factor o passwordless) -- ver completeLogin.
+// Exportado porque lo llama el handler HTTP de FinishLogin/
+// FinishDiscoverableLogin, en internal/api/v1.
+func (a *Authenticator) CompleteWebAuthnLogin(ctx context.Context, u *users.User, device, ip string) (*LoginResult, error) {
+	return a.completeLogin(ctx, u, device, ip)
 }
 
 // ValidateToken resuelve un token de Bearer/cookie a su sesión + usuario, y

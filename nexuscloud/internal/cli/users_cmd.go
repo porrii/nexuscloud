@@ -2,12 +2,16 @@ package cli
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/porrii/nexuscloud/internal/auth"
+	"github.com/porrii/nexuscloud/internal/config"
+	"github.com/porrii/nexuscloud/internal/db"
 	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/users"
 )
@@ -18,7 +22,7 @@ func newUsersCmd() *cobra.Command {
 		Short: "Gestión de usuarios (§20-21)",
 	}
 	cmd.AddCommand(newUsersListCmd(), newUsersCreateCmd(), newUsersDisableCmd(), newUsersEnableCmd(),
-		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersTotpCmd(), newUsersInvitationCmd())
+		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(), newUsersInvitationCmd())
 	return cmd
 }
 
@@ -320,6 +324,109 @@ func newUsersTotpDisableCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q.\n", username)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+// openWebAuthnCredRepo reutiliza la misma conexión que openUsersRepo en
+// vez de abrir la base de datos dos veces -- db.Wrap solo añade la
+// reescritura de placeholders (Rebind), no abre nada nuevo.
+func openWebAuthnCredRepo(cfg *config.Config, sqlDB *sql.DB) auth.WebAuthnCredentialRepository {
+	return auth.NewSQLWebAuthnCredentialRepository(db.Wrap(cfg.Database.Driver, sqlDB))
+}
+
+func newUsersWebauthnCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "webauthn",
+		Short: "Passkeys / WebAuthn (§25, ADR-033)",
+	}
+	cmd.AddCommand(newUsersWebauthnListCmd(), newUsersWebauthnRevokeCmd())
+	return cmd
+}
+
+func newUsersWebauthnListCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Lista los passkeys registrados de un usuario",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			creds, err := openWebAuthnCredRepo(cfg, sqlDB).ListCredentialsForUser(context.Background(), u.ID)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(creds) == 0 {
+				fmt.Fprintf(out, "%q no tiene passkeys registrados.\n", username)
+				return nil
+			}
+			for _, c := range creds {
+				lastUsed := "nunca"
+				if c.LastUsedAt != nil {
+					lastUsed = c.LastUsedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(out, "%-36s  %-20s  creado %s  último uso %s\n", c.ID, c.Label, c.CreatedAt.Format(time.RFC3339), lastUsed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+func newUsersWebauthnRevokeCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "revoke <credential-id>",
+		Short: "Revoca un passkey (recupera el acceso si se ha quedado bloqueado)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			// DeleteCredential exige coincidencia de userID (§198 IDOR):
+			// --username no es solo cosmético, evita revocar por error el
+			// passkey de otro usuario aunque se acierte el ID.
+			if err := openWebAuthnCredRepo(cfg, sqlDB).DeleteCredential(context.Background(), args[0], u.ID); err != nil {
+				if errors.Is(err, auth.ErrWebAuthnCredentialNotFound) {
+					return fmt.Errorf("passkey %q no encontrado para %q", args[0], username)
+				}
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q.\n", args[0], username)
 			return nil
 		},
 	}
