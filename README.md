@@ -1,5 +1,9 @@
 # NexusCloud
 
+[![Licencia MIT](https://img.shields.io/github/license/porrii/nexuscloud)](LICENSE)
+[![Última release](https://img.shields.io/github/v/release/porrii/nexuscloud)](https://github.com/porrii/nexuscloud/releases/latest)
+[![CI](https://github.com/porrii/nexuscloud/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/porrii/nexuscloud/actions/workflows/ci.yml)
+
 Plataforma de almacenamiento en la nube privada, autoalojada (self-hosted),
 modular y multiplataforma. Escrita en Go, licencia MIT. Todo el código vive
 en [`nexuscloud/`](nexuscloud/).
@@ -122,9 +126,29 @@ NEXUSCLOUD_WEB_ENABLED=true ./nexuscloud start
 Sin interfaz web, la [referencia de la API](nexuscloud/docs/api.md) explica
 cómo hacer login y subir tu primer archivo directamente.
 
+### Cliente de escritorio (Windows/Linux)
+
+En Windows, descarga `NexusCloud-win-Setup.exe` de la
+[última release](https://github.com/porrii/nexuscloud/releases/latest) —
+sin certificado de firma (puede avisar SmartScreen la primera vez, "Más
+información" → "Ejecutar de todas formas"). Se actualiza solo, sin volver
+a descargar nada a mano (ver [ADR-032](nexuscloud/docs/architecture/decisions/ADR-032-client-auto-update-velopack.md)).
+En Linux, compila desde código: ver
+[cliente-de-escritorio.md](docs/cliente-de-escritorio.md).
+
 ## Documentación
 
-Todo bajo [`nexuscloud/docs/`](nexuscloud/docs/):
+**Guías de uso** (todo bajo [`docs/`](docs/)):
+
+- [primeros-pasos.md](docs/primeros-pasos.md) — de cero a tener NexusCloud funcionando
+- [comandos.md](docs/comandos.md) — referencia de la CLI
+- [administracion.md](docs/administracion.md) — usuarios, grupos, compartición, 2FA, auditoría
+- [backup-y-recuperacion.md](docs/backup-y-recuperacion.md)
+- [cliente-de-escritorio.md](docs/cliente-de-escritorio.md)
+- [mantenimiento.md](docs/mantenimiento.md) — actualizar, verificar RAID/snapshots, resolver problemas
+- [preguntas-frecuentes.md](docs/preguntas-frecuentes.md)
+
+**Documentación técnica** (bajo [`nexuscloud/docs/`](nexuscloud/docs/)):
 
 - [architecture.md](nexuscloud/docs/architecture.md) — módulos, árbol de proyecto, fases
 - [security.md](nexuscloud/docs/security.md) — modelo de seguridad

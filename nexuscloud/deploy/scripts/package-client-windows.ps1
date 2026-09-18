@@ -75,5 +75,11 @@ vpk pack `
 if ($LASTEXITCODE -ne 0) { throw "vpk pack falló" }
 
 Write-Host "==> Listo: $OutputDir"
-Write-Host "    Para publicar en GitHub Releases (repo privado, necesita un token con acceso a releases):"
-Write-Host "    vpk upload github --outputDir `"$OutputDir`" --repoUrl https://github.com/porrii/nexuscloud --token <token> --publish"
+Write-Host "    De todo lo generado aqui, el proxy del servidor y el cliente solo"
+Write-Host "    necesitan estos tres (el resto -- assets.win.json, RELEASES, el"
+Write-Host "    Portable.zip -- son metadatos internos de vpk que nadie lee, no los subas):"
+Write-Host "      - NexusCloud-$Version-full.nupkg"
+Write-Host "      - NexusCloud-win-Setup.exe"
+Write-Host "      - releases.win.json"
+Write-Host "    Para publicar (gh ya autenticado en esta maquina):"
+Write-Host "    gh release create vX.Y.Z `"$OutputDir\NexusCloud-$Version-full.nupkg`" `"$OutputDir\NexusCloud-win-Setup.exe`" `"$OutputDir\releases.win.json`" --repo porrii/nexuscloud --title `"NexusCloud vX.Y.Z`" --notes `"...`""
