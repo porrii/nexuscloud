@@ -48,10 +48,10 @@ El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **L
 |---|---|---|
 | 1 | Core, Config, DB, Users, Auth, Storage básico, API, seguridad de base | ✅ Completa (con algunos gaps conocidos menores, ver más abajo) |
 | 2 | Web UI (React+TS+Vite embebido) + File manager + Papelera + Versionado + Sharing | ✅ Completa — ver `web/README.md`, `docs/storage.md#papelera`, `docs/storage.md#versionado-15`, `docs/storage.md#compartición-37` |
-| 3 | Cliente Desktop (Windows/Linux) | ✅ Completa (18 slices) — paridad funcional con la web, sync bidireccional con varios pares, auto-sync, descargas reanudables. Único pendiente: auto-actualización del MSIX, bloqueada en la obtención de un certificado de firma de código. Ver `client/README.md`, [ADR-005](architecture/decisions/ADR-005-multiplatform-strategy.md), [ADR-009](architecture/decisions/ADR-009-flutter-client-foundation.md) |
+| 3 | Cliente Desktop (Windows/Linux) | ✅ Completa (18 slices) — paridad funcional con la web, sync bidireccional con varios pares, auto-sync, descargas reanudables, auto-actualización real con Velopack (v1.0.0+). Ver `client/README.md`, [ADR-005](architecture/decisions/ADR-005-multiplatform-strategy.md), [ADR-009](architecture/decisions/ADR-009-flutter-client-foundation.md), [ADR-032](architecture/decisions/ADR-032-client-auto-update-velopack.md) |
 | 4 | Cliente Android | Pendiente — mismo código Flutter que Fase 3 |
 | 5 | Backup Manager, Snapshots, gestión de discos/RAID | ✅ Completa (9 slices) — ver `docs/storage.md#backup-manager-18`, `docs/storage.md#raid-12`, `docs/storage.md#snapshots-17` |
-| 6 | Seguridad avanzada: 2FA reforzado, Passkeys/WebAuthn, WebDAV | Pendiente — `security`/`storage`/`backup` ya reservados en el CLI |
+| 6 | Seguridad avanzada: 2FA reforzado, Passkeys/WebAuthn, WebDAV | Passkeys/WebAuthn ✅ (slice 1, [ADR-033](architecture/decisions/ADR-033-webauthn-passkeys.md)); WebDAV pendiente (slice 2) — `storage`/`backup` ya reservados en el CLI |
 | 7 | Integración real con el ecosistema Nexus (NexusWorkspace, etc.) | Pendiente |
 
 ### Explorador de archivos web: alcance real

@@ -184,6 +184,46 @@ recuperación si se perdió el teléfono con la app, o el secreto se copió
 mal. En un servidor headless de un solo administrador, esto es
 importante: no hay ninguna otra forma de deshacerlo.
 
+## Passkeys (WebAuthn)
+
+Alternativa a TOTP como segundo factor (más fuerte, resistente a
+phishing) y, con el mismo passkey, también login sin contraseña. A
+diferencia de TOTP, **desactivado por defecto** y requiere configurar el
+dominio real del servidor primero — sin eso, el navegador rechaza
+cualquier passkey:
+
+```yaml
+security:
+  webAuthn:
+    enabled: true
+    rpID: "nexuscloud.tu-dominio.com"      # solo el dominio, sin esquema ni puerto
+    rpOrigin: "https://nexuscloud.tu-dominio.com"
+```
+
+`rpOrigin` debe usar `https://` (o `http://localhost` solo en desarrollo
+local) — WebAuthn lo exige.
+
+Registrar un passkey **solo puede hacerse desde la web** (Cuenta →
+Passkeys → "Añadir passkey"): el navegador es quien genera el par de
+claves y lo guarda en el propio dispositivo/llave, no hay equivalente
+por CLI ni por API sin pasar por `navigator.credentials.create()`. Si un
+usuario ya tiene algún passkey registrado, el login (por cualquier vía)
+lo exigirá con prioridad sobre TOTP aunque también tenga TOTP activado.
+
+### Si algo sale mal (recuperar el acceso)
+
+```sh
+nexuscloud --config config.yaml users webauthn list --username maria
+nexuscloud --config config.yaml users webauthn revoke <id-del-passkey> --username maria
+```
+
+`list` muestra el `id` interno de cada passkey (no el que da el
+navegador) junto con su nombre y fecha de último uso. `revoke` quita ese
+passkey concreto sin necesitar el dispositivo físico — la vía de
+recuperación si se perdió la llave/el teléfono, mismo criterio que
+`users totp disable`. Si el usuario se queda sin ningún passkey y no
+tiene TOTP activado, el login vuelve a pedir solo contraseña.
+
 ## Papelera y versiones de otro usuario
 
 El administrador puede gestionar la papelera y el historial de

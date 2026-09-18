@@ -30,6 +30,12 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | DELETE | `/api/v1/auth/sessions/{id}` | sesión | Revoca una sesión propia (§26) |
 | POST | `/api/v1/auth/totp/enroll` | sesión | Genera secreto + `otpauth://` URL |
 | POST | `/api/v1/auth/totp/verify` | sesión | `{secret, code}` → activa 2FA si el código coincide |
+| POST | `/api/v1/auth/webauthn/register/begin` | sesión | Inicia el alta de un passkey nuevo (§25, ADR-033); devuelve `{ceremony_id, publicKey}` para `navigator.credentials.create()` |
+| POST | `/api/v1/auth/webauthn/register/finish?ceremony_id=&label=` | sesión | Cuerpo = respuesta cruda de `create()`; confirma el alta y devuelve el passkey guardado |
+| POST | `/api/v1/auth/webauthn/login/begin` | — | Con `{username, password}` (ya verificados) inicia el segundo factor de esa cuenta; sin ellos, login passwordless discoverable |
+| POST | `/api/v1/auth/webauthn/login/finish?ceremony_id=&username=` | — | Cuerpo = respuesta cruda de `navigator.credentials.get()`; `username` solo si venía en el begin (segundo factor) |
+| GET | `/api/v1/auth/webauthn/credentials` | sesión | Lista los passkeys propios (nunca expone `credential_id`/`public_key`, §172) |
+| DELETE | `/api/v1/auth/webauthn/credentials/{id}` | sesión, propietario | Revoca un passkey propio |
 | GET | `/api/v1/users/me` | sesión | Usuario autenticado |
 | GET | `/api/v1/users` | admin | Lista usuarios |
 | POST | `/api/v1/users` | admin | Crea un usuario directamente |

@@ -17,6 +17,7 @@ Una instalación recién hecha (`nexuscloud config init` + `nexuscloud admin cre
 - **Contraseñas**: Argon2id (`golang.org/x/crypto/argon2`), parámetros por defecto 64 MiB / t=3 / p=4 — los mismos que NexusKeys, por consistencia de ecosistema. Los parámetros de coste se guardan junto al hash (formato tipo PHC) para poder endurecerlos sin invalidar contraseñas existentes.
 - **Sesiones**: tokens opacos de 256 bits (`crypto/rand`), nunca JWT. Solo se persiste su hash SHA-256; el token en claro se devuelve una única vez en la respuesta de login. Esto hace que "listar sesiones activas" y "cerrar sesión remotamente" (§26) sean triviales — con JWT stateless habría que reconstruir un mecanismo de revocación aparte.
 - **TOTP** (RFC 6238) vía `pquerna/otp`. El secreto no se persiste hasta que el usuario confirma un código válido en `/auth/totp/verify`.
+- **Passkeys/WebAuthn** (§25, [ADR-033](architecture/decisions/ADR-033-webauthn-passkeys.md)) vía `go-webauthn/webauthn`; desactivado por defecto (`security.webAuthn.enabled: false`), exige `rpID`/`rpOrigin` reales para activarse. Tiene prioridad sobre TOTP como segundo factor si el usuario tiene algún passkey registrado, y el mismo passkey sirve también para login sin contraseña. El registro solo es posible desde la web (exige el navegador); la recuperación de acceso (revocar un passkey) sí está disponible por CLI.
 - **Enumeración de usuarios**: `Login` devuelve siempre el mismo error genérico (`unauthorized`) ante usuario inexistente o contraseña incorrecta.
 
 ## Autorización

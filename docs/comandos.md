@@ -110,6 +110,17 @@ nexuscloud users totp verify --username <usuario> --secret <el-mismo-secreto> <c
 nexuscloud users totp disable --username <usuario>   # recupera el acceso si algo salió mal (app perdida, secreto mal copiado)
 ```
 
+Passkeys (WebAuthn, requiere `security.webAuthn.enabled=true` en
+`config.yaml` — ver [`administracion.md`](administracion.md#passkeys-webauthn)).
+El alta solo puede hacerse desde la web (exige `navigator.credentials.
+create()` del navegador); por CLI solo se listan/revocan los ya
+registrados, para recuperar el acceso:
+
+```
+nexuscloud users webauthn list --username <usuario>
+nexuscloud users webauthn revoke <id-del-passkey> --username <usuario>   # recupera el acceso si se perdió la llave/el teléfono
+```
+
 ## Archivos de un usuario (`files`)
 
 El día a día: subir, bajar, listar, mover y borrar archivos, en nombre de
