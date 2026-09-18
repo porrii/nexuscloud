@@ -24,7 +24,7 @@ jobs:
       run:
         working-directory: nexuscloud
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -38,7 +38,7 @@ jobs:
       run:
         working-directory: nexuscloud
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -57,7 +57,7 @@ jobs:
       run:
         working-directory: nexuscloud
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -81,7 +81,7 @@ jobs:
           - goos: windows
             goarch: amd64
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
@@ -90,7 +90,7 @@ jobs:
   docker-build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Sin working-directory aquí (ese default es para "run:" de shell,
       # no afecta a "docker build") -- el contexto se pasa explícito.
       - run: docker build -t nexuscloud:ci -f nexuscloud/Dockerfile nexuscloud
