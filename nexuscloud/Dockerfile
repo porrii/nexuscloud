@@ -11,7 +11,7 @@ COPY web/ ./
 RUN npm run build
 
 # ---- build ------------------------------------------------------------
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.27-bookworm AS builder
 WORKDIR /src
 
 COPY go.mod go.sum ./
