@@ -1,19 +1,19 @@
 module github.com/porrii/nexuscloud
 
-go 1.25.0
+go 1.25.11
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/go-sql-driver/mysql v1.10.1
-	github.com/golang-migrate/migrate/v4 v4.19.1
+	github.com/golang-migrate/migrate/v4 v4.20.1
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/kardianos/service v1.3.0
 	github.com/pquerna/otp v1.5.0
 	github.com/spf13/cobra v1.10.2
-	golang.org/x/crypto v0.45.0
+	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.47.0
-	golang.org/x/term v0.37.0
-	golang.org/x/time v0.12.0
+	golang.org/x/term v0.44.0
+	golang.org/x/time v0.15.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.58.0
 )
