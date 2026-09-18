@@ -24,6 +24,16 @@ export interface Session {
   expires_at: string
 }
 
+// WebAuthnCredential refleja webauthnCredentialResponse (internal/api/v1/
+// webauthn_handlers.go): nunca expone credential_id/public_key/sign_count
+// (§172), igual criterio que Session con TokenHash.
+export interface WebAuthnCredential {
+  id: string
+  label: string
+  created_at: string
+  last_used_at?: string
+}
+
 export interface DirectoryEntry {
   id: string
   parent_path: string
@@ -204,6 +214,63 @@ export const api = {
 
   sessions: () => request<Session[]>('/api/v1/auth/sessions'),
   revokeSession: (id: string) => request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE' }),
+
+  // Passkeys / WebAuthn (§25, ADR-033). Usa los métodos JSON nativos del
+  // propio estándar WebAuthn L3 (PublicKeyCredential.parseCreationOptionsFromJSON/
+  // parseRequestOptionsFromJSON, credential.toJSON()) en vez de una librería
+  // aparte: ya están disponibles en los navegadores modernos que hacen
+  // falta para que WebAuthn funcione de todas formas, así que añadir una
+  // dependencia solo para esto sería redundante.
+  listWebAuthnCredentials: () => request<WebAuthnCredential[]>('/api/v1/auth/webauthn/credentials'),
+  revokeWebAuthnCredential: (id: string) => request<void>(`/api/v1/auth/webauthn/credentials/${id}`, { method: 'DELETE' }),
+
+  /** Ceremonia completa de alta: pide el reto, lo resuelve el propio navegador/authenticator, y lo confirma. */
+  registerWebAuthnCredential: async (label: string): Promise<WebAuthnCredential> => {
+    const begin = await request<{ ceremony_id: string; publicKey: PublicKeyCredentialCreationOptionsJSON }>(
+      '/api/v1/auth/webauthn/register/begin',
+      { method: 'POST' },
+    )
+    const options = PublicKeyCredential.parseCreationOptionsFromJSON(begin.publicKey)
+    const credential = await navigator.credentials.create({ publicKey: options })
+    if (!(credential instanceof PublicKeyCredential)) {
+      throw new ApiClientError(0, 'webauthn_unsupported', 'El navegador no completó el registro del passkey.')
+    }
+    return request<WebAuthnCredential>(
+      `/api/v1/auth/webauthn/register/finish?ceremony_id=${encodeURIComponent(begin.ceremony_id)}&label=${encodeURIComponent(label)}`,
+      { method: 'POST', body: JSON.stringify(credential.toJSON()) },
+    )
+  },
+
+  /**
+   * Inicia un login con passkey: con username+password (ya verificados,
+   * sin completar sesión todavía) es el segundo factor de esa cuenta; sin
+   * ellos es login passwordless discoverable -- ver BeginWebAuthnLogin en
+   * el backend.
+   */
+  beginWebAuthnLogin: (username?: string, password?: string) =>
+    request<{ ceremony_id: string; publicKey: PublicKeyCredentialRequestOptionsJSON }>('/api/v1/auth/webauthn/login/begin', {
+      method: 'POST',
+      body: JSON.stringify(username ? { username, password } : {}),
+    }),
+
+  /** Resuelve el reto de beginWebAuthnLogin con el propio navegador/authenticator y completa el login. */
+  finishWebAuthnLoginWithChallenge: async (
+    ceremonyId: string,
+    username: string | undefined,
+    publicKey: PublicKeyCredentialRequestOptionsJSON,
+  ): Promise<{ token: string; user: User; session: Session }> => {
+    const options = PublicKeyCredential.parseRequestOptionsFromJSON(publicKey)
+    const assertion = await navigator.credentials.get({ publicKey: options })
+    if (!(assertion instanceof PublicKeyCredential)) {
+      throw new ApiClientError(0, 'webauthn_unsupported', 'El navegador no completó el login con el passkey.')
+    }
+    const qs = new URLSearchParams({ ceremony_id: ceremonyId })
+    if (username) qs.set('username', username)
+    return request(`/api/v1/auth/webauthn/login/finish?${qs.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify(assertion.toJSON()),
+    })
+  },
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
   upload: uploadWithProgress,
