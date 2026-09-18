@@ -53,6 +53,18 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	if cfg.Security.WebAuthn.Enabled {
+		if cfg.Security.WebAuthn.RPID == "" {
+			return fmt.Errorf("security.webAuthn.rpID no puede estar vacío cuando security.webAuthn.enabled=true")
+		}
+		if cfg.Security.WebAuthn.RPOrigin == "" {
+			return fmt.Errorf("security.webAuthn.rpOrigin no puede estar vacío cuando security.webAuthn.enabled=true")
+		}
+		if !strings.HasPrefix(cfg.Security.WebAuthn.RPOrigin, "https://") && !strings.HasPrefix(cfg.Security.WebAuthn.RPOrigin, "http://localhost") {
+			return fmt.Errorf("security.webAuthn.rpOrigin debe usar https:// (WebAuthn lo exige salvo localhost en desarrollo)")
+		}
+	}
+
 	switch cfg.Logging.Level {
 	case "trace", "debug", "info", "warn", "error", "fatal":
 	default:

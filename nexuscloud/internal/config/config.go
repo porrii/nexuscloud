@@ -88,6 +88,23 @@ type SecurityConfig struct {
 	RateLimit                 RateLimitConfig `yaml:"rateLimit"`
 	CORSAllowedOrigins        []string        `yaml:"corsAllowedOrigins"`
 	PublicRegistrationEnabled bool            `yaml:"publicRegistrationEnabled"`
+	WebAuthn                  WebAuthnConfig  `yaml:"webAuthn"`
+}
+
+// WebAuthnConfig gobierna Passkeys/WebAuthn (§25, ADR-033). Enabled=false
+// por defecto -- a diferencia de TOTP (que no necesita nada del servidor
+// más allá del propio secreto por usuario), WebAuthn exige que el servidor
+// declare su Relying Party ID/origin de antemano: sin un RPID/RPOrigin
+// reales el navegador rechaza cualquier reto, así que activarlo a ciegas
+// con valores vacíos rompería el protocolo en vez de simplemente no hacer
+// nada. RPID es el dominio (p.ej. "nexuscloud.example.com", nunca incluye
+// esquema ni puerto -- así lo exige el estándar) y RPOrigin es el origen
+// completo tal y como lo ve el navegador (p.ej.
+// "https://nexuscloud.example.com").
+type WebAuthnConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	RPID     string `yaml:"rpID"`
+	RPOrigin string `yaml:"rpOrigin"`
 }
 
 // Argon2Config son los parámetros de coste de Argon2id (§25). Los valores
@@ -266,6 +283,7 @@ func Defaults() *Config {
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
+			WebAuthn:                  WebAuthnConfig{Enabled: false},
 		},
 		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},

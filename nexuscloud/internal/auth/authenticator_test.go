@@ -14,10 +14,12 @@ import (
 )
 
 type testEnv struct {
-	users       users.Repository
-	sessions    SessionRepository
-	invitations InvitationRepository
-	hasher      *Hasher
+	users            users.Repository
+	sessions         SessionRepository
+	invitations      InvitationRepository
+	webauthnCreds    WebAuthnCredentialRepository
+	webauthnCeremony WebAuthnCeremonyRepository
+	hasher           *Hasher
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -37,15 +39,29 @@ func newTestEnv(t *testing.T) *testEnv {
 	conn := db.Wrap(cfg.Database.Driver, sqlDB)
 
 	return &testEnv{
-		users:       users.NewSQLRepository(conn),
-		sessions:    NewSQLSessionRepository(conn),
-		invitations: NewSQLInvitationRepository(conn),
-		hasher:      NewHasher(config.Argon2Config{MemoryKiB: 8 * 1024, Iterations: 1, Parallelism: 1}),
+		users:            users.NewSQLRepository(conn),
+		sessions:         NewSQLSessionRepository(conn),
+		invitations:      NewSQLInvitationRepository(conn),
+		webauthnCreds:    NewSQLWebAuthnCredentialRepository(conn),
+		webauthnCeremony: NewSQLWebAuthnCeremonyRepository(conn),
+		hasher:           NewHasher(config.Argon2Config{MemoryKiB: 8 * 1024, Iterations: 1, Parallelism: 1}),
 	}
 }
 
 func (e *testEnv) authenticator() *Authenticator {
 	return NewAuthenticator(e.users, e.sessions, e.hasher, 24, nil)
+}
+
+func (e *testEnv) webAuthnService(t *testing.T) *WebAuthnService {
+	t.Helper()
+	svc, err := NewWebAuthnService(
+		config.WebAuthnConfig{Enabled: true, RPID: "localhost", RPOrigin: "https://localhost"},
+		e.webauthnCreds, e.webauthnCeremony, e.users,
+	)
+	if err != nil {
+		t.Fatalf("NewWebAuthnService falló: %v", err)
+	}
+	return svc
 }
 
 func (e *testEnv) createUser(t *testing.T, ctx context.Context, username, password string) *users.User {

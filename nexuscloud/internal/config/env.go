@@ -79,6 +79,15 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := lookupBool("NEXUSCLOUD_PUBLIC_REGISTRATION_ENABLED"); ok {
 		cfg.Security.PublicRegistrationEnabled = v
 	}
+	if v, ok := lookupBool("NEXUSCLOUD_WEBAUTHN_ENABLED"); ok {
+		cfg.Security.WebAuthn.Enabled = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_WEBAUTHN_RP_ID"); ok {
+		cfg.Security.WebAuthn.RPID = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_WEBAUTHN_RP_ORIGIN"); ok {
+		cfg.Security.WebAuthn.RPOrigin = v
+	}
 	if v, ok := lookup("NEXUSCLOUD_LOG_LEVEL"); ok {
 		cfg.Logging.Level = v
 	}
