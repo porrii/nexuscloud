@@ -94,8 +94,14 @@ func TestMultiPoolWritesAndReadsPerPool(t *testing.T) {
 	if err := e.svc.PermanentlyDeleteFile(ctx, owner, f1.ID); err != nil {
 		t.Fatalf("PermanentlyDeleteFile f1: %v", err)
 	}
-	if _, _, err := e.svc.Download(ctx, owner, f2.ID); err != nil {
+	// El ReadCloser hay que cerrarlo explícitamente: en Windows un fichero
+	// con un handle abierto no se puede borrar, así que dejarlo sin cerrar
+	// aquí hace que la limpieza de t.TempDir() falle al final del test
+	// (en Linux no se nota porque unlink() sí borra ficheros abiertos).
+	if _, rc, err := e.svc.Download(ctx, owner, f2.ID); err != nil {
 		t.Errorf("f2 debería seguir descargándose tras borrar f1: %v", err)
+	} else {
+		rc.Close()
 	}
 }
 

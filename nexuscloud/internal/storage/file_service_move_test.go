@@ -31,8 +31,10 @@ func TestMoveFileRenamesInPlace(t *testing.T) {
 	if moved.ParentPath != "/" || moved.Name != "nuevo.txt" {
 		t.Errorf("moved = %+v, esperado ParentPath=/ Name=nuevo.txt", moved)
 	}
-	if _, _, err := env.svc.Download(ctx, owner, original.ID); err != nil {
+	if _, rc, err := env.svc.Download(ctx, owner, original.ID); err != nil {
 		t.Errorf("el archivo debía seguir siendo descargable por el mismo ID: %v", err)
+	} else {
+		rc.Close()
 	}
 }
 

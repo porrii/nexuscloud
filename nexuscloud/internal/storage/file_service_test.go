@@ -199,8 +199,10 @@ func TestDeleteRejectsNonOwner(t *testing.T) {
 		t.Errorf("err = %v, esperado ErrForbidden", err)
 	}
 	// El archivo debe seguir accesible para su propietario legítimo.
-	if _, _, err := env.svc.Download(ctx, victima, meta.ID); err != nil {
+	if _, rc, err := env.svc.Download(ctx, victima, meta.ID); err != nil {
 		t.Errorf("el archivo no debería haberse borrado: %v", err)
+	} else {
+		rc.Close()
 	}
 }
 
@@ -230,8 +232,10 @@ func TestUploadNormalizesPathTraversalInParentPath(t *testing.T) {
 	if meta.ParentPath != "/etc" {
 		t.Errorf("ParentPath = %q, esperado /etc (normalizado dentro del árbol lógico)", meta.ParentPath)
 	}
-	if _, _, err := env.svc.Download(ctx, owner, meta.ID); err != nil {
+	if _, rc, err := env.svc.Download(ctx, owner, meta.ID); err != nil {
 		t.Errorf("el propietario debería poder descargar su propio archivo: %v", err)
+	} else {
+		rc.Close()
 	}
 }
 
@@ -315,8 +319,10 @@ func TestDeleteMovesToTrashWhenEnabled(t *testing.T) {
 	if !got.IsTrashed() {
 		t.Error("el archivo debería estar marcado como en la papelera")
 	}
-	if _, _, err := env.svc.Download(ctx, owner, meta.ID); err != nil {
+	if _, rc, err := env.svc.Download(ctx, owner, meta.ID); err != nil {
 		t.Errorf("un archivo en la papelera debería seguir siendo descargable por su dueño: %v", err)
+	} else {
+		rc.Close()
 	}
 
 	list, err := env.svc.List(ctx, owner, "/")
