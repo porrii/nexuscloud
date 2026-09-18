@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Servidor (Go) -- todo el código Go vive en nexuscloud/
+  - package-ecosystem: gomod
+    directory: /nexuscloud
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Interfaz web (React+TS+Vite)
+  - package-ecosystem: npm
+    directory: /nexuscloud/web
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Cliente de escritorio (Flutter/Dart)
+  - package-ecosystem: pub
+    directory: /nexuscloud/client
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Imágenes base del Dockerfile (Node, Go, distroless)
+  - package-ecosystem: docker
+    directory: /nexuscloud
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # El propio workflow de CI
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3

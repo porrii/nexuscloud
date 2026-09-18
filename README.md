@@ -173,6 +173,12 @@ lo mismo dentro de un contenedor `golang` (`bash scripts/dev.sh all`).
 También añade `test-mysql`/`test-mariadb`/`test-postgres` para correr los
 tests contra un motor de base de datos real vía Docker.
 
+## Contribuir
+
+Ver [CONTRIBUTING.md](CONTRIBUTING.md) (PRs van contra `dev`, no contra
+`main`) y el [código de conducta](CODE_OF_CONDUCT.md). Vulnerabilidades
+de seguridad: [SECURITY.md](SECURITY.md), nunca un issue público.
+
 ## Licencia
 
 MIT — ver [LICENSE](LICENSE).
