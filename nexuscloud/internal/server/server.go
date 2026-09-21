@@ -28,6 +28,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/security"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
+	"github.com/porrii/nexuscloud/internal/webdav"
 	nexuscloudweb "github.com/porrii/nexuscloud/web"
 )
 
@@ -41,6 +42,7 @@ type Server struct {
 	loginLimiter  *security.RateLimiter
 	apiLimiter    *security.RateLimiter
 	publicLimiter *security.RateLimiter
+	webdavLimiter *security.RateLimiter // nil si webdav.enabled=false
 	stopPurge     chan struct{}
 	stopBackup    chan struct{}
 }
@@ -152,6 +154,25 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		}
 	}
 
+	// webdavTokens/webdavHandler (§43, ADR-034): solo existen si
+	// webdav.enabled = true. Con false (por defecto) no se construye nada ni
+	// se monta ninguna ruta -- mismo criterio que webauthnSvc/clientUpdatesProxy.
+	var (
+		webdavTokens  *webdav.TokenService
+		webdavHandler http.Handler
+		webdavLimiter *security.RateLimiter
+	)
+	if cfg.WebDAV.Enabled {
+		webdavTokens = webdav.NewTokenService(webdav.NewSQLTokenRepository(conn), userRepo, logger)
+		webdavHandler = webdav.NewHandler(fileSvc, webdavTokens, auditRecorder, webdav.Options{
+			Prefix:             cfg.WebDAV.Path,
+			ReadOnly:           cfg.WebDAV.ReadOnly,
+			MaxUploadSizeBytes: cfg.WebDAV.MaxUploadSizeBytes,
+			TrustedProxies:     cfg.Server.TrustedProxies,
+		}, logger)
+		webdavLimiter = security.NewRateLimiter(cfg.Security.RateLimit.WebDAVPerMinute, cfg.Security.RateLimit.WebDAVPerMinute)
+	}
+
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
 		Hasher:         hasher,
@@ -202,6 +223,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	if cfg.API.Enabled {
 		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter, publicLimiter))
 	}
+	if webdavHandler != nil {
+		// Su propio rate limit por IP, más holgado que el de la API: un
+		// cliente WebDAV dispara decenas de PROPFIND por segundo (§43).
+		webdavKey := func(r *http.Request) string { return security.ClientIP(r, cfg.Server.TrustedProxies) }
+		root.Mount(cfg.WebDAV.Path, webdavLimiter.Middleware(webdavKey)(webdavHandler))
+	}
 	if cfg.Web.Enabled {
 		webHandler, err := newWebUIHandler()
 		if err != nil {
@@ -229,7 +256,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	return &Server{
 		Handler: root, DB: sqlDB,
-		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
+		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter, webdavLimiter: webdavLimiter,
 		stopPurge: stopPurge, stopBackup: stopBackup,
 	}, nil
 }
@@ -323,6 +350,9 @@ func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
 	s.publicLimiter.Stop()
+	if s.webdavLimiter != nil {
+		s.webdavLimiter.Stop()
+	}
 	if s.stopPurge != nil {
 		close(s.stopPurge)
 	}

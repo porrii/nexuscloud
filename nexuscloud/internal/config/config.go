@@ -30,6 +30,7 @@ type Config struct {
 	Sharing       SharingConfig       `yaml:"sharing"`
 	Backup        BackupConfig        `yaml:"backup"`
 	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
+	WebDAV        WebDAVConfig        `yaml:"webdav"`
 	API           APIConfig           `yaml:"api"`
 	Web           WebConfig           `yaml:"web"`
 	Logging       LoggingConfig       `yaml:"logging"`
@@ -231,6 +232,27 @@ type RateLimitConfig struct {
 	LoginPerMinute      int `yaml:"loginPerMinute"`
 	APIPerMinute        int `yaml:"apiPerMinute"`
 	PublicLinkPerMinute int `yaml:"publicLinkPerMinute"`
+	// WebDAVPerMinute (§43 "limitarse"): un cliente WebDAV de escritorio
+	// dispara decenas de PROPFIND por segundo al abrir una carpeta, mucho más
+	// que la API REST, así que tiene su propio límite por IP, más holgado.
+	WebDAVPerMinute int `yaml:"webdavPerMinute"`
+}
+
+// WebDAVConfig gobierna el módulo WebDAV (§43, ADR-034). Enabled=false por
+// defecto (§3, §169): añade una superficie de ataque nueva -- un protocolo
+// más con su propia autenticación -- así que el administrador la activa a
+// propósito. Se autentica con HTTP Basic usando tokens de acceso WebDAV
+// (nunca la contraseña de la cuenta, para no saltarse el segundo factor), y
+// se sirve por el mismo listener que la API en Path.
+type WebDAVConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Path es el prefijo de URL donde se monta, sin barra final ("/webdav").
+	Path string `yaml:"path"`
+	// ReadOnly limita WebDAV a OPTIONS/GET/HEAD/PROPFIND: se puede montar
+	// como unidad de red para consultar sin que ningún cliente escriba.
+	ReadOnly bool `yaml:"readOnly"`
+	// MaxUploadSizeBytes (0 = sin límite) limita el tamaño de una subida.
+	MaxUploadSizeBytes int64 `yaml:"maxUploadSizeBytes"`
 }
 
 type APIConfig struct {
@@ -280,6 +302,7 @@ func Defaults() *Config {
 				LoginPerMinute:      5,
 				APIPerMinute:        300,
 				PublicLinkPerMinute: 20,
+				WebDAVPerMinute:     1200,
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
@@ -290,6 +313,7 @@ func Defaults() *Config {
 		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
+		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},
 		API:           APIConfig{Enabled: true},
 		Web:           WebConfig{Enabled: false},
 		Logging:       LoggingConfig{Level: "info", Format: "text", Output: "stdout"},

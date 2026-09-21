@@ -31,6 +31,13 @@ const (
 
 	EventWebAuthnCredentialRegistered = "webauthn_credential_registered"
 	EventWebAuthnCredentialRevoked    = "webauthn_credential_revoked"
+
+	// WebDAV (§43, ADR-034): las operaciones sobre ficheros reutilizan los
+	// tipos de la API REST (upload/download/delete/move) con via=webdav;
+	// estos tres son propios del módulo.
+	EventWebDAVTokenCreated = "webdav_token_created"
+	EventWebDAVTokenRevoked = "webdav_token_revoked"
+	EventWebDAVAuthFailed   = "webdav_auth_failed"
 )
 
 type Event struct {
