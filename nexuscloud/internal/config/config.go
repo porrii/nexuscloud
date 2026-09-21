@@ -352,6 +352,14 @@ func Load(path string) (*Config, error) {
 
 	applyEnvOverrides(cfg)
 
+	// config.example.yaml documenta `dataDir: ""` como "valor por SO", pero
+	// el YAML pisa el valor de Defaults() con la cadena vacía: se restaura
+	// aquí, antes de validar. Validate sigue rechazando un vacío que llegue
+	// por otro camino (una Config construida a mano).
+	if cfg.Storage.DataDir == "" {
+		cfg.Storage.DataDir = defaultDataDir()
+	}
+
 	if err := migrateSchema(cfg); err != nil {
 		return nil, err
 	}

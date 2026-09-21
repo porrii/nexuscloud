@@ -408,3 +408,32 @@ func TestValidateWebAuthnRequiresRealRelyingPartySettings(t *testing.T) {
 		t.Errorf("la configuración por defecto (WebAuthn desactivado, sin RPID) debe ser válida: %v", err)
 	}
 }
+
+// config.example.yaml documenta `dataDir: ""` como "valor por SO", pero el YAML
+// pisaba el valor por defecto con la cadena vacía y Validate lo rechazaba: quien
+// copiaba el ejemplo tal cual (como pide su cabecera) recibía un error.
+func TestLoadTreatsAnEmptyDataDirAsTheOSDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storage:\n  dataDir: \"\"\n"), 0o600); err != nil {
+		t.Fatalf("escribiendo config de prueba: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("un dataDir vacío debe significar el valor por SO, no un error: %v", err)
+	}
+	if want := defaultDataDir(); cfg.Storage.DataDir != want {
+		t.Errorf("dataDir = %q, esperado el de por defecto %q", cfg.Storage.DataDir, want)
+	}
+}
+
+// El ejemplo es lo primero que copia un administrador: tiene que cargar y
+// validar tal cual está. Así no puede volver a divergir del validador.
+func TestTheExampleConfigLoadsAndValidates(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("config.example.yaml debe cargar y validar tal cual: %v", err)
+	}
+	if cfg.WebDAV.Enabled || cfg.Security.WebAuthn.Enabled {
+		t.Error("el ejemplo debe mantener WebDAV y WebAuthn desactivados (secure by default)")
+	}
+}
