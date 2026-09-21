@@ -300,3 +300,140 @@ func TestValidateAllowsAreasOutsideStorageDir(t *testing.T) {
 		t.Errorf("Validate debe aceptar áreas reubicadas fuera de storageDir: %v", err)
 	}
 }
+
+func TestDefaultsKeepWebDAVAndWebAuthnOff(t *testing.T) {
+	cfg := Defaults()
+	if cfg.WebDAV.Enabled {
+		t.Error("webdav.enabled debe ser false por defecto (§3, §169): añade un protocolo más con su propia autenticación")
+	}
+	if cfg.Security.WebAuthn.Enabled {
+		t.Error("security.webAuthn.enabled debe ser false por defecto: sin RPID/RPOrigin reales el navegador rechaza cualquier passkey")
+	}
+	if cfg.WebDAV.Path != "/webdav" || cfg.WebDAV.ReadOnly || cfg.WebDAV.MaxUploadSizeBytes != 0 {
+		t.Errorf("valores por defecto de webdav inesperados: %+v", cfg.WebDAV)
+	}
+	if cfg.Security.RateLimit.WebDAVPerMinute < 1 {
+		t.Errorf("security.rateLimit.webdavPerMinute = %d, debe tener un valor por defecto útil", cfg.Security.RateLimit.WebDAVPerMinute)
+	}
+}
+
+func TestValidateWebDAVPath(t *testing.T) {
+	valid := []string{"/webdav", "/dav", "/files/dav", "/nc_dav-1.0"}
+	invalid := []string{
+		"", "webdav", "/", "/webdav/", "//x", "/a//b", "/a/../b", "/./a", "/con espacio", "/ñ",
+		"/api", "/api/v1/dav", "/health", "/ready", "/ready/x",
+	}
+	for _, p := range valid {
+		cfg := Defaults()
+		cfg.WebDAV.Enabled, cfg.WebDAV.Path = true, p
+		if err := Validate(cfg); err != nil {
+			t.Errorf("webdav.path %q debería ser válido: %v", p, err)
+		}
+	}
+	for _, p := range invalid {
+		cfg := Defaults()
+		cfg.WebDAV.Enabled, cfg.WebDAV.Path = true, p
+		if err := Validate(cfg); err == nil {
+			t.Errorf("webdav.path %q debería rechazarse", p)
+		}
+	}
+
+	// Con WebDAV desactivado la ruta no se usa: no debe impedir arrancar.
+	cfg := Defaults()
+	cfg.WebDAV.Enabled, cfg.WebDAV.Path = false, "no-es-una-ruta"
+	if err := Validate(cfg); err != nil {
+		t.Errorf("con webdav.enabled=false no se valida la ruta: %v", err)
+	}
+}
+
+func TestValidateRejectsNegativeWebDAVMaxUploadSize(t *testing.T) {
+	cfg := Defaults()
+	cfg.WebDAV.MaxUploadSizeBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar webdav.maxUploadSizeBytes negativo (0 = sin límite)")
+	}
+}
+
+func TestValidateRejectsZeroWebDAVRateLimit(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.RateLimit.WebDAVPerMinute = 0
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar security.rateLimit.webdavPerMinute < 1")
+	}
+}
+
+func TestWebDAVEnvOverrides(t *testing.T) {
+	t.Setenv("NEXUSCLOUD_WEBDAV_ENABLED", "true")
+	t.Setenv("NEXUSCLOUD_WEBDAV_PATH", "/dav")
+	t.Setenv("NEXUSCLOUD_WEBDAV_READ_ONLY", "true")
+	t.Setenv("NEXUSCLOUD_WEBDAV_MAX_UPLOAD_SIZE_BYTES", "1048576")
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load falló: %v", err)
+	}
+	want := WebDAVConfig{Enabled: true, Path: "/dav", ReadOnly: true, MaxUploadSizeBytes: 1048576}
+	if cfg.WebDAV != want {
+		t.Errorf("webdav = %+v, esperado %+v", cfg.WebDAV, want)
+	}
+}
+
+func TestValidateWebAuthnRequiresRealRelyingPartySettings(t *testing.T) {
+	cases := []struct {
+		name         string
+		rpID, origin string
+		wantValid    bool
+	}{
+		{"https con dominio", "nexuscloud.example.com", "https://nexuscloud.example.com", true},
+		{"localhost en desarrollo", "localhost", "http://localhost:5173", true},
+		{"sin rpID", "", "https://nexuscloud.example.com", false},
+		{"sin rpOrigin", "nexuscloud.example.com", "", false},
+		{"http en un dominio real", "nexuscloud.example.com", "http://nexuscloud.example.com", false},
+	}
+	for _, tc := range cases {
+		cfg := Defaults()
+		cfg.Security.WebAuthn.Enabled = true
+		cfg.Security.WebAuthn.RPID, cfg.Security.WebAuthn.RPOrigin = tc.rpID, tc.origin
+		err := Validate(cfg)
+		if tc.wantValid && err != nil {
+			t.Errorf("%s: debería ser válido: %v", tc.name, err)
+		}
+		if !tc.wantValid && err == nil {
+			t.Errorf("%s: debería rechazarse", tc.name)
+		}
+	}
+
+	// Desactivado, nada de esto se exige (es el estado por defecto).
+	if err := Validate(Defaults()); err != nil {
+		t.Errorf("la configuración por defecto (WebAuthn desactivado, sin RPID) debe ser válida: %v", err)
+	}
+}
+
+// config.example.yaml documenta `dataDir: ""` como "valor por SO", pero el YAML
+// pisaba el valor por defecto con la cadena vacía y Validate lo rechazaba: quien
+// copiaba el ejemplo tal cual (como pide su cabecera) recibía un error.
+func TestLoadTreatsAnEmptyDataDirAsTheOSDefault(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storage:\n  dataDir: \"\"\n"), 0o600); err != nil {
+		t.Fatalf("escribiendo config de prueba: %v", err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("un dataDir vacío debe significar el valor por SO, no un error: %v", err)
+	}
+	if want := defaultDataDir(); cfg.Storage.DataDir != want {
+		t.Errorf("dataDir = %q, esperado el de por defecto %q", cfg.Storage.DataDir, want)
+	}
+}
+
+// El ejemplo es lo primero que copia un administrador: tiene que cargar y
+// validar tal cual está. Así no puede volver a divergir del validador.
+func TestTheExampleConfigLoadsAndValidates(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "config.example.yaml"))
+	if err != nil {
+		t.Fatalf("config.example.yaml debe cargar y validar tal cual: %v", err)
+	}
+	if cfg.WebDAV.Enabled || cfg.Security.WebAuthn.Enabled {
+		t.Error("el ejemplo debe mantener WebDAV y WebAuthn desactivados (secure by default)")
+	}
+}

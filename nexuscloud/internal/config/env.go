@@ -79,6 +79,27 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := lookupBool("NEXUSCLOUD_PUBLIC_REGISTRATION_ENABLED"); ok {
 		cfg.Security.PublicRegistrationEnabled = v
 	}
+	if v, ok := lookupBool("NEXUSCLOUD_WEBAUTHN_ENABLED"); ok {
+		cfg.Security.WebAuthn.Enabled = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_WEBAUTHN_RP_ID"); ok {
+		cfg.Security.WebAuthn.RPID = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_WEBAUTHN_RP_ORIGIN"); ok {
+		cfg.Security.WebAuthn.RPOrigin = v
+	}
+	if v, ok := lookupBool("NEXUSCLOUD_WEBDAV_ENABLED"); ok {
+		cfg.WebDAV.Enabled = v
+	}
+	if v, ok := lookup("NEXUSCLOUD_WEBDAV_PATH"); ok {
+		cfg.WebDAV.Path = v
+	}
+	if v, ok := lookupBool("NEXUSCLOUD_WEBDAV_READ_ONLY"); ok {
+		cfg.WebDAV.ReadOnly = v
+	}
+	if v, ok := lookupInt64("NEXUSCLOUD_WEBDAV_MAX_UPLOAD_SIZE_BYTES"); ok {
+		cfg.WebDAV.MaxUploadSizeBytes = v
+	}
 	if v, ok := lookup("NEXUSCLOUD_LOG_LEVEL"); ok {
 		cfg.Logging.Level = v
 	}
@@ -104,6 +125,18 @@ func lookupInt(key string) (int, bool) {
 		return 0, false
 	}
 	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func lookupInt64(key string) (int64, bool) {
+	v, ok := lookup(key)
+	if !ok {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
 	if err != nil {
 		return 0, false
 	}

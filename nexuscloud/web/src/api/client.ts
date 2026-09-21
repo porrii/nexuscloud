@@ -24,6 +24,32 @@ export interface Session {
   expires_at: string
 }
 
+// WebAuthnCredential refleja webauthnCredentialResponse (internal/api/v1/
+// webauthn_handlers.go): nunca expone credential_id/public_key/sign_count
+// (§172), igual criterio que Session con TokenHash.
+export interface WebAuthnCredential {
+  id: string
+  label: string
+  created_at: string
+  last_used_at?: string
+}
+
+// WebDAVToken refleja webdavTokenResponse (internal/api/v1/webdav_handlers.go):
+// nunca expone el hash (§172). CreatedWebDAVToken añade el token en claro, que
+// solo viene en la respuesta de creación, una única vez (§78), y la ruta donde
+// está montado WebDAV en este servidor (configurable: webdav.path).
+export interface WebDAVToken {
+  id: string
+  label: string
+  created_at: string
+  last_used_at?: string
+}
+
+export interface CreatedWebDAVToken extends WebDAVToken {
+  token: string
+  webdav_path: string
+}
+
 export interface DirectoryEntry {
   id: string
   parent_path: string
@@ -47,6 +73,15 @@ export interface FileEntry {
 export interface ListResult {
   directories: DirectoryEntry[]
   files: FileEntry[]
+}
+
+// SharedDirectoryListing refleja sharedListingResponse (internal/api/v1/
+// share_handlers.go): el listado de una carpeta compartida con quien la mira,
+// más si esa persona puede subir a ella y con qué límite por archivo (§37,
+// ADR-035). max_upload_size_bytes ausente = sin límite.
+export interface SharedDirectoryListing extends ListResult {
+  can_upload: boolean
+  max_upload_size_bytes?: number
 }
 
 export interface FileVersion {
@@ -161,16 +196,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return undefined as T
 }
 
-/** Sube contenido con progreso real (fetch no lo expone en subida). */
-function uploadWithProgress(
-  parentPath: string,
-  name: string,
-  content: Blob,
-  onProgress?: (pct: number) => void,
-): Promise<FileEntry> {
+/** POST de un archivo con progreso real (fetch no lo expone en subida). */
+function postWithProgress(url: string, content: Blob, onProgress?: (pct: number) => void): Promise<FileEntry> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    const url = `/api/v1/files?name=${encodeURIComponent(name)}&path=${encodeURIComponent(parentPath)}`
     xhr.open('POST', url)
     xhr.withCredentials = true
     xhr.upload.onprogress = (e) => {
@@ -193,6 +222,34 @@ function uploadWithProgress(
   })
 }
 
+function uploadWithProgress(
+  parentPath: string,
+  name: string,
+  content: Blob,
+  onProgress?: (pct: number) => void,
+): Promise<FileEntry> {
+  return postWithProgress(
+    `/api/v1/files?name=${encodeURIComponent(name)}&path=${encodeURIComponent(parentPath)}`,
+    content,
+    onProgress,
+  )
+}
+
+/**
+ * Sube a una carpeta que otra persona ha compartido contigo con permiso de
+ * subida (§37, ADR-035). El destino sale solo del ID de la carpeta, nunca de
+ * una ruta que el cliente pueda manipular; el archivo queda en el árbol del
+ * propietario y no sobrescribe uno existente (409 destination_occupied).
+ */
+function uploadToSharedDirectory(
+  directoryId: string,
+  name: string,
+  content: Blob,
+  onProgress?: (pct: number) => void,
+): Promise<FileEntry> {
+  return postWithProgress(`/api/v1/shared-directories/${directoryId}/files?name=${encodeURIComponent(name)}`, content, onProgress)
+}
+
 export const api = {
   login: (username: string, password: string, totp_code?: string) =>
     request<{ token: string; user: User; session: Session }>('/api/v1/auth/login', {
@@ -204,6 +261,72 @@ export const api = {
 
   sessions: () => request<Session[]>('/api/v1/auth/sessions'),
   revokeSession: (id: string) => request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE' }),
+
+  // Passkeys / WebAuthn (§25, ADR-033). Usa los métodos JSON nativos del
+  // propio estándar WebAuthn L3 (PublicKeyCredential.parseCreationOptionsFromJSON/
+  // parseRequestOptionsFromJSON, credential.toJSON()) en vez de una librería
+  // aparte: ya están disponibles en los navegadores modernos que hacen
+  // falta para que WebAuthn funcione de todas formas, así que añadir una
+  // dependencia solo para esto sería redundante.
+  listWebAuthnCredentials: () => request<WebAuthnCredential[]>('/api/v1/auth/webauthn/credentials'),
+  revokeWebAuthnCredential: (id: string) => request<void>(`/api/v1/auth/webauthn/credentials/${id}`, { method: 'DELETE' }),
+
+  /** Ceremonia completa de alta: pide el reto, lo resuelve el propio navegador/authenticator, y lo confirma. */
+  registerWebAuthnCredential: async (label: string): Promise<WebAuthnCredential> => {
+    const begin = await request<{ ceremony_id: string; publicKey: PublicKeyCredentialCreationOptionsJSON }>(
+      '/api/v1/auth/webauthn/register/begin',
+      { method: 'POST' },
+    )
+    const options = PublicKeyCredential.parseCreationOptionsFromJSON(begin.publicKey)
+    const credential = await navigator.credentials.create({ publicKey: options })
+    if (!(credential instanceof PublicKeyCredential)) {
+      throw new ApiClientError(0, 'webauthn_unsupported', 'El navegador no completó el registro del passkey.')
+    }
+    return request<WebAuthnCredential>(
+      `/api/v1/auth/webauthn/register/finish?ceremony_id=${encodeURIComponent(begin.ceremony_id)}&label=${encodeURIComponent(label)}`,
+      { method: 'POST', body: JSON.stringify(credential.toJSON()) },
+    )
+  },
+
+  /**
+   * Inicia un login con passkey: con username+password (ya verificados,
+   * sin completar sesión todavía) es el segundo factor de esa cuenta; sin
+   * ellos es login passwordless discoverable -- ver BeginWebAuthnLogin en
+   * el backend.
+   */
+  beginWebAuthnLogin: (username?: string, password?: string) =>
+    request<{ ceremony_id: string; publicKey: PublicKeyCredentialRequestOptionsJSON }>('/api/v1/auth/webauthn/login/begin', {
+      method: 'POST',
+      body: JSON.stringify(username ? { username, password } : {}),
+    }),
+
+  /** Resuelve el reto de beginWebAuthnLogin con el propio navegador/authenticator y completa el login. */
+  finishWebAuthnLoginWithChallenge: async (
+    ceremonyId: string,
+    username: string | undefined,
+    publicKey: PublicKeyCredentialRequestOptionsJSON,
+  ): Promise<{ token: string; user: User; session: Session }> => {
+    const options = PublicKeyCredential.parseRequestOptionsFromJSON(publicKey)
+    const assertion = await navigator.credentials.get({ publicKey: options })
+    if (!(assertion instanceof PublicKeyCredential)) {
+      throw new ApiClientError(0, 'webauthn_unsupported', 'El navegador no completó el login con el passkey.')
+    }
+    const qs = new URLSearchParams({ ceremony_id: ceremonyId })
+    if (username) qs.set('username', username)
+    return request(`/api/v1/auth/webauthn/login/finish?${qs.toString()}`, {
+      method: 'POST',
+      body: JSON.stringify(assertion.toJSON()),
+    })
+  },
+
+  // Tokens de acceso WebDAV (§43, ADR-034): la contraseña que usan los clientes
+  // WebDAV por HTTP Basic (nunca la contraseña de la cuenta). Las rutas solo
+  // existen si el servidor tiene webdav.enabled=true; con 404 la UI oculta la
+  // sección, igual que Passkeys.
+  listWebDAVTokens: () => request<WebDAVToken[]>('/api/v1/auth/webdav/tokens'),
+  createWebDAVToken: (label: string) =>
+    request<CreatedWebDAVToken>('/api/v1/auth/webdav/tokens', { method: 'POST', body: JSON.stringify({ label }) }),
+  revokeWebDAVToken: (id: string) => request<void>(`/api/v1/auth/webdav/tokens/${id}`, { method: 'DELETE' }),
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
   upload: uploadWithProgress,
@@ -231,7 +354,8 @@ export const api = {
   createShare: (input: CreateShareInput) => request<Share>('/api/v1/shares', { method: 'POST', body: JSON.stringify(input) }),
   listShares: (direction: 'by-me' | 'with-me') => request<Share[]>(`/api/v1/shares?direction=${direction}`),
   revokeShare: (id: string) => request<void>(`/api/v1/shares/${id}`, { method: 'DELETE' }),
-  listSharedDirectory: (id: string) => request<ListResult>(`/api/v1/shared-directories/${id}`),
+  listSharedDirectory: (id: string) => request<SharedDirectoryListing>(`/api/v1/shared-directories/${id}`),
+  uploadToSharedDirectory,
 
   // Enlaces públicos (§37): sin sesión, autorizados por el token de la URL
   // y una contraseña opcional que va SIEMPRE en la cabecera X-Share-Password

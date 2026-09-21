@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -46,10 +47,25 @@ func Validate(cfg *Config) error {
 	if cfg.Security.RateLimit.PublicLinkPerMinute < 1 {
 		return fmt.Errorf("security.rateLimit.publicLinkPerMinute debe ser >= 1")
 	}
+	if cfg.Security.RateLimit.WebDAVPerMinute < 1 {
+		return fmt.Errorf("security.rateLimit.webdavPerMinute debe ser >= 1")
+	}
 
 	for _, o := range cfg.Security.CORSAllowedOrigins {
 		if o == "*" {
 			return fmt.Errorf("security.corsAllowedOrigins no puede contener '*' (secure by default, §69)")
+		}
+	}
+
+	if cfg.Security.WebAuthn.Enabled {
+		if cfg.Security.WebAuthn.RPID == "" {
+			return fmt.Errorf("security.webAuthn.rpID no puede estar vacío cuando security.webAuthn.enabled=true")
+		}
+		if cfg.Security.WebAuthn.RPOrigin == "" {
+			return fmt.Errorf("security.webAuthn.rpOrigin no puede estar vacío cuando security.webAuthn.enabled=true")
+		}
+		if !strings.HasPrefix(cfg.Security.WebAuthn.RPOrigin, "https://") && !strings.HasPrefix(cfg.Security.WebAuthn.RPOrigin, "http://localhost") {
+			return fmt.Errorf("security.webAuthn.rpOrigin debe usar https:// (WebAuthn lo exige salvo localhost en desarrollo)")
 		}
 	}
 
@@ -108,10 +124,41 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	if cfg.WebDAV.MaxUploadSizeBytes < 0 {
+		return fmt.Errorf("webdav.maxUploadSizeBytes no puede ser negativo (0 = sin límite)")
+	}
+	if cfg.WebDAV.Enabled {
+		if err := validateWebDAVPath(cfg.WebDAV.Path); err != nil {
+			return err
+		}
+	}
+
 	if err := validateStorageAreas(cfg); err != nil {
 		return err
 	}
 
+	return nil
+}
+
+var webDAVPathPattern = regexp.MustCompile(`^/[A-Za-z0-9._~-]+(/[A-Za-z0-9._~-]+)*$`)
+
+// validateWebDAVPath comprueba que la ruta donde se monta WebDAV es un
+// prefijo de URL razonable y que no pisa las rutas propias del servidor
+// (ninguna petición a /api, /health o /ready debe acabar en WebDAV).
+func validateWebDAVPath(p string) error {
+	if !webDAVPathPattern.MatchString(p) {
+		return fmt.Errorf(`webdav.path %q no es válido: debe empezar por "/", no terminar en "/" y usar solo letras, números y "._~-" (p.ej. "/webdav")`, p)
+	}
+	for _, segment := range strings.Split(p, "/") {
+		if segment == "." || segment == ".." {
+			return fmt.Errorf("webdav.path %q no puede contener segmentos '.' ni '..'", p)
+		}
+	}
+	for _, reserved := range []string{"/api", "/health", "/ready"} {
+		if p == reserved || strings.HasPrefix(p, reserved+"/") {
+			return fmt.Errorf("webdav.path %q colisiona con la ruta reservada %s del servidor", p, reserved)
+		}
+	}
 	return nil
 }
 

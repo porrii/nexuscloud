@@ -17,13 +17,15 @@ Una instalación recién hecha (`nexuscloud config init` + `nexuscloud admin cre
 - **Contraseñas**: Argon2id (`golang.org/x/crypto/argon2`), parámetros por defecto 64 MiB / t=3 / p=4 — los mismos que NexusKeys, por consistencia de ecosistema. Los parámetros de coste se guardan junto al hash (formato tipo PHC) para poder endurecerlos sin invalidar contraseñas existentes.
 - **Sesiones**: tokens opacos de 256 bits (`crypto/rand`), nunca JWT. Solo se persiste su hash SHA-256; el token en claro se devuelve una única vez en la respuesta de login. Esto hace que "listar sesiones activas" y "cerrar sesión remotamente" (§26) sean triviales — con JWT stateless habría que reconstruir un mecanismo de revocación aparte.
 - **TOTP** (RFC 6238) vía `pquerna/otp`. El secreto no se persiste hasta que el usuario confirma un código válido en `/auth/totp/verify`.
+- **Passkeys/WebAuthn** (§25, [ADR-033](architecture/decisions/ADR-033-webauthn-passkeys.md)) vía `go-webauthn/webauthn`; desactivado por defecto (`security.webAuthn.enabled: false`), exige `rpID`/`rpOrigin` reales para activarse. Tiene prioridad sobre TOTP como segundo factor si el usuario tiene algún passkey registrado, y el mismo passkey sirve también para login sin contraseña. El registro solo es posible desde la web (exige el navegador); la recuperación de acceso (revocar un passkey) sí está disponible por CLI.
+- **WebDAV** (§43, [ADR-034](architecture/decisions/ADR-034-webdav.md)): desactivado por defecto (`webdav.enabled: false`). Se autentica con HTTP Basic usando el `username` y un **token de acceso WebDAV por dispositivo** (`nwd_` + 256 bits de `crypto/rand`; solo se guarda su SHA-256, se muestra una única vez y es revocable), **nunca la contraseña de la cuenta**: los clientes WebDAV no pueden hacer TOTP/passkey, y aceptar la contraseña por Basic habría permitido saltarse el segundo factor. El token solo sirve para WebDAV. Token desconocido, usuario que no coincide o cuenta desactivada dan el mismo 401 y el mismo evento de auditoría (`webdav_auth_failed`, que nunca guarda el token). Basic envía el token en cada petición: **usa HTTPS**.
 - **Enumeración de usuarios**: `Login` devuelve siempre el mismo error genérico (`unauthorized`) ante usuario inexistente o contraseña incorrecta.
 
 ## Autorización
 
 - RBAC con 4 roles semilla (`super_admin`, `administrator`, `user`, `read_only`); `RequireAdmin` comprueba el rol en cada petición contra la base de datos, nunca confía en un claim cacheado.
 - **Propiedad de archivos**: cada archivo pertenece a exactamente un usuario. `FileService.Download`/`Delete` comparan `OwnerID` contra el usuario autenticado antes de tocar el filesystem — comprobado también en `SessionRepository.RevokeSession`, que exige `user_id` en el propio `WHERE` de la query (defensa en profundidad contra IDOR, §198, incluso si una capa superior olvidara comprobar la propiedad).
-- **Compartición (§37)**: además de la propiedad, un archivo/carpeta es accesible si existe un share activo (usuario, grupo o enlace público) — decisiones en [ADR-008](architecture/decisions/ADR-008-sharing.md), amenazas detalladas en [threat-model.md](security/threat-model.md#enlaces-públicos-de-compartición-§37). Enlaces públicos desactivados por defecto (`sharing.publicLinksEnabled: false`); cuando se activan: token de 256 bits de entropía, contraseña opcional transmitida por cabecera `X-Share-Password` (nunca en la URL), rate limit dedicado (`publicLinkPerMinute`, 20/min por defecto) y metadata (nombre/tamaño) oculta hasta que llega la contraseña correcta.
+- **Compartición (§37)**: además de la propiedad, un archivo/carpeta es accesible si existe un share activo (usuario, grupo o enlace público) — decisiones en [ADR-008](architecture/decisions/ADR-008-sharing.md) y, para el permiso de subida de un usuario o grupo, [ADR-035](architecture/decisions/ADR-035-subida-a-carpeta-compartida.md), amenazas detalladas en [threat-model.md](security/threat-model.md#enlaces-públicos-de-compartición-§37). Enlaces públicos desactivados por defecto (`sharing.publicLinksEnabled: false`); cuando se activan: token de 256 bits de entropía, contraseña opcional transmitida por cabecera `X-Share-Password` (nunca en la URL), rate limit dedicado (`publicLinkPerMinute`, 20/min por defecto) y metadata (nombre/tamaño) oculta hasta que llega la contraseña correcta.
 
 ## Protección de archivos
 
@@ -36,18 +38,17 @@ Una instalación recién hecha (`nexuscloud config init` + `nexuscloud admin cre
 
 - **Cabeceras**: `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `Permissions-Policy` restrictivo; `Strict-Transport-Security` solo cuando la petición ya llegó por TLS (para no romper LAN sin HTTPS, §66).
 - **CORS**: allowlist explícita de orígenes; nunca se refleja un origen no listado.
-- **Rate limiting**: token bucket por IP (`golang.org/x/time/rate`), límites separados para login y para el resto de la API.
+- **Rate limiting**: token bucket por IP (`golang.org/x/time/rate`), límites separados para login, para el resto de la API y para WebDAV (`webdavPerMinute`, 1200 por defecto: más holgado porque un cliente WebDAV legítimo lanza ráfagas de PROPFIND).
 - **IP de cliente consciente de proxies de confianza**: `X-Forwarded-For`/`X-Real-IP` solo se honran si la conexión TCP inmediata proviene de una IP/CIDR en `server.trustedProxies`; en cualquier otro caso se usa la IP de la conexión TCP directa (§50, §118).
 - **Errores**: los mensajes al cliente son siempre genéricos (`"No se pudo completar la operación."`); el detalle real (incluida cualquier traza) se registra solo internamente vía `slog` (§170, §172).
 - **Health/Ready**: `/health` y `/ready` no revelan información sensible — solo un estado agregado por dependencia (§111).
 
 ## Auditoría
 
-`internal/audit` registra login/logout/login fallido/creación y baja de usuarios/subidas/descargas/borrados/invitaciones creadas o revocadas, con actor, IP y metadata estructurada. Un fallo al escribir el log de auditoría se registra como warning pero nunca aborta la operación de negocio que lo originó (una subida de archivo no debe fallar por un problema transitorio del audit log) — pero tampoco se oculta (§94).
+`internal/audit` registra login/logout/login fallido/creación y baja de usuarios/subidas/descargas/borrados/invitaciones creadas o revocadas (y, con WebDAV activado, la creación y revocación de tokens y los intentos rechazados; las operaciones de archivo por WebDAV llevan `via: webdav`), con actor, IP y metadata estructurada. Un fallo al escribir el log de auditoría se registra como warning pero nunca aborta la operación de negocio que lo originó (una subida de archivo no debe fallar por un problema transitorio del audit log) — pero tampoco se oculta (§94).
 
 ## Lo que NO está implementado todavía
 
-- Passkeys/WebAuthn (arquitectura de auth ya preparada para añadirlo sin romper el modelo de sesiones actual)
 - Content Security Policy: la Web UI (Fase 2) ya se sirve desde este mismo binario pero todavía sin cabecera `Content-Security-Policy` — gap real, no solo ausencia de superficie
 - Escaneo antivirus de subidas (§76) — Fase 5/6
 - Cifrado de datos en reposo a nivel de aplicación (§29) — el disco/filesystem subyacente es responsabilidad del administrador en esta fase

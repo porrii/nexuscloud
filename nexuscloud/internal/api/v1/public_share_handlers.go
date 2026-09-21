@@ -172,6 +172,8 @@ func writePublicShareError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusForbidden, "upload_not_allowed", "Este enlace no permite subida.")
 	case errors.Is(err, storage.ErrShareUploadTooLarge):
 		writeError(w, http.StatusRequestEntityTooLarge, "upload_too_large", "El archivo supera el límite de tamaño de este enlace.")
+	case errors.Is(err, storage.ErrDestinationOccupied), errors.Is(err, storage.ErrNameOccupiedByTrash):
+		writeNameUnavailable(w)
 	case errors.Is(err, storage.ErrFileNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Archivo no encontrado.")
 	case errors.Is(err, storage.ErrDirectoryNotFound):

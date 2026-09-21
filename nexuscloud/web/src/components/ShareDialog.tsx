@@ -67,7 +67,7 @@ export default function ShareDialog({ resource, onClose }: ShareDialogProps) {
       share_type: tab,
       label: tab === 'link' && label ? label : undefined,
       can_download: true,
-      can_upload: tab === 'link' ? canUpload : false,
+      can_upload: resource.isDirectory && canUpload,
       password: tab === 'link' && password ? password : undefined,
       expires_at: tab === 'link' && expiresAt ? new Date(expiresAt).toISOString() : undefined,
       max_downloads: tab === 'link' && maxDownloads ? Number(maxDownloads) : undefined,
@@ -213,13 +213,20 @@ export default function ShareDialog({ resource, onClose }: ShareDialogProps) {
                   className="w-32 rounded-md border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
                 />
               </div>
-              {resource.isDirectory && (
-                <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
-                  <input type="checkbox" checked={canUpload} onChange={(e) => setCanUpload(e.target.checked)} />
-                  Permitir subir archivos a esta carpeta
-                </label>
-              )}
             </>
+          )}
+          {resource.isDirectory && (
+            <div>
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input type="checkbox" checked={canUpload} onChange={(e) => setCanUpload(e.target.checked)} />
+                Permitir subir archivos a esta carpeta
+              </label>
+              {tab !== 'link' && (
+                <p className="mt-1 pl-6 text-xs text-slate-500 dark:text-slate-400">
+                  Además de leer, podrá subir archivos nuevos; no puede sobrescribir ni borrar los que ya hay.
+                </p>
+              )}
+            </div>
           )}
           <button
             onClick={() => void handleCreate()}

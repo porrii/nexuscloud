@@ -23,6 +23,18 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 	r.Group(func(r chi.Router) {
 		r.Use(loginLimiter.Middleware(keyFunc))
 		r.Post("/auth/login", h.Login)
+
+		// Login con passkey (§25, ADR-033): mismo rate limit que
+		// /auth/login, mismo motivo -- objetivo obvio de fuerza bruta.
+		// Cubre tanto el segundo factor (con username+password) como el
+		// login passwordless discoverable (sin ellos); ver
+		// BeginWebAuthnLogin. Con h.WebAuthn == nil
+		// (security.webAuthn.enabled=false, por defecto), estas rutas ni
+		// se registran -- mismo criterio que ClientUpdatesProxy.
+		if h.WebAuthn != nil {
+			r.Post("/auth/webauthn/login/begin", h.BeginWebAuthnLogin)
+			r.Post("/auth/webauthn/login/finish", h.FinishWebAuthnLogin)
+		}
 	})
 	r.Post("/invitations/redeem", h.RedeemInvitation)
 
@@ -60,6 +72,21 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Post("/auth/totp/enroll", h.EnrollTOTP)
 		r.Post("/auth/totp/verify", h.VerifyTOTP)
 
+		if h.WebAuthn != nil {
+			r.Post("/auth/webauthn/register/begin", h.BeginWebAuthnRegistration)
+			r.Post("/auth/webauthn/register/finish", h.FinishWebAuthnRegistration)
+			r.Get("/auth/webauthn/credentials", h.ListWebAuthnCredentials)
+			r.Delete("/auth/webauthn/credentials/{id}", h.RevokeWebAuthnCredential)
+		}
+
+		// Tokens de acceso WebDAV (§43, ADR-034): la contraseña que usan los
+		// clientes WebDAV por HTTP Basic. Solo con webdav.enabled=true.
+		if h.WebDAVTokens != nil {
+			r.Post("/auth/webdav/tokens", h.CreateWebDAVToken)
+			r.Get("/auth/webdav/tokens", h.ListWebDAVTokens)
+			r.Delete("/auth/webdav/tokens/{id}", h.RevokeWebDAVToken)
+		}
+
 		r.Get("/users/me", h.Me)
 
 		r.Get("/files", h.ListFiles)
@@ -84,6 +111,7 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Get("/shares", h.ListShares)
 		r.Delete("/shares/{id}", h.RevokeShare)
 		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
+		r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
 
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)

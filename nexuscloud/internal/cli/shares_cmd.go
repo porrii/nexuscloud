@@ -125,7 +125,7 @@ func newSharesCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&targetUsername, "target-username", "", "usuario destino (obligatorio con --share-type user)")
 	cmd.Flags().StringVar(&targetGroup, "target-group", "", "grupo destino (obligatorio con --share-type group)")
 	cmd.Flags().StringVar(&label, "label", "", "nombre personalizado del enlace (cosmético)")
-	cmd.Flags().BoolVar(&canUpload, "can-upload", false, "permite subir (solo enlaces de carpeta)")
+	cmd.Flags().BoolVar(&canUpload, "can-upload", false, "permite subir a la carpeta (con un usuario o un grupo, además de leer; solo para carpetas)")
 	cmd.Flags().BoolVar(&noDownload, "no-download", false, "no permitir descarga (por defecto sí se permite)")
 	cmd.Flags().StringVar(&password, "password", "", "contraseña del enlace (solo enlaces; vacío = sin contraseña)")
 	cmd.Flags().StringVar(&expiresAt, "expires-at", "", "fecha de caducidad, RFC3339 (p.ej. 2026-12-31T23:59:59Z)")
@@ -170,7 +170,7 @@ func newSharesListCmd() *cobra.Command {
 				return nil
 			}
 			out := cmd.OutOrStdout()
-			fmt.Fprintf(out, "%-36s  %-6s  %-20s  %-36s  %-20s  %s\n", "ID", "TIPO", "RECURSO", "DESTINO", "EXPIRA", "ESTADO")
+			fmt.Fprintf(out, "%-36s  %-6s  %-20s  %-36s  %-14s  %-20s  %s\n", "ID", "TIPO", "RECURSO", "DESTINO", "PERMISOS", "EXPIRA", "ESTADO")
 			now := time.Now()
 			for _, sh := range shares {
 				resourceName := "?"
@@ -197,7 +197,7 @@ func newSharesListCmd() *cobra.Command {
 				case sh.IsExhausted():
 					status = "agotado"
 				}
-				fmt.Fprintf(out, "%-36s  %-6s  %-20s  %-36s  %-20s  %s\n", sh.ID, sh.Type, resourceName, target, expires, status)
+				fmt.Fprintf(out, "%-36s  %-6s  %-20s  %-36s  %-14s  %-20s  %s\n", sh.ID, sh.Type, resourceName, target, sharePermissions(sh), expires, status)
 			}
 			return nil
 		},
@@ -205,6 +205,20 @@ func newSharesListCmd() *cobra.Command {
 	usernameFlag(cmd, &username)
 	cmd.Flags().BoolVar(&withMe, "with-me", false, "muestra lo compartido CONMIGO en vez de lo que yo he compartido")
 	return cmd
+}
+
+// sharePermissions resume en una palabra lo que permite un share, para el
+// listado: solo leer, leer y subir (usuario o grupo con --can-upload, ADR-035),
+// o solo subir (un enlace de carpeta con --no-download).
+func sharePermissions(sh *storage.Share) string {
+	switch {
+	case sh.CanDownload && sh.CanUpload:
+		return "lectura+subida"
+	case sh.CanUpload:
+		return "subida"
+	default:
+		return "lectura"
+	}
 }
 
 func newSharesRevokeCmd() *cobra.Command {

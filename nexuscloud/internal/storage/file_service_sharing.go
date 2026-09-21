@@ -34,7 +34,7 @@ type CreateShareInput struct {
 	TargetGroupID       string // ShareTypeGroup
 	Label               string
 	CanDownload         bool
-	CanUpload           bool // solo tiene efecto con Type == ShareTypeLink, ver comentario en share.go
+	CanUpload           bool // solo sobre carpetas; en user/group significa "lectura + subida" (ADR-035)
 	Password            string
 	ExpiresAt           *time.Time
 	MaxDownloads        *int
@@ -50,17 +50,18 @@ func (s *FileService) CreateShare(ctx context.Context, ownerID string, in Create
 		return nil, "", ErrSharingDisabled
 	}
 
+	// Un share de usuario o de grupo es siempre de lectura, con la subida como
+	// añadido opcional ("lectura + subida", ADR-035): el "buzón" de solo subida
+	// es cosa de enlaces (§37) y de la subida anónima (§38).
 	switch in.Type {
 	case ShareTypeUser:
-		if in.TargetUserID == "" {
+		if in.TargetUserID == "" || !in.CanDownload {
 			return nil, "", ErrInvalidShare
 		}
-		in.CanUpload = false // §37: las opciones de permiso (subida/descarga/etc.) son de "Enlaces"
 	case ShareTypeGroup:
-		if in.TargetGroupID == "" {
+		if in.TargetGroupID == "" || !in.CanDownload {
 			return nil, "", ErrInvalidShare
 		}
-		in.CanUpload = false
 	case ShareTypeLink:
 		if !s.publicLinksEnabled {
 			return nil, "", ErrPublicLinksDisabled
@@ -227,23 +228,23 @@ func (s *FileService) hasShareAccessToDirectory(ctx context.Context, requesterID
 	return s.hasShareAccessToAncestorDirectories(ctx, requesterID, dir.OwnerID, dir.ParentPath)
 }
 
-// hasShareAccessToAncestorDirectories recorre las carpetas ancestro de
-// logicalParentPath (bajo ownerID), de la más cercana a la raíz, buscando un
-// share de carpeta que conceda acceso a requesterID. Bucle acotado por la
-// profundidad de carpetas -- irrelevante a la escala objetivo de ~100
-// usuarios (§160); no hace falta cache ni tabla materializada (§162).
-func (s *FileService) hasShareAccessToAncestorDirectories(ctx context.Context, requesterID, ownerID, logicalParentPath string) (bool, error) {
+// walkAncestorDirectories recorre las carpetas ancestro de logicalParentPath
+// (bajo ownerID), de la más cercana a la raíz, llamando a visit con cada una
+// que tenga registro propio; visit devuelve true para detener el recorrido.
+// Bucle acotado por la profundidad de carpetas -- irrelevante a la escala
+// objetivo de ~100 usuarios (§160); no hace falta cache ni tabla
+// materializada (§162).
+func (s *FileService) walkAncestorDirectories(ctx context.Context, ownerID, logicalParentPath string, visit func(*Directory) (stop bool, err error)) error {
 	trimmed := strings.Trim(logicalParentPath, "/")
 	if trimmed == "" {
-		return false, nil // ya estamos en la raíz: no hay más ancestros que comprobar
+		return nil // ya estamos en la raíz: no hay más ancestros que comprobar
 	}
 	segments := strings.Split(trimmed, "/")
 
 	pool, err := s.pools.DefaultPool(ctx)
 	if err != nil {
-		return false, err
+		return err
 	}
-	now := time.Now().UTC()
 	for i := len(segments); i >= 1; i-- {
 		ancestorParent := "/" + strings.Join(segments[:i-1], "/")
 		ancestorName := segments[i-1]
@@ -251,15 +252,25 @@ func (s *FileService) hasShareAccessToAncestorDirectories(ctx context.Context, r
 		if err != nil {
 			continue // esa carpeta ancestro no tiene registro propio; no es un error de acceso
 		}
-		ok, err := s.shares.HasDirectoryAccess(ctx, requesterID, dir.ID, now)
-		if err != nil {
-			return false, err
-		}
-		if ok {
-			return true, nil
+		if stop, err := visit(dir); err != nil || stop {
+			return err
 		}
 	}
-	return false, nil
+	return nil
+}
+
+// hasShareAccessToAncestorDirectories recorre las carpetas ancestro de
+// logicalParentPath (bajo ownerID), de la más cercana a la raíz, buscando un
+// share de carpeta que conceda acceso a requesterID.
+func (s *FileService) hasShareAccessToAncestorDirectories(ctx context.Context, requesterID, ownerID, logicalParentPath string) (bool, error) {
+	now := time.Now().UTC()
+	found := false
+	err := s.walkAncestorDirectories(ctx, ownerID, logicalParentPath, func(dir *Directory) (bool, error) {
+		ok, err := s.shares.HasDirectoryAccess(ctx, requesterID, dir.ID, now)
+		found = ok
+		return ok, err
+	})
+	return found, err
 }
 
 // ListSharedDirectory lista el contenido de una carpeta a la que requesterID
@@ -444,7 +455,9 @@ type PublicUploadInput struct {
 // MaxUploadSizeBytes se aplica envolviendo Content en un lector que corta
 // con error en cuanto se supera el límite (en vez de truncar en silencio),
 // para que Upload aborte de forma natural -- su propio manejo de staging ya
-// limpia el fichero parcial sin necesitar borrar nada después.
+// limpia el fichero parcial sin necesitar borrar nada después. Nunca pisa un
+// archivo existente de la carpeta del propietario (ErrDestinationOccupied): sin
+// versionado, sobrescribir destruiría el contenido anterior sin dejar rastro.
 func (s *FileService) UploadViaPublicShare(ctx context.Context, in PublicUploadInput) (*FileMeta, error) {
 	share, err := s.ResolvePublicShareForAccess(ctx, in.Token, in.Password)
 	if err != nil {
@@ -471,7 +484,7 @@ func (s *FileService) UploadViaPublicShare(ctx context.Context, in PublicUploadI
 		content = &errLimitReader{r: content, remaining: *share.MaxUploadSizeBytes}
 	}
 
-	return s.Upload(ctx, UploadInput{OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content})
+	return s.Upload(ctx, UploadInput{OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content, NoOverwrite: true})
 }
 
 // errLimitReader corta la lectura con ErrShareUploadTooLarge en cuanto se
@@ -506,4 +519,151 @@ func (l *errLimitReader) Read(p []byte) (int, error) {
 		return n, ErrShareUploadTooLarge
 	}
 	return n, err
+}
+
+// SharedUploadInput describe una subida de un usuario autenticado a una
+// carpeta que NO es suya, compartida con él o con un grupo suyo (§37, ADR-035).
+type SharedUploadInput struct {
+	RequesterID string
+	DirectoryID string
+	Name        string
+	Content     io.Reader
+}
+
+// UploadToSharedDirectory sube un archivo NUEVO a una carpeta que requesterID
+// no posee pero tiene compartida con permiso de subida (§37, ADR-035). El
+// archivo pertenece al propietario de la carpeta (vive en su árbol); quién lo
+// subió solo queda en la auditoría, que registra el llamador. Devuelve además
+// el ID del share que autorizó la subida ("" si requesterID es el propietario).
+//
+// La autorización se re-deriva de la base de datos a partir del ID de carpeta
+// en cada llamada, sin ninguna subruta que el cliente pueda manipular (como
+// ListSharedDirectory): un share sobre una carpeta ya cubre sus subcarpetas.
+// No sobrescribe un archivo existente: un nombre ya ocupado da
+// ErrDestinationOccupied (la comprobación es previa, no atómica: ver Upload).
+func (s *FileService) UploadToSharedDirectory(ctx context.Context, in SharedUploadInput) (*FileMeta, string, error) {
+	if !s.sharingEnabled {
+		return nil, "", ErrSharingDisabled
+	}
+	dir, err := s.directories.GetDirectoryByID(ctx, in.DirectoryID)
+	if err != nil {
+		return nil, "", err
+	}
+	if dir.IsTrashed() {
+		return nil, "", ErrDirectoryNotFound
+	}
+
+	var shareID string
+	content := in.Content
+	if dir.OwnerID != in.RequesterID {
+		grant, err := s.uploadGrantFor(ctx, in.RequesterID, dir)
+		if err != nil {
+			return nil, "", err
+		}
+		shareID = grant.ID
+		if grant.MaxUploadSizeBytes != nil {
+			content = &errLimitReader{r: content, remaining: *grant.MaxUploadSizeBytes}
+		}
+	}
+
+	meta, err := s.Upload(ctx, UploadInput{
+		OwnerID: dir.OwnerID, ParentPath: path.Join(dir.ParentPath, dir.Name), Name: in.Name, Content: content,
+		NoOverwrite: true,
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return meta, shareID, nil
+}
+
+// SharedUploadPermission es lo que un usuario puede subir a una carpeta: si
+// puede y, en ese caso, el tamaño máximo por archivo que se le va a aplicar.
+type SharedUploadPermission struct {
+	Allowed bool
+	// MaxSizeBytes es el límite por archivo (nil = sin límite). Solo tiene
+	// sentido con Allowed: es el mismo que aplicará UploadToSharedDirectory.
+	MaxSizeBytes *int64
+}
+
+// SharedUploadPermission dice si requesterID puede subir a directoryID y con qué
+// límite, para que la interfaz sepa si ofrecer el botón y qué tamaño anunciar
+// (así evita mandar un archivo que el servidor va a rechazar a medio subir). No
+// devuelve error por falta de permiso, solo un permiso no concedido.
+func (s *FileService) SharedUploadPermission(ctx context.Context, requesterID, directoryID string) (SharedUploadPermission, error) {
+	if !s.sharingEnabled {
+		return SharedUploadPermission{}, nil
+	}
+	dir, err := s.directories.GetDirectoryByID(ctx, directoryID)
+	if err != nil {
+		return SharedUploadPermission{}, err
+	}
+	if dir.IsTrashed() {
+		return SharedUploadPermission{}, nil
+	}
+	if dir.OwnerID == requesterID {
+		return SharedUploadPermission{Allowed: true}, nil
+	}
+	grants, err := s.uploadGrants(ctx, requesterID, dir)
+	if err != nil || len(grants) == 0 {
+		return SharedUploadPermission{}, err
+	}
+	return SharedUploadPermission{Allowed: true, MaxSizeBytes: mostPermissiveUploadGrant(grants).MaxUploadSizeBytes}, nil
+}
+
+// uploadGrantFor elige el permiso que autoriza la subida. Sin ninguno distingue
+// entre "tiene lectura pero no subida" (ErrShareUploadNotAllowed) y "no tiene
+// acceso" (ErrForbidden), igual que el resto de operaciones sobre compartidos.
+func (s *FileService) uploadGrantFor(ctx context.Context, requesterID string, dir *Directory) (*Share, error) {
+	grants, err := s.uploadGrants(ctx, requesterID, dir)
+	if err != nil {
+		return nil, err
+	}
+	if len(grants) > 0 {
+		return mostPermissiveUploadGrant(grants), nil
+	}
+	canRead, err := s.hasShareAccessToDirectory(ctx, requesterID, dir)
+	if err != nil {
+		return nil, err
+	}
+	if canRead {
+		return nil, ErrShareUploadNotAllowed
+	}
+	return nil, ErrForbidden
+}
+
+// uploadGrants junta los shares user/group de lectura + subida que autorizan a
+// requesterID a subir a dir: los de la propia carpeta y los de sus ancestros
+// (compartir una carpeta da acceso a todo su contenido, ADR-008). Un share
+// sobre una carpeta ancestro que esté en la papelera no concede nada.
+func (s *FileService) uploadGrants(ctx context.Context, requesterID string, dir *Directory) ([]*Share, error) {
+	now := time.Now().UTC()
+	grants, err := s.shares.ListUploadSharesForDirectory(ctx, requesterID, dir.ID, now)
+	if err != nil {
+		return nil, err
+	}
+	err = s.walkAncestorDirectories(ctx, dir.OwnerID, dir.ParentPath, func(ancestor *Directory) (bool, error) {
+		if ancestor.IsTrashed() {
+			return false, nil
+		}
+		more, err := s.shares.ListUploadSharesForDirectory(ctx, requesterID, ancestor.ID, now)
+		grants = append(grants, more...)
+		return false, err
+	})
+	return grants, err
+}
+
+// mostPermissiveUploadGrant elige, entre varios permisos aplicables a la vez,
+// el de límite de tamaño más alto (sin límite gana a cualquiera): los permisos
+// se unen, ninguno recorta a otro.
+func mostPermissiveUploadGrant(grants []*Share) *Share {
+	best := grants[0]
+	for _, g := range grants[1:] {
+		switch {
+		case best.MaxUploadSizeBytes == nil:
+			return best
+		case g.MaxUploadSizeBytes == nil, *g.MaxUploadSizeBytes > *best.MaxUploadSizeBytes:
+			best = g
+		}
+	}
+	return best
 }

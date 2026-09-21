@@ -110,8 +110,8 @@ $ nexuscloud --config config.yaml shares create --username maria /Documentos/inf
 Share creado (id=...)
 
 $ nexuscloud --config config.yaml shares list --username juan --with-me
-ID    TIPO  RECURSO       DESTINO  EXPIRA  ESTADO
-...   user  informe.txt   ...      -       activo
+ID    TIPO  RECURSO       DESTINO  PERMISOS  EXPIRA  ESTADO
+...   user  informe.txt   ...      lectura   -       activo
 ```
 
 Comparticiones con un grupo entero (en vez de usuario por usuario) usan
@@ -121,7 +121,10 @@ compartir con cada persona por separado. Un enlace público
 (`--share-type link`) imprime un token en claro una sola vez; quien lo
 tenga accede sin sesión (`GET /api/v1/public/shares/<token>/download`) —
 exige `sharing.publicLinksEnabled: true` en `config.yaml` (desactivado
-por defecto). Ver [`comandos.md`](comandos.md#compartir-archivos-y-carpetas-shares)
+por defecto). Para que un usuario o un grupo pueda además **subir**
+archivos a una carpeta compartida con ellos (sin sobrescribir nada de lo
+que ya hay), se añade `--can-upload` al compartir esa carpeta. Ver
+[`comandos.md`](comandos.md#compartir-archivos-y-carpetas-shares)
 para todas las opciones (`--can-upload`, `--password`, `--expires-at`,
 límites de descarga/tamaño).
 
@@ -183,6 +186,88 @@ Desactiva 2FA para ese usuario sin necesitar ningún código — la vía de
 recuperación si se perdió el teléfono con la app, o el secreto se copió
 mal. En un servidor headless de un solo administrador, esto es
 importante: no hay ninguna otra forma de deshacerlo.
+
+## Passkeys (WebAuthn)
+
+Alternativa a TOTP como segundo factor (más fuerte, resistente a
+phishing) y, con el mismo passkey, también login sin contraseña. A
+diferencia de TOTP, **desactivado por defecto** y requiere configurar el
+dominio real del servidor primero — sin eso, el navegador rechaza
+cualquier passkey:
+
+```yaml
+security:
+  webAuthn:
+    enabled: true
+    rpID: "nexuscloud.tu-dominio.com"      # solo el dominio, sin esquema ni puerto
+    rpOrigin: "https://nexuscloud.tu-dominio.com"
+```
+
+`rpOrigin` debe usar `https://` (o `http://localhost` solo en desarrollo
+local) — WebAuthn lo exige.
+
+Registrar un passkey **solo puede hacerse desde la web** (Cuenta →
+Passkeys → "Añadir passkey"): el navegador es quien genera el par de
+claves y lo guarda en el propio dispositivo/llave, no hay equivalente
+por CLI ni por API sin pasar por `navigator.credentials.create()`. Si un
+usuario ya tiene algún passkey registrado, el login (por cualquier vía)
+lo exigirá con prioridad sobre TOTP aunque también tenga TOTP activado.
+
+### Si algo sale mal (recuperar el acceso)
+
+```sh
+nexuscloud --config config.yaml users webauthn list --username maria
+nexuscloud --config config.yaml users webauthn revoke <id-del-passkey> --username maria
+```
+
+`list` muestra el `id` interno de cada passkey (no el que da el
+navegador) junto con su nombre y fecha de último uso. `revoke` quita ese
+passkey concreto sin necesitar el dispositivo físico — la vía de
+recuperación si se perdió la llave/el teléfono, mismo criterio que
+`users totp disable`. Si el usuario se queda sin ningún passkey y no
+tiene TOTP activado, el login vuelve a pedir solo contraseña.
+
+## Acceso WebDAV (unidad de red)
+
+Permite montar el espacio de un usuario como unidad de red o usarlo desde
+clientes estándar (Explorador de Windows, Finder, rclone, Cyberduck...).
+**Desactivado por defecto**:
+
+```yaml
+webdav:
+  enabled: true
+  path: "/webdav"          # se sirve por el mismo puerto que la API
+  readOnly: false          # true = solo consultar, nadie puede escribir
+  maxUploadSizeBytes: 0    # 0 = sin límite
+```
+
+Cada persona crea sus propios **tokens de acceso** (uno por dispositivo) en
+la web —Cuenta → Acceso WebDAV— y los usa como contraseña junto a su nombre
+de usuario. **La contraseña de la cuenta no vale por WebDAV**, a propósito:
+los clientes WebDAV no pueden hacer el segundo factor. **Usa HTTPS**: el
+token viaja en cada petición.
+
+Por CLI (por ejemplo, para preparar un dispositivo desde el servidor, o para
+cortar un acceso sin que la persona intervenga):
+
+```sh
+nexuscloud --config config.yaml users webdav-token create --username maria --label "portátil de casa"
+nexuscloud --config config.yaml users webdav-token list --username maria
+nexuscloud --config config.yaml users webdav-token revoke <id-del-token> --username maria
+```
+
+`create` imprime el token una sola vez. `list` muestra cuándo se usó cada
+uno por última vez, para detectar los que ya no usa nadie. `revoke` lo
+invalida al instante y es la vía de recuperación si un token se filtra.
+
+Lo que se sube por WebDAV pasa por la misma papelera, versionado y auditoría
+que la web. Un límite importante: **con la papelera activa, un nombre borrado
+no se puede reutilizar hasta restaurarlo, eliminarlo para siempre o que
+caduque la retención**; eso rompe a las aplicaciones que borran y recrean
+ficheros temporales con el mismo nombre. Si quieres WebDAV como unidad de red
+para trabajar con editores, `trash.enabled: false` lo evita a costa de la red
+de seguridad. Detalle completo, guía por cliente y límites conocidos en
+[`nexuscloud/docs/webdav.md`](../nexuscloud/docs/webdav.md).
 
 ## Papelera y versiones de otro usuario
 

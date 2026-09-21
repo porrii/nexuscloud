@@ -37,18 +37,16 @@ run_db_test() {
   local db_container="nexuscloud-test-${engine}-db"
   local env_var="NEXUSCLOUD_TEST_$(echo "$driver" | tr '[:lower:]' '[:upper:]')_DSN"
 
-  cleanup() {
-    # "${var:-}" en vez de "$var": bajo `set -u`, el trap EXIT puede
-    # dispararse en un punto donde estas locales de run_db_test ya no
-    # están en el scope dinámico de bash (visto en la práctica: "unbound
-    # variable" al fallar el `go test` de más abajo) -- el valor por
-    # defecto vacío evita ese error y el `docker rm -f ""`/`network rm ""`
-    # resultante ya lo absorbe el `|| true`.
-    MSYS_NO_PATHCONV=1 docker rm -f "${db_container:-}" >/dev/null 2>&1 || true
-    MSYS_NO_PATHCONV=1 docker network rm "${net:-}" >/dev/null 2>&1 || true
-  }
-  trap cleanup EXIT
-  cleanup # por si quedó algo de una ejecución anterior interrumpida
+  # El trap se instala con el comando ya expandido (comillas dobles): al
+  # dispararse en EXIT, las locales de esta función ya no existen -- ni tras
+  # un éxito ni tras un fallo --, así que no puede depender de ellas. Antes
+  # usaba "${var:-}" para esquivar el "unbound variable" de `set -u`, pero eso
+  # dejaba la limpieza en un `docker rm -f ""` inofensivo y el contenedor de
+  # BD seguía vivo tras cada ejecución correcta. `-v` retira además el
+  # volumen anónimo con los datos de la BD (con `rm -f` a secas se acumulaba).
+  cleanup_cmd="MSYS_NO_PATHCONV=1 docker rm -f -v '${db_container}' >/dev/null 2>&1 || true; MSYS_NO_PATHCONV=1 docker network rm '${net}' >/dev/null 2>&1 || true"
+  trap "$cleanup_cmd" EXIT
+  eval "$cleanup_cmd" # por si quedó algo de una ejecución anterior interrumpida
 
   MSYS_NO_PATHCONV=1 docker network create "$net" >/dev/null
   MSYS_NO_PATHCONV=1 docker run -d --rm --name "$db_container" --network "$net" "$@" "$image" >/dev/null

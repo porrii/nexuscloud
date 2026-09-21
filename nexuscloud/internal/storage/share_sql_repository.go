@@ -42,6 +42,18 @@ func nullableInt64Arg(v *int64) any {
 	return *v
 }
 
+// boolToInt hace explícito el 0/1 de las columnas INTEGER can_download/
+// can_upload. sqlite y MySQL aceptan un bool de Go como argumento de una
+// columna entera, pero el driver de PostgreSQL (pgx) no lo codifica en un int4
+// y la inserción falla ("unable to encode true into binary format for int4"):
+// con el entero explícito, los tres motores se comportan igual.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func (r *SQLShareRepository) CreateShare(ctx context.Context, s *Share) error {
 	_, err := r.conn.ExecContext(ctx, `
 		INSERT INTO shares (
@@ -53,7 +65,7 @@ func (r *SQLShareRepository) CreateShare(ctx context.Context, s *Share) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.OwnerID, nullableStr(s.FileID), nullableStr(s.DirectoryID), string(s.Type),
 		nullableStr(s.TargetUserID), nullableStr(s.TargetGroupID), nullableStr(s.TokenHash), s.Label,
-		s.CanDownload, s.CanUpload, nullableStr(s.PasswordHash),
+		boolToInt(s.CanDownload), boolToInt(s.CanUpload), nullableStr(s.PasswordHash),
 		db.NullableTimeToString(s.ExpiresAt), nullableIntArg(s.MaxDownloads), s.DownloadCount, nullableInt64Arg(s.MaxUploadSizeBytes),
 		db.NullableTimeToString(s.RevokedAt), db.TimeToString(s.CreatedAt), db.TimeToString(s.UpdatedAt),
 	)
@@ -173,6 +185,29 @@ func (r *SQLShareRepository) ListSharesForUser(ctx context.Context, userID strin
 		db.TimeToString(now), userID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("listando shares recibidos: %w", err)
+	}
+	defer rows.Close()
+	return scanShareRows(rows)
+}
+
+// uploadSharesForDirectoryQuery devuelve los shares user/group que dan a un
+// usuario permiso de lectura + subida sobre UNA carpeta concreta (directo o
+// vía un grupo suyo). Subir a una carpeta compartida no solo necesita saber
+// SI hay permiso: necesita el límite de tamaño de cada permiso aplicable.
+const uploadSharesForDirectoryQuery = shareSelectColumns + `
+	WHERE directory_id = ? AND can_upload = 1 AND can_download = 1
+	AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+	AND (
+		(share_type = 'user' AND target_user_id = ?)
+		OR (share_type = 'group' AND target_group_id IN (
+			SELECT group_id FROM user_groups WHERE user_id = ?
+		))
+	)`
+
+func (r *SQLShareRepository) ListUploadSharesForDirectory(ctx context.Context, userID, directoryID string, now time.Time) ([]*Share, error) {
+	rows, err := r.conn.QueryContext(ctx, uploadSharesForDirectoryQuery, directoryID, db.TimeToString(now), userID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listando shares de subida de la carpeta: %w", err)
 	}
 	defer rows.Close()
 	return scanShareRows(rows)

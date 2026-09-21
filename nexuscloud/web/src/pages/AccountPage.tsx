@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ApiClientError, type Session } from '../api/client'
+import { api, ApiClientError, type Session, type WebAuthnCredential } from '../api/client'
 import ConfirmDialog from '../components/ConfirmDialog'
+import WebDAVAccess from '../components/WebDAVAccess'
 import { useAuth } from '../auth/AuthContext'
 
 function formatDate(iso: string): string {
@@ -14,6 +15,13 @@ export default function AccountPage() {
   const [error, setError] = useState<string | null>(null)
   const [pendingRevoke, setPendingRevoke] = useState<Session | null>(null)
 
+  const [credentials, setCredentials] = useState<WebAuthnCredential[]>([])
+  const [webauthnSupported, setWebauthnSupported] = useState(true)
+  const [passkeyError, setPasskeyError] = useState<string | null>(null)
+  const [addingPasskey, setAddingPasskey] = useState(false)
+  const [newPasskeyLabel, setNewPasskeyLabel] = useState<string | null>(null)
+  const [pendingRevokeCredential, setPendingRevokeCredential] = useState<WebAuthnCredential | null>(null)
+
   const load = useCallback(async () => {
     setLoading(true)
     try {
@@ -25,9 +33,24 @@ export default function AccountPage() {
     }
   }, [])
 
+  const loadCredentials = useCallback(async () => {
+    try {
+      setCredentials(await api.listWebAuthnCredentials())
+    } catch (err) {
+      // 404 = security.webAuthn.enabled=false en el servidor (§25): no es
+      // un error del usuario, simplemente esta instancia no lo ofrece.
+      if (err instanceof ApiClientError && err.status === 404) {
+        setWebauthnSupported(false)
+        return
+      }
+      setPasskeyError(err instanceof ApiClientError ? err.message : 'No se pudieron cargar los passkeys.')
+    }
+  }, [])
+
   useEffect(() => {
     void load()
-  }, [load])
+    void loadCredentials()
+  }, [load, loadCredentials])
 
   async function handleRevoke() {
     if (!pendingRevoke) return
@@ -38,6 +61,32 @@ export default function AccountPage() {
     } catch (err) {
       setPendingRevoke(null)
       setError(err instanceof ApiClientError ? err.message : 'No se pudo revocar la sesión.')
+    }
+  }
+
+  async function handleAddPasskey() {
+    setPasskeyError(null)
+    setAddingPasskey(true)
+    try {
+      await api.registerWebAuthnCredential(newPasskeyLabel?.trim() || 'Passkey')
+      setNewPasskeyLabel(null)
+      await loadCredentials()
+    } catch (err) {
+      setPasskeyError(err instanceof ApiClientError ? err.message : 'No se pudo registrar el passkey.')
+    } finally {
+      setAddingPasskey(false)
+    }
+  }
+
+  async function handleRevokeCredential() {
+    if (!pendingRevokeCredential) return
+    try {
+      await api.revokeWebAuthnCredential(pendingRevokeCredential.id)
+      setPendingRevokeCredential(null)
+      await loadCredentials()
+    } catch (err) {
+      setPendingRevokeCredential(null)
+      setPasskeyError(err instanceof ApiClientError ? err.message : 'No se pudo revocar el passkey.')
     }
   }
 
@@ -56,6 +105,75 @@ export default function AccountPage() {
           <dd className="text-slate-800 dark:text-slate-200">{user?.has_totp ? 'Activada' : 'Desactivada'}</dd>
         </dl>
       </section>
+
+      {webauthnSupported && (
+        <section className="mb-8 rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-medium text-slate-500 dark:text-slate-400">Passkeys</h2>
+            {newPasskeyLabel === null && (
+              <button
+                onClick={() => setNewPasskeyLabel('')}
+                className="rounded px-2 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950"
+              >
+                Añadir passkey
+              </button>
+            )}
+          </div>
+
+          {passkeyError && <p className="mb-3 text-sm text-red-600 dark:text-red-400">{passkeyError}</p>}
+
+          {newPasskeyLabel !== null && (
+            <div className="mb-4 flex items-center gap-2">
+              <input
+                autoFocus
+                placeholder='Nombre, p.ej. "portátil de trabajo"'
+                value={newPasskeyLabel}
+                onChange={(e) => setNewPasskeyLabel(e.target.value)}
+                className="flex-1 rounded-md border border-slate-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+              />
+              <button
+                onClick={() => void handleAddPasskey()}
+                disabled={addingPasskey}
+                className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-blue-700 disabled:opacity-60"
+              >
+                {addingPasskey ? 'Esperando…' : 'Continuar'}
+              </button>
+              <button
+                onClick={() => setNewPasskeyLabel(null)}
+                disabled={addingPasskey}
+                className="rounded-md px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+            </div>
+          )}
+
+          {credentials.length === 0 ? (
+            <p className="text-sm text-slate-500 dark:text-slate-400">No tienes ningún passkey registrado todavía.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+              {credentials.map((c) => (
+                <li key={c.id} className="flex items-center justify-between py-3 text-sm">
+                  <div>
+                    <p className="text-slate-800 dark:text-slate-200">{c.label}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      añadido {formatDate(c.created_at)} · último uso {c.last_used_at ? formatDate(c.last_used_at) : 'nunca'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setPendingRevokeCredential(c)}
+                    className="rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+                  >
+                    Revocar
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
+
+      <WebDAVAccess />
 
       <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
         <h2 className="mb-3 text-sm font-medium text-slate-500 dark:text-slate-400">Sesiones activas</h2>
@@ -93,6 +211,17 @@ export default function AccountPage() {
           danger
           onConfirm={() => void handleRevoke()}
           onCancel={() => setPendingRevoke(null)}
+        />
+      )}
+
+      {pendingRevokeCredential && (
+        <ConfirmDialog
+          title="Revocar passkey"
+          message={`"${pendingRevokeCredential.label}" ya no podrá usarse para iniciar sesión.`}
+          confirmLabel="Revocar"
+          danger
+          onConfirm={() => void handleRevokeCredential()}
+          onCancel={() => setPendingRevokeCredential(null)}
         />
       )}
     </div>

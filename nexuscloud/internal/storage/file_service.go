@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"regexp"
 	"strconv"
@@ -71,6 +72,11 @@ func NewFileService(
 	}
 }
 
+// TrashEnabled indica si borrar es lógico (a la papelera, que reserva el
+// nombre, §128) o físico. Los adaptadores como WebDAV lo necesitan para saber
+// si tras borrar un elemento su nombre sigue ocupado.
+func (s *FileService) TrashEnabled() bool { return s.trashEnabled }
+
 func validateName(name string) error {
 	if name == "" || name == "." || name == ".." || invalidNameChars.MatchString(name) {
 		return ErrInvalidName
@@ -119,6 +125,11 @@ type UploadInput struct {
 	// defecto). Vacío (el caso normal) resuelve el pool por defecto, mismo
 	// comportamiento de siempre -- ver resolveTargetPool.
 	PoolID string
+	// NoOverwrite hace que Upload falle con ErrDestinationOccupied si ya hay
+	// un archivo ACTIVO con ese nombre en esa carpeta, en vez de sobrescribirlo
+	// (dejando una versión). Es lo que necesita quien sube a una carpeta que
+	// NO es suya (§40: no sobrescribir silenciosamente).
+	NoOverwrite bool
 }
 
 // resolveTargetPool centraliza la resolución de pool destino que Upload y
@@ -155,6 +166,19 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 
 	if err := s.rejectIfTrashOccupiesName(ctx, pool.ID, in.OwnerID, parent, in.Name); err != nil {
 		return nil, err
+	}
+	if in.NoOverwrite {
+		// Antes de escribir el temporal: un archivo grande que se va a
+		// rechazar no debe gastar E/S. Sigue siendo una comprobación previa,
+		// no atómica: dos subidas simultáneas con el mismo nombre pueden
+		// cruzarse, y entonces manda el comportamiento normal (versión).
+		existing, err := s.files.GetFileByNaturalKey(ctx, pool.ID, in.OwnerID, parent, in.Name)
+		switch {
+		case err == nil && !existing.IsTrashed():
+			return nil, ErrDestinationOccupied
+		case err != nil && !errors.Is(err, ErrFileNotFound):
+			return nil, err
+		}
 	}
 
 	staging := stagingPath(in.OwnerID)
@@ -767,7 +791,13 @@ func (s *FileService) DeleteDirectory(ctx context.Context, requesterID, dirID st
 		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
 	}
 	rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
-	if err := prov.Delete(ctx, rel); err != nil {
+	// Con la papelera activa, Delete de un archivo es solo una marca en la
+	// base de datos: su contenido sigue físicamente en esta carpeta. Que
+	// no esté vacía en disco es correcto (una carpeta con solo elementos en
+	// la papelera "cuenta como vacía", ver ensureDirectoryEmpty) aunque
+	// os.Remove falle con "directorio no vacío": se conserva, y
+	// permanentlyDeleteDirectory la retirará cuando ya no quede nada dentro.
+	if err := prov.Delete(ctx, rel); err != nil && !errors.Is(err, fs.ErrExist) {
 		return fmt.Errorf("eliminando carpeta física: %w", err)
 	}
 	return s.directories.SoftDeleteDirectory(ctx, target.ID, time.Now().UTC())
@@ -790,16 +820,20 @@ func (s *FileService) PermanentlyDeleteDirectory(ctx context.Context, requesterI
 }
 
 func (s *FileService) permanentlyDeleteDirectory(ctx context.Context, target *Directory) error {
-	if !target.IsTrashed() {
-		// Si estaba activa (papelera desactivada), el marcador físico
-		// todavía existe y hay que retirarlo; si ya estaba en la papelera,
-		// DeleteDirectory ya lo hizo al trashearla.
-		prov, err := s.providers.For(ctx, target.PoolID)
-		if err != nil {
-			return fmt.Errorf("resolviendo proveedor del pool: %w", err)
-		}
-		rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
-		if err := prov.Delete(ctx, rel); err != nil {
+	prov, err := s.providers.For(ctx, target.PoolID)
+	if err != nil {
+		return fmt.Errorf("resolviendo proveedor del pool: %w", err)
+	}
+	rel := physicalPath(target.OwnerID, target.ParentPath, target.Name)
+	if err := prov.Delete(ctx, rel); err != nil {
+		// Una carpeta activa (papelera desactivada) siempre está vacía en
+		// disco: cualquier fallo es real. Una que ya estaba en la papelera
+		// puede seguir existiendo físicamente si al trashearla aún contenía
+		// archivos en la papelera (ver DeleteDirectory); si esos archivos
+		// todavía no se han purgado, "no vacía" es esperable y se ignora --
+		// nunca es recursivo, así que jamás se llevaría su contenido por
+		// delante.
+		if !target.IsTrashed() || !errors.Is(err, fs.ErrExist) {
 			return fmt.Errorf("eliminando carpeta física: %w", err)
 		}
 	}

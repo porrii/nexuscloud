@@ -28,6 +28,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/security"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
+	"github.com/porrii/nexuscloud/internal/webdav"
 	nexuscloudweb "github.com/porrii/nexuscloud/web"
 )
 
@@ -41,6 +42,7 @@ type Server struct {
 	loginLimiter  *security.RateLimiter
 	apiLimiter    *security.RateLimiter
 	publicLimiter *security.RateLimiter
+	webdavLimiter *security.RateLimiter // nil si webdav.enabled=false
 	stopPurge     chan struct{}
 	stopBackup    chan struct{}
 }
@@ -86,6 +88,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	userRepo := users.NewSQLRepository(conn)
 	sessionRepo := auth.NewSQLSessionRepository(conn)
 	invitationRepo := auth.NewSQLInvitationRepository(conn)
+	webauthnCredRepo := auth.NewSQLWebAuthnCredentialRepository(conn)
+	webauthnCeremonyRepo := auth.NewSQLWebAuthnCeremonyRepository(conn)
 	poolRepo := storage.NewSQLPoolRepository(conn)
 	fileRepo := storage.NewSQLFileRepository(conn)
 	directoryRepo := storage.NewSQLDirectoryRepository(conn)
@@ -107,7 +111,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	hasher := auth.NewHasher(cfg.Security.Argon2)
 	userSvc := users.NewService(userRepo)
-	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, cfg, logger)
+	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, webauthnCredRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
@@ -135,6 +139,40 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		)
 	}
 
+	// webauthnSvc (§25, ADR-033): solo se construye si
+	// security.webAuthn.enabled = true -- config.Validate ya exige RPID/
+	// RPOrigin no vacíos en ese caso, así que webauthn.New (dentro de
+	// NewWebAuthnService) nunca falla aquí por config incompleta. Con
+	// enabled=false (por defecto), queda en nil y NewRouter ni registra
+	// esas rutas, mismo criterio exacto que clientUpdatesProxy.
+	var webauthnSvc *auth.WebAuthnService
+	if cfg.Security.WebAuthn.Enabled {
+		webauthnSvc, err = auth.NewWebAuthnService(cfg.Security.WebAuthn, webauthnCredRepo, webauthnCeremonyRepo, userRepo)
+		if err != nil {
+			sqlDB.Close()
+			return nil, fmt.Errorf("configurando WebAuthn: %w", err)
+		}
+	}
+
+	// webdavTokens/webdavHandler (§43, ADR-034): solo existen si
+	// webdav.enabled = true. Con false (por defecto) no se construye nada ni
+	// se monta ninguna ruta -- mismo criterio que webauthnSvc/clientUpdatesProxy.
+	var (
+		webdavTokens  *webdav.TokenService
+		webdavHandler http.Handler
+		webdavLimiter *security.RateLimiter
+	)
+	if cfg.WebDAV.Enabled {
+		webdavTokens = webdav.NewTokenService(webdav.NewSQLTokenRepository(conn), userRepo, logger)
+		webdavHandler = webdav.NewHandler(fileSvc, webdavTokens, auditRecorder, webdav.Options{
+			Prefix:             cfg.WebDAV.Path,
+			ReadOnly:           cfg.WebDAV.ReadOnly,
+			MaxUploadSizeBytes: cfg.WebDAV.MaxUploadSizeBytes,
+			TrustedProxies:     cfg.Server.TrustedProxies,
+		}, logger)
+		webdavLimiter = security.NewRateLimiter(cfg.Security.RateLimit.WebDAVPerMinute, cfg.Security.RateLimit.WebDAVPerMinute)
+	}
+
 	h := &apiv1.Handlers{
 		Auth:           authenticator,
 		Hasher:         hasher,
@@ -157,6 +195,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		BackupRepo:         backupRepo,
 		BackupReceiveToken: os.Getenv("NEXUSCLOUD_BACKUP_RECEIVE_TOKEN"),
 		ClientUpdatesProxy: clientUpdatesProxy,
+		WebAuthn:           webauthnSvc,
+		WebDAVTokens:       webdavTokens,
+		WebDAVPath:         cfg.WebDAV.Path,
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute
@@ -183,6 +224,12 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// activación/desactivación más adelante (§3, §47).
 	if cfg.API.Enabled {
 		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter, publicLimiter))
+	}
+	if webdavHandler != nil {
+		// Su propio rate limit por IP, más holgado que el de la API: un
+		// cliente WebDAV dispara decenas de PROPFIND por segundo (§43).
+		webdavKey := func(r *http.Request) string { return security.ClientIP(r, cfg.Server.TrustedProxies) }
+		root.Mount(cfg.WebDAV.Path, webdavLimiter.Middleware(webdavKey)(webdavHandler))
 	}
 	if cfg.Web.Enabled {
 		webHandler, err := newWebUIHandler()
@@ -211,7 +258,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	return &Server{
 		Handler: root, DB: sqlDB,
-		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
+		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter, webdavLimiter: webdavLimiter,
 		stopPurge: stopPurge, stopBackup: stopBackup,
 	}, nil
 }
@@ -305,6 +352,9 @@ func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
 	s.publicLimiter.Stop()
+	if s.webdavLimiter != nil {
+		s.webdavLimiter.Stop()
+	}
 	if s.stopPurge != nil {
 		close(s.stopPurge)
 	}

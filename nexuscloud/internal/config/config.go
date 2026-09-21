@@ -30,6 +30,7 @@ type Config struct {
 	Sharing       SharingConfig       `yaml:"sharing"`
 	Backup        BackupConfig        `yaml:"backup"`
 	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
+	WebDAV        WebDAVConfig        `yaml:"webdav"`
 	API           APIConfig           `yaml:"api"`
 	Web           WebConfig           `yaml:"web"`
 	Logging       LoggingConfig       `yaml:"logging"`
@@ -88,6 +89,23 @@ type SecurityConfig struct {
 	RateLimit                 RateLimitConfig `yaml:"rateLimit"`
 	CORSAllowedOrigins        []string        `yaml:"corsAllowedOrigins"`
 	PublicRegistrationEnabled bool            `yaml:"publicRegistrationEnabled"`
+	WebAuthn                  WebAuthnConfig  `yaml:"webAuthn"`
+}
+
+// WebAuthnConfig gobierna Passkeys/WebAuthn (§25, ADR-033). Enabled=false
+// por defecto -- a diferencia de TOTP (que no necesita nada del servidor
+// más allá del propio secreto por usuario), WebAuthn exige que el servidor
+// declare su Relying Party ID/origin de antemano: sin un RPID/RPOrigin
+// reales el navegador rechaza cualquier reto, así que activarlo a ciegas
+// con valores vacíos rompería el protocolo en vez de simplemente no hacer
+// nada. RPID es el dominio (p.ej. "nexuscloud.example.com", nunca incluye
+// esquema ni puerto -- así lo exige el estándar) y RPOrigin es el origen
+// completo tal y como lo ve el navegador (p.ej.
+// "https://nexuscloud.example.com").
+type WebAuthnConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	RPID     string `yaml:"rpID"`
+	RPOrigin string `yaml:"rpOrigin"`
 }
 
 // Argon2Config son los parámetros de coste de Argon2id (§25). Los valores
@@ -214,6 +232,27 @@ type RateLimitConfig struct {
 	LoginPerMinute      int `yaml:"loginPerMinute"`
 	APIPerMinute        int `yaml:"apiPerMinute"`
 	PublicLinkPerMinute int `yaml:"publicLinkPerMinute"`
+	// WebDAVPerMinute (§43 "limitarse"): un cliente WebDAV de escritorio
+	// dispara decenas de PROPFIND por segundo al abrir una carpeta, mucho más
+	// que la API REST, así que tiene su propio límite por IP, más holgado.
+	WebDAVPerMinute int `yaml:"webdavPerMinute"`
+}
+
+// WebDAVConfig gobierna el módulo WebDAV (§43, ADR-034). Enabled=false por
+// defecto (§3, §169): añade una superficie de ataque nueva -- un protocolo
+// más con su propia autenticación -- así que el administrador la activa a
+// propósito. Se autentica con HTTP Basic usando tokens de acceso WebDAV
+// (nunca la contraseña de la cuenta, para no saltarse el segundo factor), y
+// se sirve por el mismo listener que la API en Path.
+type WebDAVConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// Path es el prefijo de URL donde se monta, sin barra final ("/webdav").
+	Path string `yaml:"path"`
+	// ReadOnly limita WebDAV a OPTIONS/GET/HEAD/PROPFIND: se puede montar
+	// como unidad de red para consultar sin que ningún cliente escriba.
+	ReadOnly bool `yaml:"readOnly"`
+	// MaxUploadSizeBytes (0 = sin límite) limita el tamaño de una subida.
+	MaxUploadSizeBytes int64 `yaml:"maxUploadSizeBytes"`
 }
 
 type APIConfig struct {
@@ -263,15 +302,18 @@ func Defaults() *Config {
 				LoginPerMinute:      5,
 				APIPerMinute:        300,
 				PublicLinkPerMinute: 20,
+				WebDAVPerMinute:     1200,
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
+			WebAuthn:                  WebAuthnConfig{Enabled: false},
 		},
 		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
 		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
+		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},
 		API:           APIConfig{Enabled: true},
 		Web:           WebConfig{Enabled: false},
 		Logging:       LoggingConfig{Level: "info", Format: "text", Output: "stdout"},
@@ -309,6 +351,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	applyEnvOverrides(cfg)
+
+	// config.example.yaml documenta `dataDir: ""` como "valor por SO", pero
+	// el YAML pisa el valor de Defaults() con la cadena vacía: se restaura
+	// aquí, antes de validar. Validate sigue rechazando un vacío que llegue
+	// por otro camino (una Config construida a mano).
+	if cfg.Storage.DataDir == "" {
+		cfg.Storage.DataDir = defaultDataDir()
+	}
 
 	if err := migrateSchema(cfg); err != nil {
 		return nil, err

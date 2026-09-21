@@ -110,6 +110,28 @@ nexuscloud users totp verify --username <usuario> --secret <el-mismo-secreto> <c
 nexuscloud users totp disable --username <usuario>   # recupera el acceso si algo salió mal (app perdida, secreto mal copiado)
 ```
 
+Passkeys (WebAuthn, requiere `security.webAuthn.enabled=true` en
+`config.yaml` — ver [`administracion.md`](administracion.md#passkeys-webauthn)).
+El alta solo puede hacerse desde la web (exige `navigator.credentials.
+create()` del navegador); por CLI solo se listan/revocan los ya
+registrados, para recuperar el acceso:
+
+```
+nexuscloud users webauthn list --username <usuario>
+nexuscloud users webauthn revoke <id-del-passkey> --username <usuario>   # recupera el acceso si se perdió la llave/el teléfono
+```
+
+Tokens de acceso WebDAV (requiere `webdav.enabled=true` en `config.yaml` —
+ver [`administracion.md`](administracion.md#acceso-webdav-unidad-de-red)).
+Son la contraseña que usa un cliente WebDAV (nunca la de la cuenta). A
+diferencia de los passkeys, sí se pueden crear por CLI:
+
+```
+nexuscloud users webdav-token create --username <usuario> [--label "portátil de casa"]   # imprime el token UNA vez
+nexuscloud users webdav-token list --username <usuario>                                   # id, nombre, creado, último uso
+nexuscloud users webdav-token revoke <id-del-token> --username <usuario>                 # lo invalida al instante
+```
+
 ## Archivos de un usuario (`files`)
 
 El día a día: subir, bajar, listar, mover y borrar archivos, en nombre de
@@ -216,8 +238,13 @@ nexuscloud shares revoke --username <usuario> <share-id>
 ```
 
 - `--share-type user`/`group` exige `--target-username`/`--target-group`
-  respectivamente; en ambos casos la subida no aplica (`--can-upload` se
-  ignora), esas opciones son solo de enlaces.
+  respectivamente. Por defecto dan solo lectura; con `--can-upload` (solo
+  sobre una **carpeta**) dan «lectura y subida»: la persona o el grupo
+  puede subir archivos nuevos a esa carpeta y a sus subcarpetas desde
+  «Compartido» en la web. No sobrescribe un archivo existente, y quien
+  sube no puede renombrar, borrar ni crear subcarpetas;
+  `--max-upload-size-bytes` limita el tamaño por archivo. Un archivo con
+  `--can-upload`, o `--can-upload` junto con `--no-download`, se rechaza.
 - `--share-type link` imprime el **token en claro una sola vez** — es lo
   que hay que compartir para poder acceder sin sesión
   (`GET /api/v1/public/shares/<token>/download`). Exige
@@ -225,7 +252,9 @@ nexuscloud shares revoke --username <usuario> <share-id>
   defecto).
 - `shares list` sin `--with-me` muestra lo que TÚ has compartido; con
   `--with-me`, lo que otros han compartido contigo (directo, o vía un
-  grupo del que seas miembro). Un share revocado deja de aparecer en
+  grupo del que seas miembro). La columna `PERMISOS` dice qué permite
+  cada share: `lectura`, `lectura+subida` o (un enlace de carpeta con
+  `--no-download`) `subida`. Un share revocado deja de aparecer en
   ambos listados (el historial vive en el registro de auditoría, no
   aquí).
 

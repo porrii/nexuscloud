@@ -16,15 +16,22 @@ proveedor externo para guardar tus archivos.
 ## Qué hace hoy
 
 - **Usuarios y acceso**: roles (RBAC), grupos, cuotas, invitaciones (sin
-  registro público), contraseña + Argon2id, sesiones revocables, TOTP (2FA).
+  registro público), contraseña + Argon2id, sesiones revocables, TOTP (2FA) y
+  Passkeys/WebAuthn (segundo factor o login sin contraseña).
 - **Archivos**: subida/descarga en streaming con descargas reanudables
   (`Range`), papelera con purga automática configurable (por antigüedad y
   por tamaño total), historial de versiones, protección activa contra path
   traversal e IDOR.
-- **Compartición**: usuario→usuario, usuario→grupo, y enlaces públicos
+- **Compartición**: usuario→usuario, usuario→grupo (de solo lectura o, en
+  una carpeta, con permiso de subida sin sobrescribir), y enlaces públicos
   (contraseña, expiración, límite de descargas/tamaño, revocación).
 - **Interfaz web** (React+TS+Vite, embebida en el propio binario): explorador
   con arrastrar-y-soltar, papelera, versiones, compartición, sesiones.
+- **WebDAV** (opcional, desactivado por defecto): monta tu espacio como
+  unidad de red o úsalo con rclone, Cyberduck, Finder o el Explorador de
+  Windows, con tokens de acceso por dispositivo (nunca tu contraseña) y las
+  mismas reglas de papelera, versiones y auditoría que la web. Ver
+  [`nexuscloud/docs/webdav.md`](nexuscloud/docs/webdav.md).
 - **Cliente de escritorio** (Windows/Linux, Flutter): paridad funcional con
   la web, sincronización bidireccional de varias carpetas a la vez,
   detección de mover/renombrar sin re-subir contenido, auto-sync
@@ -46,8 +53,7 @@ proveedor externo para guardar tus archivos.
   multiplataforma (Linux amd64/arm64, Windows).
 
 **Explícitamente fuera de alcance todavía**: cliente Android, subida
-anónima, sincronización WebDAV, Passkeys/WebAuthn, sistema de plugins,
-miniaturas/búsqueda de contenido. El detalle completo de qué fase cubre qué
+anónima, sistema de plugins, miniaturas/búsqueda de contenido. El detalle completo de qué fase cubre qué
 está en [`nexuscloud/docs/architecture.md`](nexuscloud/docs/architecture.md#fases).
 
 ## Instalación

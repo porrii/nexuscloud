@@ -2,14 +2,19 @@ package cli
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/porrii/nexuscloud/internal/auth"
+	"github.com/porrii/nexuscloud/internal/config"
+	"github.com/porrii/nexuscloud/internal/db"
 	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/users"
+	"github.com/porrii/nexuscloud/internal/webdav"
 )
 
 func newUsersCmd() *cobra.Command {
@@ -18,7 +23,7 @@ func newUsersCmd() *cobra.Command {
 		Short: "Gestión de usuarios (§20-21)",
 	}
 	cmd.AddCommand(newUsersListCmd(), newUsersCreateCmd(), newUsersDisableCmd(), newUsersEnableCmd(),
-		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersTotpCmd(), newUsersInvitationCmd())
+		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(), newUsersWebdavTokenCmd(), newUsersInvitationCmd())
 	return cmd
 }
 
@@ -320,6 +325,263 @@ func newUsersTotpDisableCmd() *cobra.Command {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q.\n", username)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+// openWebAuthnCredRepo reutiliza la misma conexión que openUsersRepo en
+// vez de abrir la base de datos dos veces -- db.Wrap solo añade la
+// reescritura de placeholders (Rebind), no abre nada nuevo.
+func openWebAuthnCredRepo(cfg *config.Config, sqlDB *sql.DB) auth.WebAuthnCredentialRepository {
+	return auth.NewSQLWebAuthnCredentialRepository(db.Wrap(cfg.Database.Driver, sqlDB))
+}
+
+func newUsersWebauthnCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "webauthn",
+		Short: "Passkeys / WebAuthn (§25, ADR-033)",
+	}
+	cmd.AddCommand(newUsersWebauthnListCmd(), newUsersWebauthnRevokeCmd())
+	return cmd
+}
+
+func newUsersWebauthnListCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Lista los passkeys registrados de un usuario",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			creds, err := openWebAuthnCredRepo(cfg, sqlDB).ListCredentialsForUser(context.Background(), u.ID)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(creds) == 0 {
+				fmt.Fprintf(out, "%q no tiene passkeys registrados.\n", username)
+				return nil
+			}
+			for _, c := range creds {
+				lastUsed := "nunca"
+				if c.LastUsedAt != nil {
+					lastUsed = c.LastUsedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(out, "%-36s  %-20s  creado %s  último uso %s\n", c.ID, c.Label, c.CreatedAt.Format(time.RFC3339), lastUsed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+func newUsersWebauthnRevokeCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "revoke <credential-id>",
+		Short: "Revoca un passkey (recupera el acceso si se ha quedado bloqueado)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			// DeleteCredential exige coincidencia de userID (§198 IDOR):
+			// --username no es solo cosmético, evita revocar por error el
+			// passkey de otro usuario aunque se acierte el ID.
+			if err := openWebAuthnCredRepo(cfg, sqlDB).DeleteCredential(context.Background(), args[0], u.ID); err != nil {
+				if errors.Is(err, auth.ErrWebAuthnCredentialNotFound) {
+					return fmt.Errorf("passkey %q no encontrado para %q", args[0], username)
+				}
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q.\n", args[0], username)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+// openWebDAVTokenService reutiliza la conexión de openUsersRepo, igual que
+// openWebAuthnCredRepo.
+func openWebDAVTokenService(cfg *config.Config, sqlDB *sql.DB, userRepo users.Repository) *webdav.TokenService {
+	return webdav.NewTokenService(webdav.NewSQLTokenRepository(db.Wrap(cfg.Database.Driver, sqlDB)), userRepo, nil)
+}
+
+// newUsersWebdavTokenCmd gestiona los tokens de acceso WebDAV (§43, ADR-034):
+// la "contraseña" que usan los clientes WebDAV por HTTP Basic. A diferencia
+// de los passkeys, un token no necesita navegador, así que aquí SÍ se puede
+// crear (un servidor sin interfaz web, la instalación por defecto, no tendría
+// otra forma de dar acceso).
+func newUsersWebdavTokenCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "webdav-token",
+		Short: "Tokens de acceso WebDAV (§43, ADR-034)",
+	}
+	cmd.AddCommand(newUsersWebdavTokenCreateCmd(), newUsersWebdavTokenListCmd(), newUsersWebdavTokenRevokeCmd())
+	return cmd
+}
+
+func newUsersWebdavTokenCreateCmd() *cobra.Command {
+	var username, label string
+	cmd := &cobra.Command{
+		Use:   "create",
+		Short: "Crea un token de acceso WebDAV (se muestra una sola vez)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			tok, plain, err := openWebDAVTokenService(cfg, sqlDB, userRepo).Create(context.Background(), u.ID, label)
+			if err != nil {
+				if errors.Is(err, webdav.ErrInvalidLabel) {
+					return fmt.Errorf("--label es demasiado largo (máximo 100 caracteres)")
+				}
+				return err
+			}
+
+			out := cmd.OutOrStdout()
+			fmt.Fprintf(out, "Token de acceso WebDAV %q creado para %q.\n\n", tok.Label, username)
+			fmt.Fprintln(out, "Cópialo ahora: NO se vuelve a mostrar (solo se guarda su huella).")
+			fmt.Fprintf(out, "\n  %s\n\n", plain)
+			fmt.Fprintf(out, "En tu cliente WebDAV usa %q como usuario y este token como CONTRASEÑA, contra https://<tu-servidor>%s/\n", username, cfg.WebDAV.Path)
+			if !cfg.WebDAV.Enabled {
+				fmt.Fprintln(out, "\nAviso: webdav.enabled=false en esta configuración -- el token no servirá hasta que actives WebDAV (ver docs/webdav.md).")
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	cmd.Flags().StringVar(&label, "label", "", `nombre para reconocer el token, p.ej. "portátil de casa" (por defecto "WebDAV")`)
+	return cmd
+}
+
+func newUsersWebdavTokenListCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "Lista los tokens de acceso WebDAV de un usuario",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			tokens, err := openWebDAVTokenService(cfg, sqlDB, userRepo).List(context.Background(), u.ID)
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			if len(tokens) == 0 {
+				fmt.Fprintf(out, "%q no tiene tokens de acceso WebDAV.\n", username)
+				return nil
+			}
+			for _, t := range tokens {
+				lastUsed := "nunca"
+				if t.LastUsedAt != nil {
+					lastUsed = t.LastUsedAt.Format(time.RFC3339)
+				}
+				fmt.Fprintf(out, "%-36s  %-20s  creado %s  último uso %s\n", t.ID, t.Label, t.CreatedAt.Format(time.RFC3339), lastUsed)
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&username, "username", "", "usuario (obligatorio)")
+	return cmd
+}
+
+func newUsersWebdavTokenRevokeCmd() *cobra.Command {
+	var username string
+	cmd := &cobra.Command{
+		Use:   "revoke <token-id>",
+		Short: "Revoca un token de acceso WebDAV (el cliente que lo usa deja de tener acceso)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if username == "" {
+				return fmt.Errorf("--username es obligatorio")
+			}
+			cfg, err := loadConfig()
+			if err != nil {
+				return err
+			}
+			sqlDB, userRepo, err := openUsersRepo(cfg, false)
+			if err != nil {
+				return err
+			}
+			defer sqlDB.Close()
+
+			u, err := userRepo.GetUserByUsername(context.Background(), username)
+			if err != nil {
+				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
+			}
+			// Revoke exige coincidencia de userID (§198 IDOR): --username no
+			// es solo cosmético, evita revocar el token de otro usuario aunque
+			// se acierte el ID.
+			if err := openWebDAVTokenService(cfg, sqlDB, userRepo).Revoke(context.Background(), args[0], u.ID); err != nil {
+				if errors.Is(err, webdav.ErrTokenNotFound) {
+					return fmt.Errorf("token %q no encontrado para %q", args[0], username)
+				}
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Token %q revocado para %q.\n", args[0], username)
 			return nil
 		},
 	}

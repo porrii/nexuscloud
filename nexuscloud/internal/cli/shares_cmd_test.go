@@ -142,6 +142,60 @@ func TestSharesCreateGroupShare(t *testing.T) {
 	}
 }
 
+// TestSharesCreateAcceptsTheUploadPermissionForUsersAndGroups cubre el permiso
+// «lectura + subida» de un share de usuario o de grupo sobre una carpeta
+// (ADR-035): se crea, se ve en el listado, y sus reglas (solo carpetas, exige
+// poder leer) las hace cumplir CreateShare.
+func TestSharesCreateAcceptsTheUploadPermissionForUsersAndGroups(t *testing.T) {
+	owner := newCLITestUser(t)
+	member := createExtraUser(t, "subidor")
+	if _, err := runUsers(t, "group", "create", "Equipo"); err != nil {
+		t.Fatalf("group create falló: %v", err)
+	}
+	if _, err := runUsers(t, "group", "add-member", member, "Equipo"); err != nil {
+		t.Fatalf("group add-member falló: %v", err)
+	}
+	if _, err := runFiles(t, "mkdir", "--username", owner, "/Entregas"); err != nil {
+		t.Fatalf("mkdir falló: %v", err)
+	}
+	if _, err := runFiles(t, "mkdir", "--username", owner, "/Informes"); err != nil {
+		t.Fatalf("mkdir falló: %v", err)
+	}
+	uploadRealFile(t, owner, "/suelto.txt", "x")
+
+	if out, err := runShares(t, "create", "--username", owner, "/Entregas",
+		"--share-type", "user", "--target-username", member, "--can-upload"); err != nil {
+		t.Fatalf("share de usuario con --can-upload falló: %v (salida: %s)", err, out)
+	}
+	if out, err := runShares(t, "create", "--username", owner, "/Informes",
+		"--share-type", "group", "--target-group", "Equipo", "--can-upload"); err != nil {
+		t.Fatalf("share de grupo con --can-upload falló: %v (salida: %s)", err, out)
+	}
+	if out, err := runShares(t, "create", "--username", owner, "/Informes",
+		"--share-type", "user", "--target-username", member); err != nil {
+		t.Fatalf("share de solo lectura falló: %v (salida: %s)", err, out)
+	}
+
+	listOut, err := runShares(t, "list", "--username", owner)
+	if err != nil {
+		t.Fatalf("shares list falló: %v", err)
+	}
+	if !strings.Contains(listOut, "PERMISOS") || strings.Count(listOut, "lectura+subida") != 2 || strings.Count(listOut, "lectura ") != 1 {
+		t.Fatalf("esperaba dos shares «lectura+subida» y uno de «lectura» en el listado, obtuve:\n%s", listOut)
+	}
+
+	// Las reglas que hace cumplir CreateShare: un archivo no admite subida, y
+	// subir a un usuario o grupo exige poder leer.
+	if _, err := runShares(t, "create", "--username", owner, "/suelto.txt",
+		"--share-type", "user", "--target-username", member, "--can-upload"); err == nil {
+		t.Error("un archivo con --can-upload debería rechazarse")
+	}
+	if _, err := runShares(t, "create", "--username", owner, "/Entregas",
+		"--share-type", "user", "--target-username", member, "--can-upload", "--no-download"); err == nil {
+		t.Error("--can-upload con --no-download debería rechazarse para un usuario")
+	}
+}
+
 // TestSharesCreateLinkRejectedWhenPublicLinksDisabled confirma el
 // comportamiento seguro por defecto real: sharing.publicLinksEnabled es
 // "false" de fábrica (config.Defaults) y no tiene variable de entorno

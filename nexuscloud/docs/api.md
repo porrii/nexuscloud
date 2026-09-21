@@ -30,6 +30,15 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | DELETE | `/api/v1/auth/sessions/{id}` | sesión | Revoca una sesión propia (§26) |
 | POST | `/api/v1/auth/totp/enroll` | sesión | Genera secreto + `otpauth://` URL |
 | POST | `/api/v1/auth/totp/verify` | sesión | `{secret, code}` → activa 2FA si el código coincide |
+| POST | `/api/v1/auth/webauthn/register/begin` | sesión | Inicia el alta de un passkey nuevo (§25, ADR-033); devuelve `{ceremony_id, publicKey}` para `navigator.credentials.create()` |
+| POST | `/api/v1/auth/webauthn/register/finish?ceremony_id=&label=` | sesión | Cuerpo = respuesta cruda de `create()`; confirma el alta y devuelve el passkey guardado |
+| POST | `/api/v1/auth/webauthn/login/begin` | — | Con `{username, password}` (ya verificados) inicia el segundo factor de esa cuenta; sin ellos, login passwordless discoverable |
+| POST | `/api/v1/auth/webauthn/login/finish?ceremony_id=&username=` | — | Cuerpo = respuesta cruda de `navigator.credentials.get()`; `username` solo si venía en el begin (segundo factor) |
+| GET | `/api/v1/auth/webauthn/credentials` | sesión | Lista los passkeys propios (nunca expone `credential_id`/`public_key`, §172) |
+| DELETE | `/api/v1/auth/webauthn/credentials/{id}` | sesión, propietario | Revoca un passkey propio |
+| POST | `/api/v1/auth/webdav/tokens` | sesión | `{label?}` → crea un token de acceso WebDAV (§43, ADR-034). La respuesta incluye `token` **una única vez** y `webdav_path` (donde está montado WebDAV); 400 si `label` pasa de 100 caracteres. Solo con `webdav.enabled=true`: con WebDAV desactivado estas tres rutas responden 404 |
+| GET | `/api/v1/auth/webdav/tokens` | sesión | Lista los tokens propios: `id`, `label`, `created_at`, `last_used_at` (nunca el token ni su hash, §172) |
+| DELETE | `/api/v1/auth/webdav/tokens/{id}` | sesión, propietario | Revoca un token propio (404 si no existe o no es tuyo, §198) |
 | GET | `/api/v1/users/me` | sesión | Usuario autenticado |
 | GET | `/api/v1/users` | admin | Lista usuarios |
 | POST | `/api/v1/users` | admin | Crea un usuario directamente |
@@ -56,19 +65,24 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/groups` | sesión | Lista de grupos (para elegir destino al compartir, §37) |
 | POST | `/api/v1/groups` | admin | Crea un grupo (`{name}`); 409 si ya existe uno con ese nombre |
 | POST | `/api/v1/groups/{id}/members` | admin | Añade un usuario a un grupo (`{user_id}`); 404 si el grupo o el usuario no existen |
-| POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace |
+| POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace. `can_upload` (solo sobre carpetas) da a un usuario o grupo permiso de «lectura y subida» y exige `can_download` ([ADR-035](architecture/decisions/ADR-035-subida-a-carpeta-compartida.md)); admite `max_upload_size_bytes` |
 | GET | `/api/v1/shares?direction=by-me\|with-me` | sesión | "Compartido por mí" (por defecto) o "compartido conmigo" |
 | DELETE | `/api/v1/shares/{id}` | sesión, propietario | Revoca una compartición (soft, `revoked_at`) |
-| GET | `/api/v1/shared-directories/{id}` | sesión | Navega una carpeta a la que se accede vía share, no por propiedad |
+| GET | `/api/v1/shared-directories/{id}` | sesión | Navega una carpeta a la que se accede vía share, no por propiedad. Además del listado devuelve `can_upload` y, si hay un límite por archivo, `max_upload_size_bytes` |
+| POST | `/api/v1/shared-directories/{id}/files?name=` | sesión | Sube un archivo (cuerpo crudo, en streaming) a una carpeta compartida contigo con permiso de subida, o a una subcarpeta suya. El archivo queda en el árbol del propietario y **no sobrescribe** uno existente. `201` con el archivo; `403 upload_not_allowed` (solo lectura) o `forbidden` (sin acceso), `409 destination_occupied` (también si el nombre lo ocupa algo de la papelera del propietario), `413 upload_too_large`, `404`, `400`. Se audita como `upload` con `via: shared_directory` |
 | GET | `/api/v1/public/shares/{token}` | — | Metadata de un enlace público; con contraseña, exige `X-Share-Password` para revelar nombre/tamaño |
 | GET | `/api/v1/public/shares/{token}/download?path=` | — | Descarga vía enlace (streaming); incrementa el contador de descargas de forma atómica |
 | GET | `/api/v1/public/shares/{token}/browse?path=` | — | Lista el contenido de un enlace de carpeta (o una subcarpeta suya) |
-| POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida |
+| POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida. No sobrescribe un archivo existente: `409 destination_occupied` (también si el nombre lo ocupa algo de la papelera del propietario) |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
 | GET | `/api/v1/public/client-updates/releases.json` | — | Feed de actualizaciones del cliente de escritorio (Velopack), reenviado desde GitHub Releases; solo si `clientUpdates.enabled=true` (§ADR-032) |
 | GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |
 
 Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propio handler/repositorio, no solo la autenticación — acceder a un archivo ajeno por ID adivinado devuelve `403`, nunca el contenido (§198 IDOR).
+
+## WebDAV (fuera de `/api/v1`)
+
+El protocolo WebDAV en sí no es parte de la API REST: vive en `webdav.path` (por defecto `/webdav/`), con su propia autenticación —HTTP Basic con el usuario y un token de acceso WebDAV, nunca la contraseña de la cuenta— y su propio límite de tasa. Los tokens se gestionan con las tres rutas de arriba. Ver [webdav.md](webdav.md) y [ADR-034](architecture/decisions/ADR-034-webdav.md).
 
 ## Ejemplo: subir y descargar un archivo
 
