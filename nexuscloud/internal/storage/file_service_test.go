@@ -31,6 +31,9 @@ type testEnv struct {
 	provider    *LocalFilesystemProvider
 	userSvc     *users.Service
 	userRepo    users.Repository
+	// conn permite a los tests hacer lo que los repositorios no exponen (p.ej.
+	// quitar a alguien de un grupo).
+	conn *db.Conn
 }
 
 // newTestEnv mantiene su firma de dos parámetros (usada por ~20 tests
@@ -91,6 +94,7 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 		provider:    provider,
 		userSvc:     users.NewService(userRepo),
 		userRepo:    userRepo,
+		conn:        conn,
 	}
 }
 

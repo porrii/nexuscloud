@@ -125,6 +125,11 @@ type UploadInput struct {
 	// defecto). Vacío (el caso normal) resuelve el pool por defecto, mismo
 	// comportamiento de siempre -- ver resolveTargetPool.
 	PoolID string
+	// NoOverwrite hace que Upload falle con ErrDestinationOccupied si ya hay
+	// un archivo ACTIVO con ese nombre en esa carpeta, en vez de sobrescribirlo
+	// (dejando una versión). Es lo que necesita quien sube a una carpeta que
+	// NO es suya (§40: no sobrescribir silenciosamente).
+	NoOverwrite bool
 }
 
 // resolveTargetPool centraliza la resolución de pool destino que Upload y
@@ -161,6 +166,19 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 
 	if err := s.rejectIfTrashOccupiesName(ctx, pool.ID, in.OwnerID, parent, in.Name); err != nil {
 		return nil, err
+	}
+	if in.NoOverwrite {
+		// Antes de escribir el temporal: un archivo grande que se va a
+		// rechazar no debe gastar E/S. Sigue siendo una comprobación previa,
+		// no atómica: dos subidas simultáneas con el mismo nombre pueden
+		// cruzarse, y entonces manda el comportamiento normal (versión).
+		existing, err := s.files.GetFileByNaturalKey(ctx, pool.ID, in.OwnerID, parent, in.Name)
+		switch {
+		case err == nil && !existing.IsTrashed():
+			return nil, ErrDestinationOccupied
+		case err != nil && !errors.Is(err, ErrFileNotFound):
+			return nil, err
+		}
 	}
 
 	staging := stagingPath(in.OwnerID)

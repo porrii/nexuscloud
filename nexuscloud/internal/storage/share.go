@@ -110,12 +110,15 @@ type ShareRepository interface {
 	// 'user' o 'group' (nunca 'link', que se resuelve por token, no por
 	// userID), no revocado y no expirado, sobre ese recurso exacto, que
 	// conceda acceso de DESCARGA a userID -- directo o vía cualquier grupo
-	// del que sea miembro. Compartir con permiso de subida a un usuario o
-	// grupo concreto (a diferencia de un enlace) queda fuera de esta pasada
-	// (§37 solo lista las opciones de permisos bajo "Enlaces"): can_upload
-	// se fuerza a false al crear un share de tipo user/group.
+	// del que sea miembro.
 	HasFileAccess(ctx context.Context, userID, fileID string, now time.Time) (bool, error)
 	HasDirectoryAccess(ctx context.Context, userID, directoryID string, now time.Time) (bool, error)
+	// ListUploadSharesForDirectory devuelve los shares user/group no
+	// revocados ni expirados que dan a userID -- directo o vía un grupo suyo --
+	// permiso de lectura + subida sobre ESA carpeta (no sus ancestros: el
+	// llamador los recorre). Devuelve los shares y no un booleano porque cada
+	// uno puede llevar su propio límite de tamaño (ADR-035).
+	ListUploadSharesForDirectory(ctx context.Context, userID, directoryID string, now time.Time) ([]*Share, error)
 	// IncrementDownloadCount incrementa de forma atómica solo si todavía no
 	// se alcanzó max_downloads (UPDATE...WHERE + RowsAffected, no
 	// leer-luego-escribir): protege el último hueco disponible frente a

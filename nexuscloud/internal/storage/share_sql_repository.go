@@ -190,6 +190,29 @@ func (r *SQLShareRepository) ListSharesForUser(ctx context.Context, userID strin
 	return scanShareRows(rows)
 }
 
+// uploadSharesForDirectoryQuery devuelve los shares user/group que dan a un
+// usuario permiso de lectura + subida sobre UNA carpeta concreta (directo o
+// vía un grupo suyo). Subir a una carpeta compartida no solo necesita saber
+// SI hay permiso: necesita el límite de tamaño de cada permiso aplicable.
+const uploadSharesForDirectoryQuery = shareSelectColumns + `
+	WHERE directory_id = ? AND can_upload = 1 AND can_download = 1
+	AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > ?)
+	AND (
+		(share_type = 'user' AND target_user_id = ?)
+		OR (share_type = 'group' AND target_group_id IN (
+			SELECT group_id FROM user_groups WHERE user_id = ?
+		))
+	)`
+
+func (r *SQLShareRepository) ListUploadSharesForDirectory(ctx context.Context, userID, directoryID string, now time.Time) ([]*Share, error) {
+	rows, err := r.conn.QueryContext(ctx, uploadSharesForDirectoryQuery, directoryID, db.TimeToString(now), userID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("listando shares de subida de la carpeta: %w", err)
+	}
+	defer rows.Close()
+	return scanShareRows(rows)
+}
+
 func scanShareRows(rows *sql.Rows) ([]*Share, error) {
 	var out []*Share
 	for rows.Next() {

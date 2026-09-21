@@ -59,6 +59,7 @@ func newRealTestEnv(t *testing.T, driver string) *testEnv {
 		provider:    provider,
 		userSvc:     users.NewService(userRepo),
 		userRepo:    userRepo,
+		conn:        conn,
 	}
 }
 
@@ -317,6 +318,148 @@ func TestMySQLPublicLinkShareLifecycle(t *testing.T) {
 			}
 			if _, _, err := env.svc.DownloadViaPublicShare(ctx, token, "clave-del-enlace", ""); !errors.Is(err, ErrShareRevoked) {
 				t.Errorf("tras revocar: err = %v, esperado ErrShareRevoked", err)
+			}
+		})
+	}
+}
+
+// TestMySQLSharedUploadGrantsOnRealEngines ejercita en MySQL y PostgreSQL
+// reales la consulta de permisos de subida a carpetas compartidas (ADR-035):
+// la subconsulta sobre user_groups, la comparación de expires_at (TEXT en los
+// tres motores) y las banderas can_upload/can_download tienen que comportarse
+// igual que en sqlite; y la subida de extremo a extremo no debe sobrescribir.
+func TestMySQLSharedUploadGrantsOnRealEngines(t *testing.T) {
+	for _, driver := range []string{"mysql", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			ctx := context.Background()
+			env := newRealTestEnv(t, driver)
+			suffix := idgen.New()[:8]
+			owner := env.user(t, "o-"+suffix)
+			member := env.user(t, "m-"+suffix)
+			stranger := env.user(t, "x-"+suffix)
+			team := env.group(t, "g-"+suffix)
+			env.addToGroup(t, member, team)
+			dir := mkFolder(t, env, owner, "/", "Entregas")
+
+			grantsOf := func(user string) []*Share {
+				t.Helper()
+				got, err := env.shares.ListUploadSharesForDirectory(ctx, user, dir.ID, time.Now().UTC())
+				if err != nil {
+					t.Fatalf("ListUploadSharesForDirectory(%s): %v", user, err)
+				}
+				return got
+			}
+			wantGrants := func(step, user string, want ...string) {
+				t.Helper()
+				got := grantsOf(user)
+				ids := make(map[string]bool, len(got))
+				for _, s := range got {
+					ids[s.ID] = true
+				}
+				if len(got) != len(want) {
+					t.Fatalf("%s: %d permisos de subida, esperados %d", step, len(got), len(want))
+				}
+				for _, id := range want {
+					if !ids[id] {
+						t.Fatalf("%s: falta el permiso %s entre %v", step, id, ids)
+					}
+				}
+			}
+
+			// Un permiso de solo lectura no es un permiso de subida.
+			readOnly := grant(t, env, owner, dir, member, "", false, nil)
+			wantGrants("solo lectura", member)
+
+			// Permiso de grupo con límite: lo recibe el miembro (por la
+			// subconsulta a user_groups) y no un ajeno; el límite viaja intacto.
+			viaGroup := grant(t, env, owner, dir, "", team, true, ptrInt64(1024))
+			wantGrants("por grupo", member, viaGroup.ID)
+			wantGrants("por grupo, ajeno", stranger)
+			if got := grantsOf(member); got[0].MaxUploadSizeBytes == nil || *got[0].MaxUploadSizeBytes != 1024 {
+				t.Errorf("el límite del permiso de grupo no se conservó: %v", got[0].MaxUploadSizeBytes)
+			}
+
+			// Permiso directo sin límite (NULL) además del de grupo.
+			direct := grant(t, env, owner, dir, member, "", true, nil)
+			wantGrants("directo + grupo", member, viaGroup.ID, direct.ID)
+			for _, s := range grantsOf(member) {
+				if s.ID == direct.ID && s.MaxUploadSizeBytes != nil {
+					t.Errorf("el permiso sin límite debería leerse como NULL, no %d", *s.MaxUploadSizeBytes)
+				}
+			}
+
+			// can_download/can_upload son INTEGER en los tres motores (PostgreSQL
+			// no acepta un bool de Go como argumento ahí): los permisos tienen
+			// que sobrevivir al viaje de ida y vuelta por la base de datos.
+			for _, tc := range []struct {
+				share      *Share
+				wantUpload bool
+			}{{readOnly, false}, {direct, true}} {
+				got, err := env.shares.GetShareByID(ctx, tc.share.ID)
+				if err != nil {
+					t.Fatalf("GetShareByID(%s): %v", tc.share.ID, err)
+				}
+				if !got.CanDownload || got.CanUpload != tc.wantUpload {
+					t.Errorf("share %s leído con can_download=%v can_upload=%v, esperado true/%v", got.ID, got.CanDownload, got.CanUpload, tc.wantUpload)
+				}
+			}
+			if ok, err := env.shares.HasDirectoryAccess(ctx, member, dir.ID, time.Now().UTC()); err != nil || !ok {
+				t.Errorf("HasDirectoryAccess(miembro) = %v, %v; esperado true", ok, err)
+			}
+			if received, err := env.shares.ListSharesForUser(ctx, member, time.Now().UTC()); err != nil || len(received) != 3 {
+				t.Errorf("ListSharesForUser(miembro) = %d shares, %v; esperados 3 (solo lectura, grupo y directo)", len(received), err)
+			}
+
+			// Salir del grupo quita solo el permiso que venía por el grupo.
+			env.removeFromGroup(t, member, team)
+			wantGrants("tras salir del grupo", member, direct.ID)
+
+			// Un permiso caducado no cuenta; uno con caducidad futura sí (la
+			// comparación de expires_at es de texto en los tres motores).
+			past, future := time.Now().UTC().Add(-time.Hour), time.Now().UTC().Add(time.Hour)
+			if err := env.shares.CreateShare(ctx, &Share{
+				ID: idgen.New(), OwnerID: owner, DirectoryID: dir.ID, Type: ShareTypeUser, TargetUserID: member,
+				CanDownload: true, CanUpload: true, ExpiresAt: &past, CreatedAt: past, UpdatedAt: past,
+			}); err != nil {
+				t.Fatalf("creando el permiso caducado: %v", err)
+			}
+			wantGrants("con uno caducado", member, direct.ID)
+			notYet := idgen.New()
+			if err := env.shares.CreateShare(ctx, &Share{
+				ID: notYet, OwnerID: owner, DirectoryID: dir.ID, Type: ShareTypeUser, TargetUserID: member,
+				CanDownload: true, CanUpload: true, ExpiresAt: &future, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("creando el permiso con caducidad futura: %v", err)
+			}
+			wantGrants("con uno que aún no caduca", member, direct.ID, notYet)
+
+			// Revocar el directo deja solo el de caducidad futura.
+			if err := env.svc.RevokeShare(ctx, owner, direct.ID); err != nil {
+				t.Fatalf("RevokeShare: %v", err)
+			}
+			wantGrants("tras revocar", member, notYet)
+
+			// De extremo a extremo: sube, queda en el árbol del propietario y
+			// una segunda subida con el mismo nombre no lo sobrescribe.
+			meta, shareID, err := sharedUpload(env, member, dir, "entrega.txt", "primera")
+			if err != nil {
+				t.Fatalf("subida a la carpeta compartida: %v", err)
+			}
+			if shareID != notYet {
+				t.Errorf("share usado = %s, esperado %s", shareID, notYet)
+			}
+			if meta.OwnerID != owner {
+				t.Errorf("el archivo pertenece a %s, esperado el propietario %s", meta.OwnerID, owner)
+			}
+			if _, _, err := sharedUpload(env, member, dir, "entrega.txt", "segunda"); !errors.Is(err, ErrDestinationOccupied) {
+				t.Errorf("segunda subida con el mismo nombre: err = %v, esperado ErrDestinationOccupied", err)
+			}
+			stored, err := env.files.GetFileByNaturalKey(ctx, mustDefaultPoolID(ctx, t, env), owner, "/Entregas", "entrega.txt")
+			if err != nil {
+				t.Fatalf("releyendo el archivo subido: %v", err)
+			}
+			if stored.SizeBytes != int64(len("primera")) {
+				t.Errorf("el contenido original cambió: %d bytes, esperados %d", stored.SizeBytes, len("primera"))
 			}
 		})
 	}

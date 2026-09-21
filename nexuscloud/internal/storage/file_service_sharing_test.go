@@ -34,7 +34,7 @@ func TestDownloadViaUserShareGrantsAccessOnlyToTarget(t *testing.T) {
 		t.Errorf("token = %q, esperado vacío para un share que no es de tipo enlace", token)
 	}
 	if share.CanUpload {
-		t.Error("CanUpload debería forzarse a false en un share de tipo usuario (§37: opciones de permiso son de Enlaces)")
+		t.Error("un share de usuario es de solo descarga salvo que se pida expresamente la subida sobre una carpeta")
 	}
 
 	if _, rc, err := env.svc.Download(ctx, target, meta.ID); err != nil {
