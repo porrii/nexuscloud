@@ -75,6 +75,15 @@ export interface ListResult {
   files: FileEntry[]
 }
 
+// SharedDirectoryListing refleja sharedListingResponse (internal/api/v1/
+// share_handlers.go): el listado de una carpeta compartida con quien la mira,
+// más si esa persona puede subir a ella y con qué límite por archivo (§37,
+// ADR-035). max_upload_size_bytes ausente = sin límite.
+export interface SharedDirectoryListing extends ListResult {
+  can_upload: boolean
+  max_upload_size_bytes?: number
+}
+
 export interface FileVersion {
   version_num: number
   size_bytes: number
@@ -187,16 +196,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return undefined as T
 }
 
-/** Sube contenido con progreso real (fetch no lo expone en subida). */
-function uploadWithProgress(
-  parentPath: string,
-  name: string,
-  content: Blob,
-  onProgress?: (pct: number) => void,
-): Promise<FileEntry> {
+/** POST de un archivo con progreso real (fetch no lo expone en subida). */
+function postWithProgress(url: string, content: Blob, onProgress?: (pct: number) => void): Promise<FileEntry> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest()
-    const url = `/api/v1/files?name=${encodeURIComponent(name)}&path=${encodeURIComponent(parentPath)}`
     xhr.open('POST', url)
     xhr.withCredentials = true
     xhr.upload.onprogress = (e) => {
@@ -217,6 +220,34 @@ function uploadWithProgress(
     xhr.onerror = () => reject(new ApiClientError(0, 'network_error', 'Error de red durante la subida'))
     xhr.send(content)
   })
+}
+
+function uploadWithProgress(
+  parentPath: string,
+  name: string,
+  content: Blob,
+  onProgress?: (pct: number) => void,
+): Promise<FileEntry> {
+  return postWithProgress(
+    `/api/v1/files?name=${encodeURIComponent(name)}&path=${encodeURIComponent(parentPath)}`,
+    content,
+    onProgress,
+  )
+}
+
+/**
+ * Sube a una carpeta que otra persona ha compartido contigo con permiso de
+ * subida (§37, ADR-035). El destino sale solo del ID de la carpeta, nunca de
+ * una ruta que el cliente pueda manipular; el archivo queda en el árbol del
+ * propietario y no sobrescribe uno existente (409 destination_occupied).
+ */
+function uploadToSharedDirectory(
+  directoryId: string,
+  name: string,
+  content: Blob,
+  onProgress?: (pct: number) => void,
+): Promise<FileEntry> {
+  return postWithProgress(`/api/v1/shared-directories/${directoryId}/files?name=${encodeURIComponent(name)}`, content, onProgress)
 }
 
 export const api = {
@@ -323,7 +354,8 @@ export const api = {
   createShare: (input: CreateShareInput) => request<Share>('/api/v1/shares', { method: 'POST', body: JSON.stringify(input) }),
   listShares: (direction: 'by-me' | 'with-me') => request<Share[]>(`/api/v1/shares?direction=${direction}`),
   revokeShare: (id: string) => request<void>(`/api/v1/shares/${id}`, { method: 'DELETE' }),
-  listSharedDirectory: (id: string) => request<ListResult>(`/api/v1/shared-directories/${id}`),
+  listSharedDirectory: (id: string) => request<SharedDirectoryListing>(`/api/v1/shared-directories/${id}`),
+  uploadToSharedDirectory,
 
   // Enlaces públicos (§37): sin sesión, autorizados por el token de la URL
   // y una contraseña opcional que va SIEMPRE en la cabecera X-Share-Password

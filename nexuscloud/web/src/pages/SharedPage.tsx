@@ -1,5 +1,12 @@
-import { useCallback, useEffect, useState } from 'react'
-import { api, ApiClientError, type DirectoryEntry, type FileEntry, type Share } from '../api/client'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { api, ApiClientError, type Share, type SharedDirectoryListing } from '../api/client'
+
+interface UploadProgress {
+  key: string
+  name: string
+  percent: number
+  error?: string
+}
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -23,6 +30,27 @@ interface BrowseEntry {
   name: string
 }
 
+function tooLargeMessage(maxBytes?: number): string {
+  return maxBytes !== undefined ? `Supera el límite de ${formatBytes(maxBytes)} por archivo.` : 'Supera el límite de tamaño de esta carpeta.'
+}
+
+// Mensajes de la subida a una carpeta compartida (§37, ADR-035): el servidor
+// no sobrescribe un archivo existente, así que un nombre ya usado es un error esperable.
+function sharedUploadErrorMessage(err: unknown, maxBytes?: number): string {
+  if (!(err instanceof ApiClientError)) return 'Error al subir el archivo.'
+  switch (err.code) {
+    case 'destination_occupied':
+      return 'Ya hay un archivo con ese nombre en esta carpeta; no se sobrescribe.'
+    case 'upload_too_large':
+      return tooLargeMessage(maxBytes)
+    case 'upload_not_allowed':
+    case 'forbidden':
+      return 'Ya no tienes permiso para subir a esta carpeta.'
+    default:
+      return err.message
+  }
+}
+
 /**
  * "Compartido conmigo" / "Compartido por mí" (§143). Navegar dentro de una
  * carpeta compartida reutiliza api.listSharedDirectory con el ID real de
@@ -35,8 +63,13 @@ export default function SharedPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [browseStack, setBrowseStack] = useState<BrowseEntry[]>([])
-  const [browseResult, setBrowseResult] = useState<{ directories: DirectoryEntry[]; files: FileEntry[] } | null>(null)
+  const [browseResult, setBrowseResult] = useState<SharedDirectoryListing | null>(null)
   const [browseLoading, setBrowseLoading] = useState(false)
+  const [uploads, setUploads] = useState<UploadProgress[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  // Carpeta que se está viendo ahora mismo: una subida que termina cuando ya se
+  // ha navegado a otra no debe pisar el listado con el de la carpeta anterior.
+  const currentDirId = useRef<string | undefined>(undefined)
 
   const loadShares = useCallback(async () => {
     setLoading(true)
@@ -56,9 +89,20 @@ export default function SharedPage() {
     void loadShares()
   }, [loadShares])
 
+  useEffect(() => {
+    currentDirId.current = browseStack[browseStack.length - 1]?.id
+  }, [browseStack])
+
+  // Los errores de subida son de la carpeta anterior: al navegar se descartan
+  // (las subidas en curso siguen).
+  function dropFailedUploads() {
+    setUploads((prev) => prev.filter((u) => !u.error))
+  }
+
   async function openDirectory(id: string, name: string) {
     setBrowseLoading(true)
     setError(null)
+    dropFailedUploads()
     try {
       const result = await api.listSharedDirectory(id)
       setBrowseResult(result)
@@ -71,6 +115,7 @@ export default function SharedPage() {
   }
 
   async function navigateToBrowseIndex(index: number) {
+    dropFailedUploads()
     if (index < 0) {
       setBrowseStack([])
       setBrowseResult(null)
@@ -90,6 +135,39 @@ export default function SharedPage() {
     }
   }
 
+  // Sube uno a uno (un XHR con progreso por archivo) a la carpeta que se está
+  // viendo, y al terminar refresca el listado -- también tras un error, por si
+  // el permiso cambió mientras tanto (el botón desaparecería).
+  async function handleUploadFiles(files: FileList | File[]) {
+    const dirId = browseStack[browseStack.length - 1]?.id
+    if (!dirId) return
+    const maxBytes = browseResult?.max_upload_size_bytes
+    for (const file of Array.from(files)) {
+      const key = `${file.name}-${Date.now()}`
+      if (maxBytes !== undefined && file.size > maxBytes) {
+        // No se manda un archivo que el servidor va a rechazar a medio subir.
+        setUploads((prev) => [...prev, { key, name: file.name, percent: 0, error: tooLargeMessage(maxBytes) }])
+        continue
+      }
+      setUploads((prev) => [...prev, { key, name: file.name, percent: 0 }])
+      try {
+        await api.uploadToSharedDirectory(dirId, file.name, file, (percent) => {
+          setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, percent } : u)))
+        })
+        setUploads((prev) => prev.filter((u) => u.key !== key))
+      } catch (err) {
+        const message = sharedUploadErrorMessage(err, maxBytes)
+        setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, error: message } : u)))
+      }
+    }
+    try {
+      const fresh = await api.listSharedDirectory(dirId)
+      if (currentDirId.current === dirId) setBrowseResult(fresh)
+    } catch {
+      // El listado se refrescará en la próxima navegación; el resultado de cada subida ya se ve arriba.
+    }
+  }
+
   async function handleRevoke(id: string) {
     setError(null)
     try {
@@ -102,14 +180,18 @@ export default function SharedPage() {
 
   function shareOriginLabel(s: Share): string {
     if (direction === 'by-me') {
-      if (s.share_type === 'user') return `Con ${s.target_username ?? 'un usuario'}`
-      if (s.share_type === 'group') return `Con el grupo ${s.target_group_name ?? ''}`
-      return s.label ? `Enlace: ${s.label}` : 'Enlace público'
+      const withUpload = s.can_upload ? ' · con subida' : ''
+      if (s.share_type === 'user') return `Con ${s.target_username ?? 'un usuario'}${withUpload}`
+      if (s.share_type === 'group') return `Con el grupo ${s.target_group_name ?? ''}${withUpload}`
+      return (s.label ? `Enlace: ${s.label}` : 'Enlace público') + withUpload
     }
-    return s.resource_type === 'directory' ? 'Carpeta compartida' : 'Archivo compartido'
+    if (s.resource_type === 'directory') return s.can_upload ? 'Carpeta compartida · puedes subir' : 'Carpeta compartida'
+    return 'Archivo compartido'
   }
 
   const isBrowsing = browseStack.length > 0
+  const canUploadHere = isBrowsing && browseResult?.can_upload === true
+  const uploading = uploads.some((u) => !u.error)
 
   return (
     <div className="flex h-full flex-col p-6">
@@ -142,17 +224,65 @@ export default function SharedPage() {
       )}
 
       {isBrowsing && (
-        <div className="mb-3 flex flex-wrap items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
-          <button onClick={() => void navigateToBrowseIndex(-1)} className="hover:text-blue-700 dark:hover:text-blue-400">
-            Compartido conmigo
-          </button>
-          {browseStack.map((entry, i) => (
-            <span key={entry.id} className="flex items-center gap-1">
-              <span>/</span>
-              <button onClick={() => void navigateToBrowseIndex(i)} className="hover:text-blue-700 dark:hover:text-blue-400">
-                {entry.name}
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-1 text-sm text-slate-500 dark:text-slate-400">
+            <button onClick={() => void navigateToBrowseIndex(-1)} className="hover:text-blue-700 dark:hover:text-blue-400">
+              Compartido conmigo
+            </button>
+            {browseStack.map((entry, i) => (
+              <span key={entry.id} className="flex items-center gap-1">
+                <span>/</span>
+                <button onClick={() => void navigateToBrowseIndex(i)} className="hover:text-blue-700 dark:hover:text-blue-400">
+                  {entry.name}
+                </button>
+              </span>
+            ))}
+          </div>
+          {canUploadHere && (
+            <>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.length) void handleUploadFiles(e.target.files)
+                  e.target.value = ''
+                }}
+              />
+              <button
+                disabled={uploading}
+                onClick={() => fileInputRef.current?.click()}
+                className="shrink-0 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+              >
+                {uploading ? 'Subiendo…' : 'Subir archivo'}
               </button>
-            </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {canUploadHere && (
+        <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+          Puedes subir archivos a esta carpeta; los que ya existen no se sobrescriben.
+          {browseResult?.max_upload_size_bytes !== undefined && ` Máximo ${formatBytes(browseResult.max_upload_size_bytes)} por archivo.`}
+        </p>
+      )}
+
+      {uploads.length > 0 && (
+        <div className="mb-4 space-y-1.5">
+          {uploads.map((u) => (
+            <div key={u.key} className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm dark:border-slate-800 dark:bg-slate-900">
+              <div className="flex justify-between gap-3">
+                <span className="truncate text-slate-700 dark:text-slate-300">{u.name}</span>
+                <span className={u.error ? 'text-red-600 dark:text-red-400' : 'text-slate-500'}>{u.error ?? `${u.percent}%`}</span>
+              </div>
+              {!u.error && (
+                <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+                  <div className="h-full bg-blue-600 transition-all" style={{ width: `${u.percent}%` }} />
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
