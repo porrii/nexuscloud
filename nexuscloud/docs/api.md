@@ -65,14 +65,15 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/groups` | sesión | Lista de grupos (para elegir destino al compartir, §37) |
 | POST | `/api/v1/groups` | admin | Crea un grupo (`{name}`); 409 si ya existe uno con ese nombre |
 | POST | `/api/v1/groups/{id}/members` | admin | Añade un usuario a un grupo (`{user_id}`); 404 si el grupo o el usuario no existen |
-| POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace |
+| POST | `/api/v1/shares` | sesión | Crea una compartición usuario/grupo/enlace (§37); la respuesta incluye `token` una única vez si es un enlace. `can_upload` (solo sobre carpetas) da a un usuario o grupo permiso de «lectura y subida» y exige `can_download` ([ADR-035](architecture/decisions/ADR-035-subida-a-carpeta-compartida.md)); admite `max_upload_size_bytes` |
 | GET | `/api/v1/shares?direction=by-me\|with-me` | sesión | "Compartido por mí" (por defecto) o "compartido conmigo" |
 | DELETE | `/api/v1/shares/{id}` | sesión, propietario | Revoca una compartición (soft, `revoked_at`) |
-| GET | `/api/v1/shared-directories/{id}` | sesión | Navega una carpeta a la que se accede vía share, no por propiedad |
+| GET | `/api/v1/shared-directories/{id}` | sesión | Navega una carpeta a la que se accede vía share, no por propiedad. Además del listado devuelve `can_upload` y, si hay un límite por archivo, `max_upload_size_bytes` |
+| POST | `/api/v1/shared-directories/{id}/files?name=` | sesión | Sube un archivo (cuerpo crudo, en streaming) a una carpeta compartida contigo con permiso de subida, o a una subcarpeta suya. El archivo queda en el árbol del propietario y **no sobrescribe** uno existente. `201` con el archivo; `403 upload_not_allowed` (solo lectura) o `forbidden` (sin acceso), `409 destination_occupied` (también si el nombre lo ocupa algo de la papelera del propietario), `413 upload_too_large`, `404`, `400`. Se audita como `upload` con `via: shared_directory` |
 | GET | `/api/v1/public/shares/{token}` | — | Metadata de un enlace público; con contraseña, exige `X-Share-Password` para revelar nombre/tamaño |
 | GET | `/api/v1/public/shares/{token}/download?path=` | — | Descarga vía enlace (streaming); incrementa el contador de descargas de forma atómica |
 | GET | `/api/v1/public/shares/{token}/browse?path=` | — | Lista el contenido de un enlace de carpeta (o una subcarpeta suya) |
-| POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida |
+| POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida. No sobrescribe un archivo existente: `409 destination_occupied` (también si el nombre lo ocupa algo de la papelera del propietario) |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
 | GET | `/api/v1/public/client-updates/releases.json` | — | Feed de actualizaciones del cliente de escritorio (Velopack), reenviado desde GitHub Releases; solo si `clientUpdates.enabled=true` (§ADR-032) |
 | GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |

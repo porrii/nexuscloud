@@ -24,6 +24,8 @@ Cuatro decisiones de diseño concretas necesitaban resolverse antes de escribir 
 
 Decisión adicional de alcance, tomada al escribir el código: **las opciones de permiso (descarga/subida) solo se exponen para enlaces**, no para shares de usuario/grupo -- §37 las lista explícitamente bajo "### Enlaces", no bajo "### Usuarios"/"### Grupos". `CreateShare` fuerza `can_upload=false` para `share_type` `user`/`group`; compartir con permiso de escritura a una persona o grupo concretos queda fuera de esta pasada (un enlace de subida cubre ese caso).
 
+> **Superado por [ADR-035](ADR-035-subida-a-carpeta-compartida.md):** un share de usuario o de grupo sobre una carpeta ya puede llevar permiso de subida («lectura y subida»). El resto de esta decisión sigue vigente.
+
 ## Consecuencias
 
 - Ninguna migración recrea tablas ni necesita conocer el nombre autogenerado de una constraint (a diferencia de [ADR-006](ADR-006-trash.md)): `shares` nace ya con la forma final.
@@ -31,4 +33,4 @@ Decisión adicional de alcance, tomada al escribir el código: **las opciones de
 - El límite de tamaño de subida (`max_upload_size_bytes`) se aplica con un lector propio (`errLimitReader`) que corta con error en cuanto se lee un byte de más, en vez de truncar en silencio como `io.LimitReader` -- así `Upload` aborta de forma natural y su propio manejo de staging limpia el fichero parcial sin pasos adicionales.
 - `download_count` se incrementa con un `UPDATE ... WHERE ... AND (max_downloads IS NULL OR download_count < max_downloads)` atómico (`RowsAffected`), no leer-luego-escribir: dos descargas concurrentes contra el último hueco de `max_downloads` nunca dejan pasar a ambas (verificado con un test de concurrencia real).
 - Revocar es un soft-update (`revoked_at`), no un `DELETE`: el registro sobrevive para el rastro de auditoría (`audit_events`, eventos `share_create`/`share_revoke`); las listas ("compartido conmigo"/"compartido por mí") excluyen revocados por defecto.
-- Fuera de esta pasada, documentado explícitamente: subida con permiso de escritura dirigida a un usuario/grupo concreto (solo enlaces la soportan); §38 (Subida Anónima) sigue totalmente separado y no implementado -- es un modelo de autorización distinto (activación explícita del admin, foco anti-abuso), no una variante de un share normal.
+- Fuera de esta pasada, documentado explícitamente: subida con permiso de escritura dirigida a un usuario/grupo concreto (solo enlaces la soportan; resuelto después en [ADR-035](ADR-035-subida-a-carpeta-compartida.md)); §38 (Subida Anónima) sigue totalmente separado y no implementado -- es un modelo de autorización distinto (activación explícita del admin, foco anti-abuso), no una variante de un share normal.

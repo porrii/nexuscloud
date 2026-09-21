@@ -601,8 +601,48 @@ paths:
                   files:
                     type: array
                     items: { $ref: "#/components/schemas/File" }
+                  can_upload:
+                    type: boolean
+                    description: Si quien mira puede subir a esta carpeta (permiso de subida, propio o de un grupo suyo, sobre ella o un ancestro; o es su propietario)
+                  max_upload_size_bytes:
+                    type: integer
+                    format: int64
+                    description: Límite por archivo que se aplicará a la subida. Ausente si no hay límite o si no puede subir
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
+
+  /shared-directories/{id}/files:
+    post:
+      summary: Subir un archivo a una carpeta compartida contigo con permiso de subida (§37, ADR-035)
+      description: >
+        Cuerpo crudo en streaming, como POST /files. El destino sale solo del
+        ID de la carpeta de la URL (la carpeta compartida o cualquiera de sus
+        subcarpetas): la autorización se re-deriva de la base de datos en cada
+        petición. El archivo queda en el árbol del propietario. No
+        sobrescribe un archivo existente: un nombre ya ocupado da 409. Se
+        audita como upload con via=shared_directory.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Subido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "upload_not_allowed (tiene lectura pero el share no permite subir), forbidden (sin acceso) o sharing_disabled" }
+        "404": { description: "Carpeta inexistente o en la papelera" }
+        "409": { description: "destination_occupied: ya hay un archivo con ese nombre (o algo suyo en la papelera del propietario, sin distinguirlo)" }
+        "413": { description: "upload_too_large: el archivo supera el límite de tamaño del permiso" }
 
   /public/shares/{token}:
     get:
@@ -702,6 +742,7 @@ paths:
               schema: { $ref: "#/components/schemas/File" }
         "401": { description: "Contraseña requerida o incorrecta" }
         "403": { description: "El enlace no permite subida" }
+        "409": { description: "destination_occupied: ya hay un archivo con ese nombre en la carpeta (o algo suyo en la papelera del propietario, sin distinguirlo); no se sobrescribe" }
         "410": { description: "Enlace revocado, expirado o agotado" }
         "413": { description: "El archivo supera el límite de tamaño del enlace" }
 
@@ -895,7 +936,7 @@ components:
         target_group_id: { type: string, format: uuid, description: "Obligatorio si share_type=group" }
         label: { type: string, description: "Nombre personalizado del enlace (§37), cosmético" }
         can_download: { type: boolean, default: true }
-        can_upload: { type: boolean, default: false, description: "Solo tiene efecto con share_type=link; exige resource_type=directory" }
+        can_upload: { type: boolean, default: false, description: "Exige resource_type=directory. Con share_type=user|group da permiso de «lectura y subida» y exige can_download=true (ADR-035); con share_type=link, permiso de subida al enlace de carpeta" }
         password: { type: string, format: password, description: "Solo enlaces" }
         expires_at: { type: string, format: date-time }
         max_downloads: { type: integer, minimum: 1 }

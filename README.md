@@ -22,7 +22,8 @@ proveedor externo para guardar tus archivos.
   (`Range`), papelera con purga automática configurable (por antigüedad y
   por tamaño total), historial de versiones, protección activa contra path
   traversal e IDOR.
-- **Compartición**: usuario→usuario, usuario→grupo, y enlaces públicos
+- **Compartición**: usuario→usuario, usuario→grupo (de solo lectura o, en
+  una carpeta, con permiso de subida sin sobrescribir), y enlaces públicos
   (contraseña, expiración, límite de descargas/tamaño, revocación).
 - **Interfaz web** (React+TS+Vite, embebida en el propio binario): explorador
   con arrastrar-y-soltar, papelera, versiones, compartición, sesiones.

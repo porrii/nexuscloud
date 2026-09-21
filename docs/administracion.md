@@ -110,8 +110,8 @@ $ nexuscloud --config config.yaml shares create --username maria /Documentos/inf
 Share creado (id=...)
 
 $ nexuscloud --config config.yaml shares list --username juan --with-me
-ID    TIPO  RECURSO       DESTINO  EXPIRA  ESTADO
-...   user  informe.txt   ...      -       activo
+ID    TIPO  RECURSO       DESTINO  PERMISOS  EXPIRA  ESTADO
+...   user  informe.txt   ...      lectura   -       activo
 ```
 
 Comparticiones con un grupo entero (en vez de usuario por usuario) usan
@@ -121,7 +121,10 @@ compartir con cada persona por separado. Un enlace público
 (`--share-type link`) imprime un token en claro una sola vez; quien lo
 tenga accede sin sesión (`GET /api/v1/public/shares/<token>/download`) —
 exige `sharing.publicLinksEnabled: true` en `config.yaml` (desactivado
-por defecto). Ver [`comandos.md`](comandos.md#compartir-archivos-y-carpetas-shares)
+por defecto). Para que un usuario o un grupo pueda además **subir**
+archivos a una carpeta compartida con ellos (sin sobrescribir nada de lo
+que ya hay), se añade `--can-upload` al compartir esa carpeta. Ver
+[`comandos.md`](comandos.md#compartir-archivos-y-carpetas-shares)
 para todas las opciones (`--can-upload`, `--password`, `--expires-at`,
 límites de descarga/tamaño).
 
