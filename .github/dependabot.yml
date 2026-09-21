@@ -1,22 +1,71 @@
 version: 2
+
+# Los PRs de dependencias van contra `dev`, como cualquier otro cambio
+# (CONTRIBUTING.md): `main` solo recibe merges de `dev` al sacar una release.
+# Dependabot lee este fichero de la rama por defecto (`main`), así que los
+# cambios de aquí surten efecto con la siguiente release. Las actualizaciones
+# de SEGURIDAD las abre GitHub aparte y siguen apuntando a `main`.
+
 updates:
   # Servidor (Go) -- todo el código Go vive en nexuscloud/
   - package-ecosystem: gomod
     directory: /nexuscloud
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Espera unos días antes de proponer una versión recién publicada: da
+    # margen a que se detecte una release comprometida o rota.
+    cooldown:
+      default-days: 3
+    groups:
+      # Los golang.org/x/* comparten sys/text/sync: por separado, cada PR
+      # arrastra a los demás.
+      golang-x:
+        patterns:
+          - "golang.org/x/*"
+    ignore:
+      # TEMPORAL, mientras la base de Go siga en 1.25 (go.mod, CI, Dockerfile,
+      # install.sh y dev.sh). Go 1.25 ya no tiene soporte y toda versión nueva
+      # de golang.org/x/* exige Go >= 1.26: sube el `go` de go.mod y rompe el
+      # CI con "compile: version go1.26.0 does not match go tool version
+      # go1.25.x". Se borra este bloque al subir la base de Go.
+      - dependency-name: "golang.org/x/*"
 
   # Interfaz web (React+TS+Vite)
   - package-ecosystem: npm
     directory: /nexuscloud/web
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    groups:
+      # react, react-dom y sus tipos tienen que ir siempre a la misma versión:
+      # en PRs separados, cada uno rompe al otro.
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      # Herramientas de build, lint y estilos (los majors llegan por separado).
+      tooling:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "oxlint"
+          - "tailwindcss"
+          - "@tailwindcss/*"
+        update-types:
+          - "minor"
+          - "patch"
 
   # Cliente de escritorio (Flutter/Dart)
   - package-ecosystem: pub
     directory: /nexuscloud/client
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -24,13 +73,26 @@ updates:
   # Imágenes base del Dockerfile (Node, Go, distroless)
   - package-ecosystem: docker
     directory: /nexuscloud
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    ignore:
+      # La base de Go se sube a propósito (go.mod + CI + Dockerfile + install.sh
+      # + dev.sh + docs), no con un PR suelto que deje la imagen en una versión
+      # distinta de la que prueba el CI.
+      - dependency-name: "golang"
+      # Node: solo versiones LTS (las pares). Los majors se suben a mano cuando
+      # una versión par entra en LTS; Dependabot propondría también las impares
+      # (Current), que no son para producción.
+      - dependency-name: "node"
+        update-types:
+          - "version-update:semver-major"
 
   # El propio workflow de CI
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
