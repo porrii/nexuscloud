@@ -34,6 +34,22 @@ export interface WebAuthnCredential {
   last_used_at?: string
 }
 
+// WebDAVToken refleja webdavTokenResponse (internal/api/v1/webdav_handlers.go):
+// nunca expone el hash (§172). CreatedWebDAVToken añade el token en claro, que
+// solo viene en la respuesta de creación, una única vez (§78), y la ruta donde
+// está montado WebDAV en este servidor (configurable: webdav.path).
+export interface WebDAVToken {
+  id: string
+  label: string
+  created_at: string
+  last_used_at?: string
+}
+
+export interface CreatedWebDAVToken extends WebDAVToken {
+  token: string
+  webdav_path: string
+}
+
 export interface DirectoryEntry {
   id: string
   parent_path: string
@@ -271,6 +287,15 @@ export const api = {
       body: JSON.stringify(assertion.toJSON()),
     })
   },
+
+  // Tokens de acceso WebDAV (§43, ADR-034): la contraseña que usan los clientes
+  // WebDAV por HTTP Basic (nunca la contraseña de la cuenta). Las rutas solo
+  // existen si el servidor tiene webdav.enabled=true; con 404 la UI oculta la
+  // sección, igual que Passkeys.
+  listWebDAVTokens: () => request<WebDAVToken[]>('/api/v1/auth/webdav/tokens'),
+  createWebDAVToken: (label: string) =>
+    request<CreatedWebDAVToken>('/api/v1/auth/webdav/tokens', { method: 'POST', body: JSON.stringify({ label }) }),
+  revokeWebDAVToken: (id: string) => request<void>(`/api/v1/auth/webdav/tokens/${id}`, { method: 'DELETE' }),
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
   upload: uploadWithProgress,

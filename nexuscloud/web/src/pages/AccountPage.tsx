@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiClientError, type Session, type WebAuthnCredential } from '../api/client'
 import ConfirmDialog from '../components/ConfirmDialog'
+import WebDAVAccess from '../components/WebDAVAccess'
 import { useAuth } from '../auth/AuthContext'
 
 function formatDate(iso: string): string {
@@ -171,6 +172,8 @@ export default function AccountPage() {
           )}
         </section>
       )}
+
+      <WebDAVAccess />
 
       <section className="rounded-lg border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
         <h2 className="mb-3 text-sm font-medium text-slate-500 dark:text-slate-400">Sesiones activas</h2>
