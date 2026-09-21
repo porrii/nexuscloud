@@ -42,6 +42,18 @@ func nullableInt64Arg(v *int64) any {
 	return *v
 }
 
+// boolToInt hace explícito el 0/1 de las columnas INTEGER can_download/
+// can_upload. sqlite y MySQL aceptan un bool de Go como argumento de una
+// columna entera, pero el driver de PostgreSQL (pgx) no lo codifica en un int4
+// y la inserción falla ("unable to encode true into binary format for int4"):
+// con el entero explícito, los tres motores se comportan igual.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 func (r *SQLShareRepository) CreateShare(ctx context.Context, s *Share) error {
 	_, err := r.conn.ExecContext(ctx, `
 		INSERT INTO shares (
@@ -53,7 +65,7 @@ func (r *SQLShareRepository) CreateShare(ctx context.Context, s *Share) error {
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		s.ID, s.OwnerID, nullableStr(s.FileID), nullableStr(s.DirectoryID), string(s.Type),
 		nullableStr(s.TargetUserID), nullableStr(s.TargetGroupID), nullableStr(s.TokenHash), s.Label,
-		s.CanDownload, s.CanUpload, nullableStr(s.PasswordHash),
+		boolToInt(s.CanDownload), boolToInt(s.CanUpload), nullableStr(s.PasswordHash),
 		db.NullableTimeToString(s.ExpiresAt), nullableIntArg(s.MaxDownloads), s.DownloadCount, nullableInt64Arg(s.MaxUploadSizeBytes),
 		db.NullableTimeToString(s.RevokedAt), db.TimeToString(s.CreatedAt), db.TimeToString(s.UpdatedAt),
 	)

@@ -3,6 +3,8 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"testing"
 	"time"
 
@@ -215,6 +217,106 @@ func TestMySQLMoveDirectoryTreeRewritesNestedAndAccentedDescendants(t *testing.T
 			}
 			if _, err := env.files.GetFileByNaturalKey(ctx, root.PoolID, owner, "/Renombrada-ñ/áéíóú-ñ", "informe.txt"); err != nil {
 				t.Errorf("archivo descendiente no se movió: %v", err)
+			}
+		})
+	}
+}
+
+// TestMySQLShareFlagsRoundTrip cubre las cuatro combinaciones de
+// can_download/can_upload. Son columnas INTEGER en los tres motores, y el
+// driver de PostgreSQL (pgx) no acepta un bool de Go como argumento de un int4
+// ("unable to encode true into binary format for int4"): crear cualquier share
+// fallaba ahí, y ninguna otra prueba lo pillaba porque ninguna creaba shares
+// contra un motor real.
+func TestMySQLShareFlagsRoundTrip(t *testing.T) {
+	for _, driver := range []string{"mysql", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			ctx := context.Background()
+			env := newRealTestEnv(t, driver)
+			suffix := idgen.New()[:8]
+			owner := env.user(t, "o-"+suffix)
+			target := env.user(t, "t-"+suffix)
+			dir, err := env.svc.Mkdir(ctx, owner, "/", "Compartida", "")
+			if err != nil {
+				t.Fatalf("Mkdir: %v", err)
+			}
+
+			for _, flags := range []struct{ download, upload bool }{{true, false}, {true, true}, {false, true}, {false, false}} {
+				now := time.Now().UTC()
+				share := &Share{
+					ID: idgen.New(), OwnerID: owner, DirectoryID: dir.ID, Type: ShareTypeUser, TargetUserID: target,
+					CanDownload: flags.download, CanUpload: flags.upload, CreatedAt: now, UpdatedAt: now,
+				}
+				if err := env.shares.CreateShare(ctx, share); err != nil {
+					t.Fatalf("CreateShare(download=%v, upload=%v): %v", flags.download, flags.upload, err)
+				}
+				got, err := env.shares.GetShareByID(ctx, share.ID)
+				if err != nil {
+					t.Fatalf("GetShareByID: %v", err)
+				}
+				if got.CanDownload != flags.download || got.CanUpload != flags.upload {
+					t.Errorf("leído download=%v upload=%v, esperado %v/%v", got.CanDownload, got.CanUpload, flags.download, flags.upload)
+				}
+			}
+		})
+	}
+}
+
+// TestMySQLPublicLinkShareLifecycle recorre un enlace público de punta a punta
+// en MySQL y PostgreSQL reales: creación con contraseña, caducidad y límite de
+// descargas; acceso por token; contador de descargas; agotamiento y
+// revocación. Es la única superficie de Sharing sin sesión, y sus columnas
+// (max_downloads, expires_at, password_hash...) tienen tipos que cada motor
+// trata a su manera (ver también TestMySQLShareFlagsRoundTrip).
+func TestMySQLPublicLinkShareLifecycle(t *testing.T) {
+	for _, driver := range []string{"mysql", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			ctx := context.Background()
+			env := newRealTestEnv(t, driver)
+			owner := env.user(t, "o-"+idgen.New()[:8])
+			meta, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "enlace.txt", Content: bytes.NewReader([]byte("contenido del enlace"))})
+			if err != nil {
+				t.Fatalf("subiendo el archivo a compartir: %v", err)
+			}
+
+			expires, maxDownloads := time.Now().UTC().Add(time.Hour), 1
+			share, token, err := env.svc.CreateShare(ctx, owner, CreateShareInput{
+				ResourceID: meta.ID, Type: ShareTypeLink, CanDownload: true,
+				Password: "clave-del-enlace", ExpiresAt: &expires, MaxDownloads: &maxDownloads,
+			})
+			if err != nil || token == "" {
+				t.Fatalf("CreateShare(enlace) = token %q, err %v", token, err)
+			}
+
+			stored, err := env.shares.GetShareByID(ctx, share.ID)
+			if err != nil {
+				t.Fatalf("GetShareByID: %v", err)
+			}
+			if stored.MaxDownloads == nil || *stored.MaxDownloads != 1 || !stored.HasPassword() || stored.ExpiresAt == nil || stored.DownloadCount != 0 {
+				t.Errorf("share leído = %+v, esperado máximo 1 descarga, con contraseña, caducidad y contador a 0", stored)
+			}
+
+			if _, _, err := env.svc.DownloadViaPublicShare(ctx, token, "mala", ""); !errors.Is(err, ErrSharePasswordIncorrect) {
+				t.Fatalf("con una contraseña incorrecta: err = %v, esperado ErrSharePasswordIncorrect", err)
+			}
+			_, rc, err := env.svc.DownloadViaPublicShare(ctx, token, "clave-del-enlace", "")
+			if err != nil {
+				t.Fatalf("descarga con la contraseña correcta: %v", err)
+			}
+			body, _ := io.ReadAll(rc)
+			rc.Close()
+			if string(body) != "contenido del enlace" {
+				t.Errorf("contenido descargado = %q", body)
+			}
+			if _, _, err := env.svc.DownloadViaPublicShare(ctx, token, "clave-del-enlace", ""); !errors.Is(err, ErrShareExhausted) {
+				t.Fatalf("segunda descarga con máximo 1: err = %v, esperado ErrShareExhausted", err)
+			}
+
+			if err := env.svc.RevokeShare(ctx, owner, share.ID); err != nil {
+				t.Fatalf("RevokeShare: %v", err)
+			}
+			if _, _, err := env.svc.DownloadViaPublicShare(ctx, token, "clave-del-enlace", ""); !errors.Is(err, ErrShareRevoked) {
+				t.Errorf("tras revocar: err = %v, esperado ErrShareRevoked", err)
 			}
 		})
 	}
