@@ -88,6 +88,7 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		}
 
 		r.Get("/users/me", h.Me)
+		r.Get("/users/me/quota", h.MyQuota)
 
 		r.Get("/files", h.ListFiles)
 		r.Post("/files", h.UploadFile)
@@ -126,6 +127,7 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Delete("/invitations/{id}", h.RevokeInvitation)
 
 			r.Post("/groups", h.CreateGroup)
+			r.Patch("/groups/{id}", h.PatchGroup)
 			r.Post("/groups/{id}/members", h.AddGroupMember)
 
 			r.Get("/audit", h.ListAuditEvents)

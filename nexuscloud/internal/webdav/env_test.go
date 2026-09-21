@@ -22,6 +22,7 @@ import (
 type fsEnv struct {
 	files     *storage.FileService
 	users     users.Repository
+	userSvc   *users.Service // resolver de cuotas del FileService (ADR-036)
 	auditRepo audit.Repository
 	rec       *audit.Recorder
 	tokens    *TokenService
@@ -47,18 +48,23 @@ func newFSEnv(t *testing.T, trashEnabled bool) *fsEnv {
 	if _, err := storage.EnsureDefaultPool(context.Background(), pools, t.TempDir()); err != nil {
 		t.Fatalf("EnsureDefaultPool falló: %v", err)
 	}
+	userRepo := users.NewSQLRepository(conn)
+	userSvc := users.NewService(userRepo)
 	files := storage.NewFileService(
 		storage.NewSQLFileRepository(conn), storage.NewSQLDirectoryRepository(conn),
 		storage.NewSQLVersionRepository(conn), storage.NewSQLShareRepository(conn),
 		pools, storage.NewPoolProviderResolver(pools),
 		auth.NewHasher(config.Argon2Config{MemoryKiB: 8 * 1024, Iterations: 1, Parallelism: 1}),
-		trashEnabled, true, 10, 0, 0, true, true)
+		trashEnabled, true, 10, 0, 0, true, true,
+		// Con las cuotas cableadas pero sin ninguna configurada el comportamiento
+		// es el de siempre; los tests de cuota fijan la de un usuario (setQuota).
+		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)))
 
-	userRepo := users.NewSQLRepository(conn)
 	auditRepo := audit.NewSQLRepository(conn)
 	return &fsEnv{
 		files:     files,
 		users:     userRepo,
+		userSvc:   userSvc,
 		auditRepo: auditRepo,
 		rec:       audit.NewRecorder(auditRepo, nil),
 		tokens:    NewTokenService(NewSQLTokenRepository(conn), userRepo, nil),

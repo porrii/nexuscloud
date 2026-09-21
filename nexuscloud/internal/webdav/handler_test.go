@@ -582,3 +582,131 @@ func TestHandlerOverwriteOfCollectionsWorksWhenTheTrashIsOff(t *testing.T) {
 		t.Errorf("/b = %v, esperado solo f.txt (la carpeta antigua se reemplazó entera)", got)
 	}
 }
+
+// Cuotas (§24, ADR-036): un PUT que no cabe se rechaza con 507 Insufficient
+// Storage (RFC 4918), que es lo que entienden los clientes WebDAV -- x/net
+// respondería 405 a cualquier PUT fallido.
+
+func (d *davEnv) setQuota(t *testing.T, a account, limit int64) {
+	t.Helper()
+	if err := d.userSvc.SetUserQuota(context.Background(), a.u.ID, &limit); err != nil {
+		t.Fatalf("fijando la cuota de %s: %v", a.name, err)
+	}
+}
+
+func TestHandlerPutBeyondTheQuotaIsRejectedWith507(t *testing.T) {
+	ctx := context.Background()
+	d := newDavEnv(t, true, Options{})
+	a := d.account(t, "maria")
+	d.setQuota(t, a, 100)
+	fs := d.fs(a.u)
+
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/a.bin", strings.Repeat("a", 60), nil), http.StatusCreated, "PUT de 60 bytes con cuota 100")
+
+	resp := d.do(t, a, "PUT", "/webdav/b.bin", strings.Repeat("b", 50), nil)
+	status, body := resp.StatusCode, bodyOf(t, resp)
+	if status != http.StatusInsufficientStorage {
+		t.Errorf("PUT que no cabe: status = %d, esperado 507", status)
+	}
+	if !strings.Contains(body, "cuota") {
+		t.Errorf("el cuerpo debe explicar que es la cuota (y no el «Method Not Allowed» de x/net): %q", body)
+	}
+	if _, err := fs.Stat(ctx, "/b.bin"); err == nil {
+		t.Error("/b.bin no debería existir: no cabía")
+	}
+	if got := readContent(t, fs, ctx, "/a.bin"); got != strings.Repeat("a", 60) {
+		t.Errorf("/a.bin = %q: el rechazo no debe tocar lo que ya había", got)
+	}
+
+	// Cabe justo en lo que queda.
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/c.bin", strings.Repeat("c", 40), nil), http.StatusCreated, "PUT de 40 bytes en los 40 que quedan")
+}
+
+// Sin Content-Length el tamaño no se conoce de antemano: lo corta el limitador
+// de lectura de FileService a mitad de subida.
+func TestHandlerChunkedPutBeyondTheQuotaIsRejectedWith507(t *testing.T) {
+	d := newDavEnv(t, true, Options{})
+	a := d.account(t, "maria")
+	d.setQuota(t, a, 100)
+
+	req, _ := http.NewRequest("PUT", d.srv.URL+"/webdav/chunked.bin", io.NopCloser(strings.NewReader(strings.Repeat("x", 500))))
+	req.ContentLength = -1
+	req.SetBasicAuth(a.name, a.token)
+	resp, err := d.srv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("PUT chunked falló: %v", err)
+	}
+	expectStatus(t, resp, http.StatusInsufficientStorage, "PUT chunked de 500 bytes con cuota 100")
+	if _, err := d.fs(a.u).Stat(context.Background(), "/chunked.bin"); err == nil {
+		t.Error("/chunked.bin no debería existir")
+	}
+}
+
+func TestHandlerCopyBeyondTheQuotaIsRejectedWith507(t *testing.T) {
+	d := newDavEnv(t, true, Options{})
+	a := d.account(t, "maria")
+	d.setQuota(t, a, 100)
+
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/a.bin", strings.Repeat("a", 60), nil), http.StatusCreated, "PUT")
+	dest := map[string]string{"Destination": d.srv.URL + "/webdav/copia.bin", "Overwrite": "F"}
+	expectStatus(t, d.do(t, a, "COPY", "/webdav/a.bin", "", dest), http.StatusInsufficientStorage, "COPY que duplicaría 60 bytes sobre 100")
+	if _, err := d.fs(a.u).Stat(context.Background(), "/copia.bin"); err == nil {
+		t.Error("/copia.bin no debería existir")
+	}
+}
+
+// Estar por encima de la cuota solo bloquea subir: leer, mover y borrar siguen.
+func TestHandlerOverTheQuotaOnlyBlocksUploads(t *testing.T) {
+	d := newDavEnv(t, true, Options{})
+	a := d.account(t, "maria")
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/a.bin", strings.Repeat("a", 80), nil), http.StatusCreated, "PUT")
+	d.setQuota(t, a, 10) // ahora está muy por encima
+
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/b.bin", "x", nil), http.StatusInsufficientStorage, "PUT estando por encima")
+	if got := bodyOf(t, d.do(t, a, "GET", "/webdav/a.bin", "", nil)); got != strings.Repeat("a", 80) {
+		t.Errorf("GET estando por encima de la cuota = %d bytes", len(got))
+	}
+	dest := map[string]string{"Destination": d.srv.URL + "/webdav/renombrado.bin", "Overwrite": "F"}
+	expectStatus(t, d.do(t, a, "MOVE", "/webdav/a.bin", "", dest), http.StatusCreated, "MOVE estando por encima")
+	expectStatus(t, d.do(t, a, "DELETE", "/webdav/renombrado.bin", "", nil), http.StatusNoContent, "DELETE estando por encima")
+}
+
+// Un PUT que SOBRESCRIBE y no cabe (el contenido anterior quedaría como versión)
+// se rechaza sin tocar lo que hay.
+func TestHandlerAnOverwriteBeyondTheQuotaKeepsTheOldContent(t *testing.T) {
+	d := newDavEnv(t, true, Options{})
+	a := d.account(t, "maria")
+	d.setQuota(t, a, 100)
+
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/f.bin", strings.Repeat("v", 60), nil), http.StatusCreated, "PUT")
+	expectStatus(t, d.do(t, a, "PUT", "/webdav/f.bin", strings.Repeat("N", 60), nil), http.StatusInsufficientStorage, "PUT que sobrescribe con otro contenido de 60")
+	if got := bodyOf(t, d.do(t, a, "GET", "/webdav/f.bin", "", nil)); got != strings.Repeat("v", 60) {
+		t.Errorf("f.bin = %q: el rechazo no debe cambiar el contenido vigente", got)
+	}
+}
+
+// Guardar con Office (o renombrar sobre un archivo) es un PUT del temporal y un
+// MOVE con Overwrite:T encima del original. Sin papelera, x/net borra el
+// destino y renombra el temporal: no se duplica nada y cerca del límite
+// funciona. Con papelera el MOVE sube el contenido encima y el temporal va a la
+// papelera, donde sigue ocupando: la cuota lo cuenta y no cabe.
+func TestHandlerMoveOverwriteNearTheQuotaDependsOnTheTrash(t *testing.T) {
+	for _, tc := range []struct {
+		trash bool
+		want  int
+	}{{false, http.StatusNoContent}, {true, http.StatusInsufficientStorage}} {
+		t.Run(fmt.Sprintf("papelera=%v", tc.trash), func(t *testing.T) {
+			d := newDavEnv(t, tc.trash, Options{})
+			a := d.account(t, "maria")
+			d.setQuota(t, a, 100)
+
+			expectStatus(t, d.do(t, a, "PUT", "/webdav/doc.txt", strings.Repeat("o", 40), nil), http.StatusCreated, "PUT del original")
+			expectStatus(t, d.do(t, a, "PUT", "/webdav/tmp.txt", strings.Repeat("n", 50), nil), http.StatusCreated, "PUT del temporal (uso 90 de 100)")
+
+			// Sin papelera: doc queda con 50 y ya no hay nada más (50 de 100).
+			// Con papelera: doc nuevo (50) + versión del original (40) + el
+			// temporal en la papelera (50) = 140 sobre 100.
+			expectStatus(t, d.overwrite(t, a, "MOVE", "/webdav/tmp.txt", "/webdav/doc.txt"), tc.want, "MOVE del temporal sobre el original")
+		})
+	}
+}

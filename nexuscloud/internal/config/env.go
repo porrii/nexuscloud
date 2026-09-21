@@ -94,6 +94,9 @@ func applyEnvOverrides(cfg *Config) {
 	if v, ok := lookup("NEXUSCLOUD_WEBDAV_PATH"); ok {
 		cfg.WebDAV.Path = v
 	}
+	if v, ok := lookupInt64("NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES"); ok {
+		cfg.Storage.DefaultQuotaBytes = v
+	}
 	if v, ok := lookupBool("NEXUSCLOUD_WEBDAV_READ_ONLY"); ok {
 		cfg.WebDAV.ReadOnly = v
 	}

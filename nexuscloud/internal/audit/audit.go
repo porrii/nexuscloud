@@ -28,6 +28,10 @@ const (
 	EventConfigChanged     = "config_changed"
 	EventGroupCreated      = "group_created"
 	EventGroupMemberAdded  = "group_member_added"
+	// EventQuotaChanged (ADR-036): un administrador cambia la cuota de un
+	// usuario o de un grupo; los metadatos llevan el valor anterior (before) y
+	// el nuevo (after), con null = sin cuota propia (hereda).
+	EventQuotaChanged = "quota_changed"
 
 	EventWebAuthnCredentialRegistered = "webauthn_credential_registered"
 	EventWebAuthnCredentialRevoked    = "webauthn_credential_revoked"

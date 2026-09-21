@@ -124,6 +124,9 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	if cfg.Storage.DefaultQuotaBytes < 0 {
+		return fmt.Errorf("storage.defaultQuotaBytes no puede ser negativo (0 = sin cuota global)")
+	}
 	if cfg.WebDAV.MaxUploadSizeBytes < 0 {
 		return fmt.Errorf("webdav.maxUploadSizeBytes no puede ser negativo (0 = sin límite)")
 	}

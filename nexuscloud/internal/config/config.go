@@ -81,6 +81,12 @@ type StorageConfig struct {
 	LogsDir       string `yaml:"logsDir,omitempty"`
 	BackupsDir    string `yaml:"backupsDir,omitempty"`
 	ConfigDir     string `yaml:"configDir,omitempty"`
+
+	// DefaultQuotaBytes es la cuota global (§24, ADR-036): el límite de
+	// almacenamiento por usuario para quien no tiene cuota propia ni de
+	// grupo. 0 = sin cuota global (el comportamiento de siempre). Es un campo
+	// nuevo opcional: no obliga a subir configVersion.
+	DefaultQuotaBytes int64 `yaml:"defaultQuotaBytes,omitempty"`
 }
 
 type SecurityConfig struct {

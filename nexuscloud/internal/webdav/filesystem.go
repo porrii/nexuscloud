@@ -341,6 +341,10 @@ func (f *fileSystem) moveOverFile(ctx context.Context, src *entry, dst string) e
 
 	meta, err := f.files.Upload(ctx, storage.UploadInput{OwnerID: f.owner, ParentPath: path.Dir(dst), Name: path.Base(dst), Content: rc})
 	if err != nil {
+		// Aquí solo se llega con la papelera activa (ver beginOverwrite): el
+		// origen se borra a la papelera y sigue ocupando, así que la cuota
+		// cuenta el contenido duplicado y este MOVE puede no caber (ADR-036).
+		noteQuota(ctx, err)
 		return mapError(err)
 	}
 	f.recordAudit(ctx, audit.EventUpload, "file", meta.ID, map[string]any{"name": meta.Name, "size_bytes": meta.SizeBytes})
@@ -529,8 +533,12 @@ type uploadResult struct {
 func newUploadFile(ctx context.Context, fs *fileSystem, parent, name string) *uploadFile {
 	pr, pw := io.Pipe()
 	u := &uploadFile{ctx: ctx, fs: fs, parent: parent, name: name, pw: pw, done: make(chan uploadResult, 1), sha: sha256.New()}
+	var sizeHint int64
+	if ri := requestInfoFrom(ctx); ri != nil {
+		sizeHint = ri.putSize // Content-Length del PUT: rechazo por cuota sin leer el cuerpo
+	}
 	go func() {
-		meta, err := fs.files.Upload(ctx, storage.UploadInput{OwnerID: fs.owner, ParentPath: parent, Name: name, Content: pr})
+		meta, err := fs.files.Upload(ctx, storage.UploadInput{OwnerID: fs.owner, ParentPath: parent, Name: name, Content: pr, SizeHint: sizeHint})
 		// Si Upload falló antes de leer todo (nombre inválido, ocupado por la
 		// papelera...), el escritor recibe este error en vez de bloquearse.
 		pr.CloseWithError(err)
@@ -545,6 +553,7 @@ func (u *uploadFile) Write(p []byte) (int, error) {
 		u.sha.Write(p[:n])
 		u.size += int64(n)
 	}
+	noteQuota(u.ctx, err) // si Upload cortó por cuota, es lo que llega aquí
 	return n, err
 }
 
@@ -572,6 +581,7 @@ func (u *uploadFile) Close() error {
 	u.pw.Close()
 	u.result = <-u.done
 	if u.result.err != nil {
+		noteQuota(u.ctx, u.result.err)
 		u.result.err = mapError(u.result.err)
 		return u.result.err
 	}

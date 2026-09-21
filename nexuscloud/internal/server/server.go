@@ -110,13 +110,14 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	providers := storage.NewPoolProviderResolver(poolRepo)
 
 	hasher := auth.NewHasher(cfg.Security.Argon2)
-	userSvc := users.NewService(userRepo)
+	userSvc := users.NewService(userRepo, users.WithDefaultQuota(cfg.Storage.DefaultQuotaBytes))
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, webauthnCredRepo, cfg, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
-		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
+		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled,
+		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)))
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 	backupRepo := backup.NewSQLRepository(conn)
 	// backupManager lo consume el bucle automático de más abajo (ADR-016);

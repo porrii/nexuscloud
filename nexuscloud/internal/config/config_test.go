@@ -437,3 +437,46 @@ func TestTheExampleConfigLoadsAndValidates(t *testing.T) {
 		t.Error("el ejemplo debe mantener WebDAV y WebAuthn desactivados (secure by default)")
 	}
 }
+
+// storage.defaultQuotaBytes (§24, ADR-036): la cuota global, la que se aplica a
+// quien no tiene cuota propia ni de grupo. 0 = sin cuota (el comportamiento de
+// siempre): las instalaciones existentes no cambian.
+func TestDefaultQuotaIsUnlimitedByDefault(t *testing.T) {
+	if got := Defaults().Storage.DefaultQuotaBytes; got != 0 {
+		t.Errorf("storage.defaultQuotaBytes por defecto = %d, esperado 0 (sin límite)", got)
+	}
+}
+
+func TestValidateRejectsNegativeDefaultQuota(t *testing.T) {
+	cfg := Defaults()
+	cfg.Storage.DefaultQuotaBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar storage.defaultQuotaBytes negativo (0 = sin límite)")
+	}
+}
+
+func TestDefaultQuotaEnvOverride(t *testing.T) {
+	t.Setenv("NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES", "107374182400") // 100 GiB: no cabe en 32 bits
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load falló: %v", err)
+	}
+	if cfg.Storage.DefaultQuotaBytes != 107374182400 {
+		t.Errorf("storage.defaultQuotaBytes = %d, esperado 107374182400", cfg.Storage.DefaultQuotaBytes)
+	}
+}
+
+func TestDefaultQuotaLoadsFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storage:\n  defaultQuotaBytes: 53687091200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load falló: %v", err)
+	}
+	if cfg.Storage.DefaultQuotaBytes != 53687091200 {
+		t.Errorf("storage.defaultQuotaBytes = %d, esperado 53687091200", cfg.Storage.DefaultQuotaBytes)
+	}
+}

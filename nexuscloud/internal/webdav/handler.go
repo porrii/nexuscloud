@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
 	xwebdav "golang.org/x/net/webdav"
@@ -76,7 +77,65 @@ type requestInfo struct {
 	// fileSystem.beginOverwrite. Vive en la petición y solo la toca el
 	// goroutine que la sirve.
 	overwriteOf string
+	// putSize es el Content-Length anunciado por un PUT (0 = desconocido o no
+	// es un PUT): sirve para rechazar por cuota antes de leer el cuerpo.
+	putSize int64
+	// quotaExceeded se activa cuando una subida de esta petición fue rechazada
+	// por la cuota del propietario; ver quotaStatusWriter.
+	quotaExceeded atomic.Bool
 }
+
+// noteQuota marca la petición como rechazada por cuota si err lo es, para que
+// la respuesta salga como 507 (ver quotaStatusWriter).
+func noteQuota(ctx context.Context, err error) {
+	if errors.Is(err, storage.ErrQuotaExceeded) {
+		if ri := requestInfoFrom(ctx); ri != nil {
+			ri.quotaExceeded.Store(true)
+		}
+	}
+}
+
+// quotaExceededMessage es el cuerpo de la respuesta 507 (mismo texto que la
+// API REST, internal/api/v1/quota_handlers.go).
+const quotaExceededMessage = "No hay espacio suficiente: has alcanzado tu cuota de almacenamiento. Libera espacio (la papelera y las versiones anteriores también cuentan) o pide al administrador que la amplíe."
+
+// quotaStatusWriter cambia a 507 Insufficient Storage la respuesta de error de
+// una petición rechazada por la cuota (ADR-036). El handler de x/net responde
+// 405 a cualquier PUT que falla (y 500 o 403 a un COPY o un MOVE), y un cliente
+// WebDAV solo entiende «no hay espacio» con 507 (RFC 4918); además el cuerpo
+// que escribiría x/net («Method Not Allowed») no explica nada.
+type quotaStatusWriter struct {
+	http.ResponseWriter
+	ri          *requestInfo
+	rewritten   bool
+	messageSent bool
+}
+
+func (w *quotaStatusWriter) WriteHeader(code int) {
+	if code >= 400 && w.ri.quotaExceeded.Load() {
+		w.rewritten = true
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		code = http.StatusInsufficientStorage
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *quotaStatusWriter) Write(p []byte) (int, error) {
+	if !w.rewritten {
+		return w.ResponseWriter.Write(p)
+	}
+	// Se descarta el texto de x/net y se escribe el motivo real, una sola vez.
+	if !w.messageSent {
+		w.messageSent = true
+		if _, err := io.WriteString(w.ResponseWriter, quotaExceededMessage); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+// Unwrap deja que http.ResponseController alcance el ResponseWriter real.
+func (w *quotaStatusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 type ctxKey struct{}
 
@@ -182,8 +241,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.Body = &trackingBody{ReadCloser: body, t: tracker}
 	}
 
-	ctx := withRequestInfo(r.Context(), &requestInfo{ip: ip, method: r.Method, tracker: tracker})
-	h.handlerFor(u).ServeHTTP(w, r.WithContext(ctx))
+	ri := &requestInfo{ip: ip, method: r.Method, tracker: tracker}
+	if r.Method == http.MethodPut && r.ContentLength > 0 {
+		ri.putSize = r.ContentLength
+	}
+	ctx := withRequestInfo(r.Context(), ri)
+	h.handlerFor(u).ServeHTTP(&quotaStatusWriter{ResponseWriter: w, ri: ri}, r.WithContext(ctx))
 }
 
 func challenge(w http.ResponseWriter) {

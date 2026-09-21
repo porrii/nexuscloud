@@ -21,6 +21,10 @@ type userResponse struct {
 	HasTOTP     bool       `json:"has_totp"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// QuotaBytes es la cuota PROPIA del usuario (§24, ADR-036): ausente =
+	// hereda del grupo o la global, 0 = ilimitada. El límite efectivo que le
+	// afecta, y el uso, salen de GET /users/me/quota.
+	QuotaBytes *int64 `json:"quota_bytes,omitempty"`
 }
 
 func toUserResponse(u *users.User) userResponse {
@@ -33,6 +37,7 @@ func toUserResponse(u *users.User) userResponse {
 		HasTOTP:     u.HasTOTP(),
 		CreatedAt:   u.CreatedAt,
 		LastLoginAt: u.LastLoginAt,
+		QuotaBytes:  u.QuotaBytes,
 	}
 }
 
@@ -100,10 +105,13 @@ func toVersionResponse(v *storage.FileVersion) versionResponse {
 type groupResponse struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// QuotaBytes es la cuota por miembro del grupo (§24, ADR-036): ausente =
+	// el grupo no aporta cuota, 0 = ilimitada para sus miembros.
+	QuotaBytes *int64 `json:"quota_bytes,omitempty"`
 }
 
 func toGroupResponse(g *users.Group) groupResponse {
-	return groupResponse{ID: g.ID, Name: g.Name}
+	return groupResponse{ID: g.ID, Name: g.Name, QuotaBytes: g.QuotaBytes}
 }
 
 // shareResponse nunca expone PasswordHash/TokenHash (§172): HasPassword es

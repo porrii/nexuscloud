@@ -138,7 +138,7 @@ func (h *Handlers) UploadPublicShare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	meta, err := h.Files.UploadViaPublicShare(r.Context(), storage.PublicUploadInput{
-		Token: token, Password: password, SubPath: subPath, Name: name, Content: r.Body,
+		Token: token, Password: password, SubPath: subPath, Name: name, Content: r.Body, SizeHint: r.ContentLength,
 	})
 	if err != nil {
 		writePublicShareError(w, err)
@@ -174,6 +174,10 @@ func writePublicShareError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, "upload_too_large", "El archivo supera el límite de tamaño de este enlace.")
 	case errors.Is(err, storage.ErrDestinationOccupied), errors.Is(err, storage.ErrNameOccupiedByTrash):
 		writeNameUnavailable(w)
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		// Es la cuota del propietario del enlace (ADR-036): un anónimo no debe
+		// averiguar cuánto usa ni cuánto tiene.
+		writeNoSpaceInFolder(w)
 	case errors.Is(err, storage.ErrFileNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Archivo no encontrado.")
 	case errors.Is(err, storage.ErrDirectoryNotFound):

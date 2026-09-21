@@ -57,11 +57,17 @@ func openFileService(cfg *config.Config, migrate bool) (*sql.DB, *storage.FileSe
 	versions := storage.NewSQLVersionRepository(conn)
 	shares := storage.NewSQLShareRepository(conn)
 	hasher := auth.NewHasher(cfg.Security.Argon2)
+	// La CLI también respeta las cuotas (ADR-036): subir un archivo con
+	// `nexuscloud files upload` cuenta contra la cuota del propietario igual
+	// que hacerlo por la API.
+	userRepo := users.NewSQLRepository(conn)
+	quotas := users.NewService(userRepo, users.WithDefaultQuota(cfg.Storage.DefaultQuotaBytes))
 	fileSvc := storage.NewFileService(files, directories, versions, shares, pools, resolver, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
-		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled)
-	return sqlDB, fileSvc, users.NewSQLRepository(conn), nil
+		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled,
+		storage.WithQuotas(quotas, storage.NewSQLUsageRepository(conn)))
+	return sqlDB, fileSvc, userRepo, nil
 }
 
 // openAuditRepo abre la base de datos configurada y devuelve el

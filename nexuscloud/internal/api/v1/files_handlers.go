@@ -53,8 +53,10 @@ func (h *Handlers) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SizeHint permite rechazar por cuota antes de leer el cuerpo (ADR-036);
+	// ContentLength es -1 si el cliente sube en chunked, y entonces no se usa.
 	meta, err := h.Files.Upload(r.Context(), storage.UploadInput{
-		OwnerID: u.ID, ParentPath: parentPath, Name: name, Content: r.Body,
+		OwnerID: u.ID, ParentPath: parentPath, Name: name, Content: r.Body, SizeHint: r.ContentLength,
 	})
 	if err != nil {
 		writeFileError(w, err)
@@ -236,6 +238,8 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "destination_occupied", err.Error())
 	case errors.Is(err, storage.ErrInvalidMoveDestination):
 		writeError(w, http.StatusBadRequest, "invalid_move_destination", err.Error())
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		writeQuotaExceeded(w)
 	case errors.Is(err, storage.ErrVersionNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Versión no encontrada.")
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):

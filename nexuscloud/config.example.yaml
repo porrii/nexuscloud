@@ -60,6 +60,15 @@ storage:
   backupsDir: ""        # vacío = <dataDir>/backups
   configDir: ""         # vacío = <dataDir>/config
 
+  # Cuota global de almacenamiento por usuario, en bytes (§24): se aplica a
+  # quien no tiene cuota propia ni de grupo. 0 = sin cuota global (por defecto:
+  # nadie tiene límite hasta que lo configures). 107374182400 = 100 GiB. Cuenta
+  # archivos + papelera + versiones anteriores. También por variable de
+  # entorno: NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES. Cuota de un usuario o de un
+  # grupo concreto: `nexuscloud users edit --quota` / `users group edit --quota`.
+  # Detalle: docs/administracion.md.
+  defaultQuotaBytes: 0
+
 security:
   sessionTTLHours: 720   # 30 días
   argon2:                # §25. Los mismos parámetros de referencia que NexusKeys.
