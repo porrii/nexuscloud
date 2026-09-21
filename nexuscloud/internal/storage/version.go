@@ -14,8 +14,13 @@ var ErrVersionNotFound = errors.New("storage: versión no encontrada")
 // vive el contenido de esa versión concreta, fuera del árbol lógico visible
 // del usuario.
 type FileVersion struct {
-	ID         string
-	FileID     string
+	ID     string
+	FileID string
+	// OwnerID es el propietario del archivo, desnormalizado en la propia versión
+	// (migración 0012, ADR-036) para que el uso de un usuario no necesite un JOIN
+	// con todos sus archivos. Solo se lee: CreateVersion lo toma SIEMPRE de la fila
+	// de files y nunca de quien llama, así que no puede diferir del de su archivo.
+	OwnerID    string
 	VersionNum int
 	SizeBytes  int64
 	SHA256     string
