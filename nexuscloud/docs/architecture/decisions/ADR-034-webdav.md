@@ -172,7 +172,7 @@ una vía paralela al disco.
     papelera activa. Afecta a editores y aplicaciones que crean y borran
     ficheros temporales o de bloqueo con el mismo nombre. Es la misma regla
     que aplica la API REST; con `trash.enabled: false` no ocurre. **Decisión
-    de producto pendiente** (ver abajo).
+    de producto tomada** (ver abajo).
   - **Borrado recursivo = una entrada de papelera por elemento.** Borrar una
     carpeta con contenido manda cada archivo y cada subcarpeta a la papelera
     por separado; restaurar la entrada de la carpeta recupera **solo la
@@ -234,13 +234,15 @@ una vía paralela al disco.
     escritorio como Microsoft Office. Por el defecto de la papelera anterior,
     las que guardan con ficheros temporales del mismo nombre son las más
     expuestas.
-- **Decisión de producto pendiente (§128).** Mantener la reserva de nombres
-  de la papelera para WebDAV es coherente con la API y ADR-030, pero limita el
-  uso como "unidad de red" con editores. Opciones: (a) dejarlo como está y
-  documentar `trash.enabled: false` para quien quiera esa experiencia;
-  (b) relajar la regla en el núcleo (permitir crear un nombre ocupado por la
-  papelera y resolver el conflicto al restaurar), lo que exige tocar el
-  esquema en los tres motores porque hoy la unicidad incluye las filas
-  eliminadas y cambiar el comportamiento de "restaurar". Se recomienda (b)
-  solo si el uso como unidad de red es un objetivo real; no forma parte de
-  este slice.
+- **Decisión de producto (§128), tomada el 2026-09-21: opción (a).** Mantener
+  la reserva de nombres de la papelera para WebDAV es coherente con la API y
+  ADR-030, pero limita el uso como "unidad de red" con editores. Opciones:
+  (a) dejarlo como está y documentar `trash.enabled: false` para quien quiera
+  esa experiencia; (b) relajar la regla en el núcleo (permitir crear un
+  nombre ocupado por la papelera y resolver el conflicto al restaurar), lo
+  que exige tocar el esquema en los tres motores porque hoy la unicidad
+  incluye las filas eliminadas y cambiar el comportamiento de "restaurar".
+  **Se adopta (a)**, que ya está explicada al usuario en
+  [`webdav.md`](../../webdav.md#límites-conocidos). (b) queda descartada por
+  ahora y solo se retomaría si el uso de WebDAV como unidad de red con
+  editores pasa a ser un objetivo real.
