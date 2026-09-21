@@ -455,7 +455,9 @@ type PublicUploadInput struct {
 // MaxUploadSizeBytes se aplica envolviendo Content en un lector que corta
 // con error en cuanto se supera el límite (en vez de truncar en silencio),
 // para que Upload aborte de forma natural -- su propio manejo de staging ya
-// limpia el fichero parcial sin necesitar borrar nada después.
+// limpia el fichero parcial sin necesitar borrar nada después. Nunca pisa un
+// archivo existente de la carpeta del propietario (ErrDestinationOccupied): sin
+// versionado, sobrescribir destruiría el contenido anterior sin dejar rastro.
 func (s *FileService) UploadViaPublicShare(ctx context.Context, in PublicUploadInput) (*FileMeta, error) {
 	share, err := s.ResolvePublicShareForAccess(ctx, in.Token, in.Password)
 	if err != nil {
@@ -482,7 +484,7 @@ func (s *FileService) UploadViaPublicShare(ctx context.Context, in PublicUploadI
 		content = &errLimitReader{r: content, remaining: *share.MaxUploadSizeBytes}
 	}
 
-	return s.Upload(ctx, UploadInput{OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content})
+	return s.Upload(ctx, UploadInput{OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content, NoOverwrite: true})
 }
 
 // errLimitReader corta la lectura con ErrShareUploadTooLarge en cuanto se

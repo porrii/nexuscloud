@@ -385,6 +385,52 @@ func TestUploadViaPublicShareEnforcesSizeLimit(t *testing.T) {
 	}
 }
 
+// Quien sube por un enlace público no debe poder pisar en silencio lo que ya hay
+// en la carpeta del propietario: con el versionado desactivado, sobrescribir
+// destruiría el contenido anterior sin dejar rastro.
+func TestUploadViaPublicShareDoesNotOverwriteAnExistingFile(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "owner")
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Buzon", "")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	original, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Buzon", Name: "acta.txt", Content: bytes.NewReader([]byte("original"))})
+	if err != nil {
+		t.Fatalf("Upload del original falló: %v", err)
+	}
+	_, token, err := env.svc.CreateShare(ctx, owner, CreateShareInput{
+		ResourceIsDirectory: true, ResourceID: dir.ID, Type: ShareTypeLink, CanUpload: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateShare falló: %v", err)
+	}
+
+	if _, err := env.svc.UploadViaPublicShare(ctx, PublicUploadInput{
+		Token: token, Name: "acta.txt", Content: bytes.NewReader([]byte("intento de pisarlo")),
+	}); !errors.Is(err, ErrDestinationOccupied) {
+		t.Fatalf("subida con un nombre ocupado = %v, esperado ErrDestinationOccupied", err)
+	}
+	_, rc, err := env.svc.Download(ctx, owner, original.ID)
+	if err != nil {
+		t.Fatalf("Download del original falló: %v", err)
+	}
+	if got := string(readAll(t, rc)); got != "original" {
+		t.Errorf("contenido tras el intento = %q, esperado el original intacto", got)
+	}
+	if versions, err := env.svc.ListVersions(ctx, owner, original.ID); err != nil || len(versions) != 0 {
+		t.Errorf("versiones = %d (err=%v), esperado ninguna: el intento no debe haber tocado el archivo", len(versions), err)
+	}
+
+	// Un nombre nuevo sigue subiendo con normalidad.
+	if _, err := env.svc.UploadViaPublicShare(ctx, PublicUploadInput{
+		Token: token, Name: "nuevo.txt", Content: bytes.NewReader([]byte("nuevo")),
+	}); err != nil {
+		t.Errorf("subida de un nombre nuevo falló: %v", err)
+	}
+}
+
 func TestListSharesExcludesRevoked(t *testing.T) {
 	ctx := context.Background()
 	env := newTestEnv(t, true)
