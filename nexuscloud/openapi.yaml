@@ -114,6 +114,22 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
 
+  /users/me/quota:
+    get:
+      summary: Uso y límite de almacenamiento de quien pregunta (§24, ADR-036)
+      description: >
+        El uso es la huella real en disco: archivos activos + papelera +
+        versiones anteriores. Se calcula en el momento, así que es más caro que
+        /users/me; por eso es un endpoint aparte. limit_bytes se omite si no hay
+        límite; source dice de dónde sale el límite efectivo (user, group,
+        global o none).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Quota" }
+
   /users:
     get:
       summary: Listar usuarios (admin)
@@ -141,12 +157,19 @@ paths:
                 display_name: { type: string }
                 email: { type: string }
                 role: { type: string, enum: [super_admin, administrator, user, read_only] }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "Cuota propia (§24). Ausente o null = hereda del grupo o la global; 0 = ilimitada."
       responses:
         "201":
           description: Creado
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
 
   /users/{id}:
@@ -163,12 +186,24 @@ paths:
                 display_name: { type: string }
                 email: { type: string }
                 status: { type: string, enum: [active, disabled] }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: >
+                    Cuota propia (§24, ADR-036), tri-estado: ausente = no se
+                    toca; null = sin cuota propia (hereda del grupo o la
+                    global); 0 = ilimitada; un número > 0 = límite en bytes.
+                    400 si es negativo, decimal o no es un número. Cambiarla
+                    se audita como quota_changed.
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
     delete:
       summary: Eliminar un usuario (admin, no a sí mismo)
       parameters:
@@ -286,6 +321,15 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/File" }
         "400": { $ref: "#/components/responses/Error" }
+        "507":
+          description: >
+            quota_exceeded: no cabe en la cuota del usuario (§24, ADR-036). Con
+            Content-Length conocido se rechaza sin leer el cuerpo. Cuenta la
+            huella real: archivos + papelera + versiones. 413 sigue siendo el
+            límite de tamaño por archivo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /files/{id}:
     get:
@@ -511,6 +555,12 @@ paths:
               required: [name]
               properties:
                 name: { type: string }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "Cuota por miembro (§24). Ausente o null = el grupo no aporta cuota; 0 = ilimitada."
       responses:
         "201":
           description: Creado
@@ -520,6 +570,40 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { description: "Ya existe un grupo con ese nombre" }
+
+  /groups/{id}:
+    patch:
+      summary: Fijar la cuota por miembro de un grupo (admin, §24, ADR-036)
+      description: >
+        De momento es lo único que se puede cambiar de un grupo, así que
+        quota_bytes es obligatorio. Es un límite POR MIEMBRO, no un espacio
+        compartido: cada miembro puede usar hasta esa cantidad salvo cuota
+        propia; con varios grupos con cuota gana la más generosa.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quota_bytes]
+              properties:
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "null = el grupo deja de aportar cuota; 0 = ilimitada para sus miembros; > 0 = límite en bytes."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Group" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 
   /groups/{id}/members:
     post:
@@ -643,6 +727,7 @@ paths:
         "404": { description: "Carpeta inexistente o en la papelera" }
         "409": { description: "destination_occupied: ya hay un archivo con ese nombre (o algo suyo en la papelera del propietario, sin distinguirlo)" }
         "413": { description: "upload_too_large: el archivo supera el límite de tamaño del permiso" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del PROPIETARIO de la carpeta (los archivos son suyos, ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
 
   /public/shares/{token}:
     get:
@@ -745,6 +830,7 @@ paths:
         "409": { description: "destination_occupied: ya hay un archivo con ese nombre en la carpeta (o algo suyo en la papelera del propietario, sin distinguirlo); no se sobrescribe" }
         "410": { description: "Enlace revocado, expirado o agotado" }
         "413": { description: "El archivo supera el límite de tamaño del enlace" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del propietario del enlace (ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
 
   /public/client-updates/releases.json:
     get:
@@ -865,6 +951,22 @@ components:
         has_totp: { type: boolean }
         created_at: { type: string, format: date-time }
         last_login_at: { type: string, format: date-time, nullable: true }
+        quota_bytes:
+          type: integer
+          format: int64
+          description: "Cuota PROPIA del usuario (§24, ADR-036). Ausente = hereda del grupo o la global; 0 = ilimitada. El límite efectivo y el uso salen de GET /users/me/quota."
+
+    Quota:
+      type: object
+      description: Uso y límite de almacenamiento de un usuario (§24, ADR-036).
+      properties:
+        used_bytes: { type: integer, format: int64, description: "Huella total: files_bytes + trash_bytes + versions_bytes" }
+        files_bytes: { type: integer, format: int64 }
+        trash_bytes: { type: integer, format: int64 }
+        versions_bytes: { type: integer, format: int64 }
+        limit_bytes: { type: integer, format: int64, description: "Ausente si no tiene límite" }
+        source: { type: string, enum: [user, group, global, none], description: "De dónde sale el límite efectivo" }
+        group_name: { type: string, description: "El grupo que da el límite, si source=group" }
 
     Session:
       type: object
@@ -924,6 +1026,10 @@ components:
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        quota_bytes:
+          type: integer
+          format: int64
+          description: "Cuota por miembro del grupo (§24, ADR-036). Ausente = el grupo no aporta cuota; 0 = ilimitada para sus miembros."
 
     CreateShareRequest:
       type: object

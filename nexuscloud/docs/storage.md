@@ -102,6 +102,17 @@ Activado por defecto (`versioning.enabled: true`, `versioning.maxVersionsPerFile
 - **Límite automático** ([ADR-024](architecture/decisions/ADR-024-versionado-retencion-antiguedad-espacio.md)): al superar `maxVersionsPerFile`, o al superar `maxVersionAgeDays` de antigüedad, o al superar `maxVersionsTotalSizeBytes` de espacio total del historial (los tres `0` = sin límite), se purgan las versiones que sobren (contenido + fila) — política de limpieza automática de §15. Las tres políticas componen como "el más restrictivo gana" (se purga si CUALQUIERA lo pide), al revés que la retención de backups (ADR-017): son límites de protección de espacio en disco, no una promesa de cuánto historial conservar.
 - Borrar un archivo para siempre (`?permanent=true`, o purga por retención de la papelera) purga también todo su historial de versiones: no tiene sentido conservarlo sin el archivo al que pertenece.
 
+## Cuotas (§24)
+
+Sin ninguna configurada (el valor por defecto) no hay comprobación y nada cambia. Con cuotas ([ADR-036](architecture/decisions/ADR-036-cuotas-de-almacenamiento.md)):
+
+- **Qué cuenta**: la huella real de cada propietario en los pools —archivos activos + papelera + versiones anteriores—, calculada con `SUM` en el momento (`storage.SQLUsageRepository`), sin contadores que puedan desincronizarse tras una purga o un fallo a medias.
+- **Límite efectivo**: la cuota propia del usuario, si no la de su grupo (con varios grupos gana la más generosa; cada miembro puede usar hasta esa cantidad, no es un espacio compartido) y si no `storage.defaultQuotaBytes`. `NULL` = hereda, `0` = ilimitada, `>0` = bytes (`users.ResolveQuota`).
+- **Dónde se aplica**: en `FileService.Upload`, el único punto de escritura, así que quedan cubiertos la API, WebDAV, los enlaces públicos, las carpetas compartidas y la CLI. Mover y restaurar no cambian la huella y no se comprueban; restaurar un backup (`SkipQuota`) tampoco. Los archivos subidos a una carpeta ajena son del propietario y cuentan contra **su** cuota.
+- **Cómo se comprueba**: antes de leer el cuerpo (con `Content-Length`), durante la lectura (se corta al pasarse el espacio libre) y, definitivamente, al confirmar bajo un cerrojo por propietario, con el contenido ya escrito en staging. Sobrescribir libera lo anterior solo si no queda como versión (sin versionado, o contenido idéntico).
+- **Al pasarse**: `ErrQuotaExceeded` → `507 quota_exceeded` (REST y WebDAV). Estando por encima de la cuota solo se bloquean las subidas nuevas.
+- **Coste**: el uso se suma en cada consulta, con dos índices de cobertura: `idx_files_owner_usage` en `files` (migración 0011; MySQL lo necesita con `FORCE INDEX`) e `idx_file_versions_owner_usage` en `file_versions`, que lleva el propietario de cada versión desnormalizado (migración 0012), de modo que ninguna de las dos lecturas hace JOIN. Con 200 000 archivos y 40 000 versiones de un propietario cuesta 26 ms en PostgreSQL, 94 en SQLite y 89 en MySQL por consulta (una subida hace dos). Mediciones y garantías en el ADR-036.
+
 ## Compartición (§37)
 
 Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada por defecto (`sharing.enabled: true`) para usuario/grupo -- no añaden ninguna superficie sin autenticar. Los enlaces públicos, la única superficie de Sharing que no exige sesión, están **desactivados por defecto** (`sharing.publicLinksEnabled: false`, secure-by-default §3/§47, mismo precedente que `web.enabled`).

@@ -188,9 +188,18 @@ Cada usuario ve solo su propio árbol; no se expone «compartido conmigo».
 - **Sin propiedades muertas:** `PROPPATCH` responde 403.
 - **Bloqueos solo exclusivos y en memoria:** los compartidos dan 501, y todos
   se pierden al reiniciar el servidor.
-- **Sin cuotas:** `quota_bytes` se guarda en usuarios y grupos, pero ninguna
-  subida —ni la API ni WebDAV— lo aplica todavía; `PROPFIND` responde 404 a las
-  propiedades `quota-*`.
+- **Cuotas ([ADR-036](architecture/decisions/ADR-036-cuotas-de-almacenamiento.md)):**
+  una subida (`PUT`, o el destino de un `COPY`) que no cabe en la cuota del
+  usuario responde **507 Insufficient Storage** —el 405 que x/net da a
+  cualquier `PUT` fallido se sustituye— con el motivo en el cuerpo; con
+  `Content-Length` se rechaza sin leer el cuerpo. Estando por encima de la
+  cuota, leer, mover y borrar siguen funcionando. Con la papelera activa, un
+  `MOVE` con `Overwrite: T` sobre un archivo existente sube el contenido
+  encima y deja el origen en la papelera —que sigue contando—, así que cerca
+  del límite puede no caber; con `trash.enabled: false` no pasa. `PROPFIND` no
+  ofrece todavía las propiedades `quota-available-bytes`/`quota-used-bytes`
+  (RFC 4331), así que el Explorador de Windows y el Finder no muestran el
+  espacio libre de la unidad.
 - **Sin «compartido conmigo».**
 - **Los ficheros grandes dependen del proveedor de almacenamiento:** el
   provider de un pool debe permitir `Seek`; el local lo permite.

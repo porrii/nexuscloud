@@ -53,12 +53,21 @@ menos de 8 caracteres.
 
 ```
 nexuscloud users list
-nexuscloud users create --username <usuario> [--password '...'] [--role user]
+nexuscloud users create --username <usuario> [--password '...'] [--role user] [--quota <valor>]
 nexuscloud users disable <usuario>
 nexuscloud users enable <usuario>
-nexuscloud users edit <usuario> [--display-name <n>] [--email <e>]
+nexuscloud users edit <usuario> [--display-name <n>] [--email <e>] [--quota <valor>]
 nexuscloud users delete <usuario> --confirm
+nexuscloud users quota [<usuario>] [--detail]
 ```
+
+`--quota` fija la cuota de almacenamiento propia del usuario: un tamaño
+(`100GB`, `1.5TB`, `500MB` o bytes a secas; binarios, 1 GB = 1 GiB),
+`unlimited` (sin límite aunque el grupo o la global tengan uno) o `inherit`
+(quita la cuota propia y hereda). `users quota` muestra, por usuario, lo que
+ocupa (archivos + papelera + versiones), su cuota efectiva, el porcentaje y de
+dónde sale (`usuario`, `grupo:<nombre>` o `global`); `--detail` desglosa el uso.
+Guía completa en [`administracion.md`](administracion.md#cuotas-de-almacenamiento).
 
 `delete` es **irreversible** y en cascada (sesiones, pertenencia a
 grupos, invitaciones creadas por ese usuario, comparticiones, y los
@@ -87,9 +96,14 @@ Grupos (para poder compartir carpetas/archivos con varias personas a la
 vez en vez de una por una):
 
 ```
-nexuscloud users group create <nombre>
+nexuscloud users group create <nombre> [--quota <valor>]
+nexuscloud users group edit <grupo> --quota <valor>
 nexuscloud users group add-member <usuario> <grupo>
 ```
+
+La cuota de un grupo es un límite **por miembro** (cada miembro puede usar hasta
+esa cantidad salvo que tenga cuota propia), con los mismos valores que la del
+usuario. Si alguien está en varios grupos con cuota, vale la más generosa.
 
 Doble factor (TOTP, compatible con cualquier app autenticadora estándar —
 Google Authenticator, Aegis, 1Password, etc.). Se hace en dos pasos a

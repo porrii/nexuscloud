@@ -80,6 +80,27 @@ datos, así que actualizar es seguro incluso si el esquema cambió. Aun así,
 para una actualización importante, haz copia de `storage.dataDir` (o al
 menos de la base de datos) antes.
 
+**Migración 0011 (tamaños de 64 bits, cuotas).** En PostgreSQL y MySQL las
+columnas de tamaño en bytes eran de 32 bits —un máximo de 2 GiB por archivo y
+por cuota— y esta migración las ensancha (`users`/`groups.quota_bytes`,
+`files`/`file_versions.size_bytes`, `shares.max_upload_size_bytes`,
+`backup_jobs.total_bytes`) y añade los índices que usa el cálculo de uso. Ambos
+motores **reescriben la tabla** al cambiar el tipo (y `files`/`file_versions`
+son las grandes) con un bloqueo exclusivo: en una instalación con muchos
+millones de archivos puede tardar, así que hazla en una ventana tranquila y con
+copia previa. SQLite no necesita cambios (sus enteros ya son de 64 bits). Los
+datos existentes se conservan tal cual; la migración inversa solo funciona si
+ningún valor supera ya los 2 GiB.
+
+**Migración 0012 (propietario en cada versión).** `file_versions` pasa a llevar
+el propietario de cada versión, copiado de su archivo, para calcular el uso de
+un usuario sin un JOIN con todos sus archivos. Es una tabla mucho más pequeña
+que `files`: en PostgreSQL y MySQL añade la columna, la rellena y crea un
+índice; en SQLite reconstruye la tabla (única forma de declararla `NOT NULL`).
+Tarda segundos incluso con cientos de miles de versiones, y no toca los
+archivos ni su contenido. La migración inversa quita la columna y el índice sin
+perder ninguna versión.
+
 ## Activar la auto-actualización del cliente de escritorio (Windows)
 
 Por defecto está desactivada (secure by default, igual que la web o los
