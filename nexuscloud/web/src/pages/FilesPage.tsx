@@ -5,6 +5,7 @@ import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
 import ShareDialog from '../components/ShareDialog'
 import VersionHistoryDialog from '../components/VersionHistoryDialog'
+import { notifyUsageChanged } from '../quota'
 
 interface UploadProgress {
   key: string
@@ -79,6 +80,7 @@ export default function FilesPage() {
           setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, percent } : u)))
         })
         setUploads((prev) => prev.filter((u) => u.key !== key))
+        notifyUsageChanged()
         await load()
       } catch (err) {
         const message = err instanceof ApiClientError ? err.message : 'Error al subir el archivo.'
@@ -109,6 +111,7 @@ export default function FilesPage() {
         await api.deleteDirectory(pendingDelete.entry.id)
       }
       setPendingDelete(null)
+      notifyUsageChanged() // con papelera el espacio no se libera, pero el desglose cambia
       await load()
     } catch (err) {
       setPendingDelete(null)

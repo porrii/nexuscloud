@@ -15,6 +15,21 @@ export interface User {
   last_login_at?: string
 }
 
+export type QuotaSource = 'user' | 'group' | 'global' | 'none'
+
+// Quota refleja GET /users/me/quota (§24, ADR-036): lo que ocupa quien pregunta
+// (archivos + papelera + versiones anteriores) y su límite efectivo. limit_bytes
+// se omite si no tiene límite; source dice de dónde sale.
+export interface Quota {
+  used_bytes: number
+  files_bytes: number
+  trash_bytes: number
+  versions_bytes: number
+  limit_bytes?: number
+  source: QuotaSource
+  group_name?: string
+}
+
 export interface Session {
   id: string
   device?: string
@@ -258,6 +273,7 @@ export const api = {
     }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<User>('/api/v1/users/me'),
+  quota: () => request<Quota>('/api/v1/users/me/quota'),
 
   sessions: () => request<Session[]>('/api/v1/auth/sessions'),
   revokeSession: (id: string) => request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE' }),
