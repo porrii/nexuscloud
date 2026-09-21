@@ -111,6 +111,7 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Get("/shares", h.ListShares)
 		r.Delete("/shares/{id}", h.RevokeShare)
 		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
+		r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
 
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)

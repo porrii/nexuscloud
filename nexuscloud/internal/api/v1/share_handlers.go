@@ -154,6 +154,17 @@ func (h *Handlers) shareResponseExtra(ctx context.Context, s *storage.Share) sha
 	return extra
 }
 
+// sharedListingResponse añade al listado de una carpeta compartida si quien la
+// mira puede subir a ella y con qué límite por archivo (§37, ADR-035), para que
+// la interfaz sepa si ofrecer el botón de subir y qué tamaño anunciar. Son
+// campos nuevos y aditivos: los clientes que no los conocen los ignoran.
+// MaxUploadSizeBytes se omite si no hay límite (o si no puede subir).
+type sharedListingResponse struct {
+	listResponse
+	CanUpload          bool   `json:"can_upload"`
+	MaxUploadSizeBytes *int64 `json:"max_upload_size_bytes,omitempty"`
+}
+
 // ListSharedDirectory navega una carpeta a la que el usuario accede vía un
 // share (directo o de un ancestro), no por propiedad -- ver
 // storage.FileService.ListSharedDirectory.
@@ -166,9 +177,18 @@ func (h *Handlers) ListSharedDirectory(w http.ResponseWriter, r *http.Request) {
 		writeFileError(w, err)
 		return
 	}
-	out := listResponse{
-		Directories: make([]directoryResponse, 0, len(result.Directories)),
-		Files:       make([]fileResponse, 0, len(result.Files)),
+	upload, err := h.Files.SharedUploadPermission(r.Context(), u.ID, id)
+	if err != nil {
+		writeFileError(w, err)
+		return
+	}
+	out := sharedListingResponse{
+		listResponse: listResponse{
+			Directories: make([]directoryResponse, 0, len(result.Directories)),
+			Files:       make([]fileResponse, 0, len(result.Files)),
+		},
+		CanUpload:          upload.Allowed,
+		MaxUploadSizeBytes: upload.MaxSizeBytes,
 	}
 	for _, d := range result.Directories {
 		out.Directories = append(out.Directories, toDirectoryResponse(d))
@@ -177,6 +197,65 @@ func (h *Handlers) ListSharedDirectory(w http.ResponseWriter, r *http.Request) {
 		out.Files = append(out.Files, toFileResponse(f))
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// UploadToSharedDirectory recibe el contenido como cuerpo crudo, en streaming
+// y sin cargarlo entero en memoria, igual que UploadFile (§136-137). El destino
+// sale SOLO del ID de la carpeta de la URL: la autorización se re-deriva de la
+// base de datos en cada petición, sin ninguna subruta que el cliente pueda
+// manipular. El archivo queda en el árbol del propietario de la carpeta; quién
+// lo subió queda en la auditoría (§37, ADR-035).
+func (h *Handlers) UploadToSharedDirectory(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "El parámetro 'name' es obligatorio.")
+		return
+	}
+
+	meta, shareID, err := h.Files.UploadToSharedDirectory(r.Context(), storage.SharedUploadInput{
+		RequesterID: u.ID, DirectoryID: id, Name: name, Content: r.Body,
+	})
+	if err != nil {
+		writeSharedUploadError(w, err)
+		return
+	}
+
+	metadata := map[string]any{"name": meta.Name, "size_bytes": meta.SizeBytes, "via": "shared_directory", "owner_id": meta.OwnerID}
+	if shareID != "" {
+		metadata["share_id"] = shareID
+	}
+	h.AuditLog.Record(r.Context(), audit.EventUpload, u.ID, "file", meta.ID, security.ClientIP(r, h.TrustedProxies), metadata)
+	writeJSON(w, http.StatusCreated, toFileResponse(meta))
+}
+
+// writeNameUnavailable responde 409 cuando el nombre de una subida a una carpeta
+// ajena (compartida, o por enlace público) ya está ocupado. No distingue si lo
+// ocupa un archivo activo o algo de la papelera del propietario: quien sube no
+// debe averiguar qué ha borrado el propietario, ni el mensaje le invita a
+// «restaurarlo».
+func writeNameUnavailable(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "destination_occupied", "Ya hay un archivo con ese nombre en esta carpeta; no se sobrescribe.")
+}
+
+// writeSharedUploadError traduce los errores propios de subir a una carpeta
+// compartida (sin permiso de subida, nombre ocupado, archivo por encima del
+// límite, compartición desactivada) y delega el resto en los de cualquier
+// operación de archivos.
+func writeSharedUploadError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, storage.ErrDestinationOccupied), errors.Is(err, storage.ErrNameOccupiedByTrash):
+		writeNameUnavailable(w)
+	case errors.Is(err, storage.ErrShareUploadNotAllowed):
+		writeError(w, http.StatusForbidden, "upload_not_allowed", "Esta carpeta está compartida contigo sin permiso de subida.")
+	case errors.Is(err, storage.ErrShareUploadTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, "upload_too_large", "El archivo supera el límite de tamaño de esta carpeta compartida.")
+	case errors.Is(err, storage.ErrSharingDisabled):
+		writeError(w, http.StatusForbidden, "sharing_disabled", "La compartición está desactivada en esta instancia.")
+	default:
+		writeFileError(w, err)
+	}
 }
 
 func writeShareError(w http.ResponseWriter, err error) {
