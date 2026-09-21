@@ -70,8 +70,17 @@ security:
     loginPerMinute: 5
     apiPerMinute: 300
     publicLinkPerMinute: 20 # enlaces públicos de compartición (§37): objetivo de fuerza bruta sobre su contraseña, igual motivo que loginPerMinute
+    webdavPerMinute: 1200   # WebDAV (§43): cubo propio por IP, mucho más holgado que apiPerMinute -- un cliente WebDAV lanza decenas de PROPFIND por segundo
   corsAllowedOrigins: []  # nunca "*" (§69); añade aquí el origen de tu web/futuros clientes
   publicRegistrationEnabled: false   # §21: no cambiar salvo que sepas lo que haces
+  # Passkeys / WebAuthn (§25, ADR-033): segundo factor más fuerte que TOTP y
+  # login sin contraseña. Desactivado por defecto: sin un dominio real el
+  # navegador rechaza cualquier passkey. Con enabled=true, rpID y rpOrigin son
+  # obligatorios y rpOrigin debe ser https:// (o http://localhost en desarrollo).
+  webAuthn:
+    enabled: false
+    rpID: ""              # solo el dominio, sin esquema ni puerto: "nexuscloud.tu-dominio.com"
+    rpOrigin: ""          # el origen completo de la web: "https://nexuscloud.tu-dominio.com"
 
 # Papelera (§16): con enabled=false, eliminar es inmediato y permanente --
 # sin red de seguridad. La purga automática por retención corre en segundo
@@ -105,6 +114,20 @@ api:
 # binario tenga assets reales que embeber -- ver web/README.md.
 web:
   enabled: false
+
+# WebDAV (§43, ADR-034): monta tu espacio como unidad de red o úsalo desde
+# clientes estándar (Explorador de Windows, Finder, rclone, Cyberduck...).
+# Desactivado por defecto (§3, §169). Se sirve por el mismo puerto que la API,
+# bajo `path`. Se autentica con HTTP Basic usando tu usuario y un TOKEN DE
+# ACCESO WEBDAV (Cuenta > Acceso WebDAV en la web, o `nexuscloud users
+# webdav-token create --username <u>`), nunca con la contraseña de la cuenta:
+# así no se salta el segundo factor. Usa HTTPS: Basic envía el token en cada
+# petición. Detalle, límites conocidos y guía de clientes: docs/webdav.md.
+webdav:
+  enabled: false
+  path: "/webdav"         # prefijo de URL, sin barra final; no puede colgar de /api, /health ni /ready
+  readOnly: false         # true = solo OPTIONS/GET/HEAD/PROPFIND (consultar sin que ningún cliente escriba)
+  maxUploadSizeBytes: 0   # 0 = sin límite; si no, rechaza con 413 las subidas mayores
 
 logging:
   level: "info"    # trace | debug | info | warn | error | fatal

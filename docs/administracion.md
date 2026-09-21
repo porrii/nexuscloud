@@ -224,6 +224,48 @@ recuperación si se perdió la llave/el teléfono, mismo criterio que
 `users totp disable`. Si el usuario se queda sin ningún passkey y no
 tiene TOTP activado, el login vuelve a pedir solo contraseña.
 
+## Acceso WebDAV (unidad de red)
+
+Permite montar el espacio de un usuario como unidad de red o usarlo desde
+clientes estándar (Explorador de Windows, Finder, rclone, Cyberduck...).
+**Desactivado por defecto**:
+
+```yaml
+webdav:
+  enabled: true
+  path: "/webdav"          # se sirve por el mismo puerto que la API
+  readOnly: false          # true = solo consultar, nadie puede escribir
+  maxUploadSizeBytes: 0    # 0 = sin límite
+```
+
+Cada persona crea sus propios **tokens de acceso** (uno por dispositivo) en
+la web —Cuenta → Acceso WebDAV— y los usa como contraseña junto a su nombre
+de usuario. **La contraseña de la cuenta no vale por WebDAV**, a propósito:
+los clientes WebDAV no pueden hacer el segundo factor. **Usa HTTPS**: el
+token viaja en cada petición.
+
+Por CLI (por ejemplo, para preparar un dispositivo desde el servidor, o para
+cortar un acceso sin que la persona intervenga):
+
+```sh
+nexuscloud --config config.yaml users webdav-token create --username maria --label "portátil de casa"
+nexuscloud --config config.yaml users webdav-token list --username maria
+nexuscloud --config config.yaml users webdav-token revoke <id-del-token> --username maria
+```
+
+`create` imprime el token una sola vez. `list` muestra cuándo se usó cada
+uno por última vez, para detectar los que ya no usa nadie. `revoke` lo
+invalida al instante y es la vía de recuperación si un token se filtra.
+
+Lo que se sube por WebDAV pasa por la misma papelera, versionado y auditoría
+que la web. Un límite importante: **con la papelera activa, un nombre borrado
+no se puede reutilizar hasta restaurarlo, eliminarlo para siempre o que
+caduque la retención**; eso rompe a las aplicaciones que borran y recrean
+ficheros temporales con el mismo nombre. Si quieres WebDAV como unidad de red
+para trabajar con editores, `trash.enabled: false` lo evita a costa de la red
+de seguridad. Detalle completo, guía por cliente y límites conocidos en
+[`nexuscloud/docs/webdav.md`](../nexuscloud/docs/webdav.md).
+
 ## Papelera y versiones de otro usuario
 
 El administrador puede gestionar la papelera y el historial de

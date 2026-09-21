@@ -36,6 +36,9 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | POST | `/api/v1/auth/webauthn/login/finish?ceremony_id=&username=` | — | Cuerpo = respuesta cruda de `navigator.credentials.get()`; `username` solo si venía en el begin (segundo factor) |
 | GET | `/api/v1/auth/webauthn/credentials` | sesión | Lista los passkeys propios (nunca expone `credential_id`/`public_key`, §172) |
 | DELETE | `/api/v1/auth/webauthn/credentials/{id}` | sesión, propietario | Revoca un passkey propio |
+| POST | `/api/v1/auth/webdav/tokens` | sesión | `{label?}` → crea un token de acceso WebDAV (§43, ADR-034). La respuesta incluye `token` **una única vez** y `webdav_path` (donde está montado WebDAV); 400 si `label` pasa de 100 caracteres. Solo con `webdav.enabled=true`: con WebDAV desactivado estas tres rutas responden 404 |
+| GET | `/api/v1/auth/webdav/tokens` | sesión | Lista los tokens propios: `id`, `label`, `created_at`, `last_used_at` (nunca el token ni su hash, §172) |
+| DELETE | `/api/v1/auth/webdav/tokens/{id}` | sesión, propietario | Revoca un token propio (404 si no existe o no es tuyo, §198) |
 | GET | `/api/v1/users/me` | sesión | Usuario autenticado |
 | GET | `/api/v1/users` | admin | Lista usuarios |
 | POST | `/api/v1/users` | admin | Crea un usuario directamente |
@@ -75,6 +78,10 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |
 
 Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propio handler/repositorio, no solo la autenticación — acceder a un archivo ajeno por ID adivinado devuelve `403`, nunca el contenido (§198 IDOR).
+
+## WebDAV (fuera de `/api/v1`)
+
+El protocolo WebDAV en sí no es parte de la API REST: vive en `webdav.path` (por defecto `/webdav/`), con su propia autenticación —HTTP Basic con el usuario y un token de acceso WebDAV, nunca la contraseña de la cuenta— y su propio límite de tasa. Los tokens se gestionan con las tres rutas de arriba. Ver [webdav.md](webdav.md) y [ADR-034](architecture/decisions/ADR-034-webdav.md).
 
 ## Ejemplo: subir y descargar un archivo
 

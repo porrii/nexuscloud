@@ -121,6 +121,17 @@ nexuscloud users webauthn list --username <usuario>
 nexuscloud users webauthn revoke <id-del-passkey> --username <usuario>   # recupera el acceso si se perdió la llave/el teléfono
 ```
 
+Tokens de acceso WebDAV (requiere `webdav.enabled=true` en `config.yaml` —
+ver [`administracion.md`](administracion.md#acceso-webdav-unidad-de-red)).
+Son la contraseña que usa un cliente WebDAV (nunca la de la cuenta). A
+diferencia de los passkeys, sí se pueden crear por CLI:
+
+```
+nexuscloud users webdav-token create --username <usuario> [--label "portátil de casa"]   # imprime el token UNA vez
+nexuscloud users webdav-token list --username <usuario>                                   # id, nombre, creado, último uso
+nexuscloud users webdav-token revoke <id-del-token> --username <usuario>                 # lo invalida al instante
+```
+
 ## Archivos de un usuario (`files`)
 
 El día a día: subir, bajar, listar, mover y borrar archivos, en nombre de
