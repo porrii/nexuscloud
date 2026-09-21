@@ -29,6 +29,9 @@ type Repository interface {
 	GetGroupByID(ctx context.Context, id string) (*Group, error)
 	GetGroupByName(ctx context.Context, name string) (*Group, error)
 	ListGroups(ctx context.Context) ([]*Group, error)
+	// UpdateGroupQuota fija la cuota del grupo (nil = sin cuota propia del
+	// grupo, 0 = ilimitada). ErrNotFound si el grupo no existe.
+	UpdateGroupQuota(ctx context.Context, groupID string, quota *int64) error
 	AddUserToGroup(ctx context.Context, userID, groupID string) error
 	GroupsForUser(ctx context.Context, userID string) ([]Group, error)
 }
