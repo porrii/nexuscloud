@@ -196,6 +196,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		BackupReceiveToken: os.Getenv("NEXUSCLOUD_BACKUP_RECEIVE_TOKEN"),
 		ClientUpdatesProxy: clientUpdatesProxy,
 		WebAuthn:           webauthnSvc,
+		WebDAVTokens:       webdavTokens,
+		WebDAVPath:         cfg.WebDAV.Path,
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute

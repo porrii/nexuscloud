@@ -9,6 +9,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/clientupdates"
 	"github.com/porrii/nexuscloud/internal/storage"
 	"github.com/porrii/nexuscloud/internal/users"
+	"github.com/porrii/nexuscloud/internal/webdav"
 )
 
 // Handlers agrupa las dependencias de todos los handlers de la API v1. Se
@@ -44,4 +45,13 @@ type Handlers struct {
 	// NewRouter ni siquiera registra esas rutas, mismo criterio exacto que
 	// ClientUpdatesProxy.
 	WebAuthn *auth.WebAuthnService
+	// WebDAVTokens (§43, ADR-034): solo se usa si webdav.enabled=true en
+	// config.yaml -- ver webdav_handlers.go. Con nil (por defecto),
+	// NewRouter ni siquiera registra las rutas de gestión de tokens.
+	WebDAVTokens *webdav.TokenService
+	// WebDAVPath es la ruta donde está montado WebDAV (webdav.path). Se
+	// devuelve al crear un token para que la interfaz pueda mostrar la URL
+	// real a configurar en el cliente en vez de suponer "/webdav". Solo
+	// tiene efecto si WebDAVTokens != nil.
+	WebDAVPath string
 }

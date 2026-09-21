@@ -14,6 +14,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/config"
 	"github.com/porrii/nexuscloud/internal/idgen"
 	"github.com/porrii/nexuscloud/internal/users"
+	"github.com/porrii/nexuscloud/internal/webdav"
 )
 
 // runUsers ejecuta newUsersCmd() de forma aislada, mismo patrón que
@@ -451,5 +452,89 @@ func TestUsersInvitationListEmptyByDefault(t *testing.T) {
 	}
 	if !strings.Contains(out, "sin invitaciones") {
 		t.Fatalf("esperaba \"(sin invitaciones)\", obtuve:\n%s", out)
+	}
+}
+
+// parseWebDAVToken extrae el token que imprime "webdav-token create" (el
+// único campo con el prefijo nwd_).
+func parseWebDAVToken(t *testing.T, createOutput string) string {
+	t.Helper()
+	for _, field := range strings.Fields(createOutput) {
+		if strings.HasPrefix(field, "nwd_") {
+			return field
+		}
+	}
+	t.Fatalf("no encontré ningún token nwd_ en la salida:\n%s", createOutput)
+	return ""
+}
+
+func TestUsersWebdavTokenCreateListRevoke(t *testing.T) {
+	username := newCLITestUser(t)
+
+	out, err := runUsers(t, "webdav-token", "list", "--username", username)
+	if err != nil || !strings.Contains(out, "no tiene tokens") {
+		t.Fatalf("list inicial: err %v, salida %q; esperado el aviso de que no tiene tokens", err, out)
+	}
+
+	out, err = runUsers(t, "webdav-token", "create", "--username", username, "--label", "portátil de casa")
+	if err != nil {
+		t.Fatalf("create falló: %v (salida: %s)", err, out)
+	}
+	token := parseWebDAVToken(t, out)
+	// El config de prueba deja WebDAV desactivado (por defecto): debe avisar.
+	if !strings.Contains(out, "webdav.enabled=false") {
+		t.Errorf("create debería avisar de que WebDAV está desactivado:\n%s", out)
+	}
+
+	// El token impreso es un token VÁLIDO de verdad, no solo texto con pinta de token.
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("config.Load falló: %v", err)
+	}
+	sqlDB, userRepo, err := openUsersRepo(cfg, false)
+	if err != nil {
+		t.Fatalf("openUsersRepo falló: %v", err)
+	}
+	svc := openWebDAVTokenService(cfg, sqlDB, userRepo)
+	if _, err := svc.Authenticate(context.Background(), username, token); err != nil {
+		t.Fatalf("el token creado por el CLI debería autenticar: %v", err)
+	}
+	sqlDB.Close()
+
+	out, err = runUsers(t, "webdav-token", "list", "--username", username)
+	if err != nil || !strings.Contains(out, "portátil de casa") {
+		t.Fatalf("list tras crear: err %v, salida %q", err, out)
+	}
+	if strings.Contains(out, token) {
+		t.Error("list nunca debe mostrar el token en claro")
+	}
+	id := strings.Fields(out)[0]
+
+	if out, err := runUsers(t, "webdav-token", "revoke", id, "--username", username); err != nil {
+		t.Fatalf("revoke falló: %v (salida: %s)", err, out)
+	}
+	sqlDB, userRepo, err = openUsersRepo(cfg, false)
+	if err != nil {
+		t.Fatalf("openUsersRepo falló: %v", err)
+	}
+	defer sqlDB.Close()
+	if _, err := openWebDAVTokenService(cfg, sqlDB, userRepo).Authenticate(context.Background(), username, token); !errors.Is(err, webdav.ErrInvalidCredentials) {
+		t.Errorf("tras revocar: err = %v, esperado ErrInvalidCredentials", err)
+	}
+}
+
+func TestUsersWebdavTokenRevokeRejectsUnknownToken(t *testing.T) {
+	username := newCLITestUser(t)
+	if _, err := runUsers(t, "webdav-token", "revoke", "token-que-no-existe", "--username", username); err == nil {
+		t.Fatal("esperaba error al revocar un token inexistente")
+	}
+}
+
+func TestUsersWebdavTokenCommandsRequireUsername(t *testing.T) {
+	newCLITestUser(t)
+	for _, sub := range [][]string{{"create"}, {"list"}, {"revoke", "x"}} {
+		if _, err := runUsers(t, append([]string{"webdav-token"}, sub...)...); err == nil {
+			t.Errorf("webdav-token %v sin --username debería fallar", sub)
+		}
 	}
 }

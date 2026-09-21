@@ -79,6 +79,14 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Delete("/auth/webauthn/credentials/{id}", h.RevokeWebAuthnCredential)
 		}
 
+		// Tokens de acceso WebDAV (§43, ADR-034): la contraseña que usan los
+		// clientes WebDAV por HTTP Basic. Solo con webdav.enabled=true.
+		if h.WebDAVTokens != nil {
+			r.Post("/auth/webdav/tokens", h.CreateWebDAVToken)
+			r.Get("/auth/webdav/tokens", h.ListWebDAVTokens)
+			r.Delete("/auth/webdav/tokens/{id}", h.RevokeWebDAVToken)
+		}
+
 		r.Get("/users/me", h.Me)
 
 		r.Get("/files", h.ListFiles)
