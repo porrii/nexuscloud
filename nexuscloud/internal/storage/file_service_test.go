@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -654,6 +655,83 @@ func TestDeleteDirectoryRemovesEmptyDirectory(t *testing.T) {
 	}
 	if len(got.Directories) != 0 {
 		t.Errorf("la carpeta debería haber desaparecido del listado: %+v", got.Directories)
+	}
+}
+
+// Con la papelera activa, Delete de un archivo es solo una marca en base de
+// datos: el contenido sigue físicamente en su carpeta. DeleteDirectory
+// documenta que una carpeta con solo elementos en la papelera "cuenta como
+// vacía", pero retirar su marcador físico con os.Remove fallaba con
+// "directorio no vacío" -- el usuario no podía borrar una carpeta después de
+// borrar todo lo que había dentro.
+func TestDeleteDirectoryWhoseFilesAreAllInTheTrash(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	file, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Proyectos", Name: "notas.txt", Content: bytes.NewReader([]byte("contenido"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, file.ID); err != nil {
+		t.Fatalf("Delete del archivo falló: %v", err)
+	}
+
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory de una carpeta cuyo único contenido está en la papelera falló: %v", err)
+	}
+
+	// Nada se ha destruido: restaurar carpeta y archivo devuelve el contenido.
+	if err := env.svc.RestoreDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("RestoreDirectory falló: %v", err)
+	}
+	if err := env.svc.RestoreFile(ctx, owner, file.ID); err != nil {
+		t.Fatalf("RestoreFile falló: %v", err)
+	}
+	_, rc, err := env.svc.Download(ctx, owner, file.ID)
+	if err != nil {
+		t.Fatalf("Download tras restaurar falló: %v", err)
+	}
+	if got := string(readAll(t, rc)); got != "contenido" {
+		t.Errorf("contenido tras restaurar = %q", got)
+	}
+}
+
+// Borrar para siempre lo que hay en la papelera no debe dejar carpetas
+// físicas huérfanas en el pool.
+func TestPermanentlyDeletingATrashedDirectoryLeavesNoOrphanFolderOnDisk(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t, true)
+	owner := env.user(t, "user-1")
+
+	dir, err := env.svc.Mkdir(ctx, owner, "/", "Proyectos", "")
+	if err != nil {
+		t.Fatalf("Mkdir falló: %v", err)
+	}
+	file, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/Proyectos", Name: "notas.txt", Content: bytes.NewReader([]byte("x"))})
+	if err != nil {
+		t.Fatalf("Upload falló: %v", err)
+	}
+	if err := env.svc.Delete(ctx, owner, file.ID); err != nil {
+		t.Fatalf("Delete del archivo falló: %v", err)
+	}
+	if err := env.svc.DeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("DeleteDirectory falló: %v", err)
+	}
+
+	if err := env.svc.PermanentlyDeleteFile(ctx, owner, file.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteFile falló: %v", err)
+	}
+	if err := env.svc.PermanentlyDeleteDirectory(ctx, owner, dir.ID); err != nil {
+		t.Fatalf("PermanentlyDeleteDirectory falló: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(env.poolDir, owner, "Proyectos")); !os.IsNotExist(err) {
+		t.Errorf("la carpeta física debería haberse retirado del pool: err = %v", err)
 	}
 }
 
