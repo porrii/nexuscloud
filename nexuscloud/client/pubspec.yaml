@@ -49,7 +49,7 @@ dependencies:
   file_selector: ^1.1.0
   crypto: ^3.0.7
   window_manager: ^0.5.2
-  tray_manager: ^0.5.3
+  tray_manager: ^0.7.0
   # Arrancar con Windows (slice 10): sin el paquete `launch_at_startup` --
   # su única versión publicada fija win32_registry ^2.0.0 (incompatible con
   # el win32 ^6.0.1 que ya exige flutter_secure_storage) y forzar la
