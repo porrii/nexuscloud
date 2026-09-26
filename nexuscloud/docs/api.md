@@ -4,7 +4,9 @@ Base: `/api/v1`. Versionada (§42, §187): cambios incompatibles llegarán como 
 
 ## Autenticación
 
-Bearer token (recomendado para clientes) o cookie `nexuscloud_session` (`HttpOnly`, `SameSite=Lax`, `Secure` cuando la conexión es TLS) — ambas formas aceptan el mismo token, obtenido de `POST /auth/login`. El token se muestra una única vez en la respuesta de login (§78); solo se persiste su hash.
+Bearer token (recomendado para clientes) o cookie `nexuscloud_session` (`HttpOnly`, `SameSite=Lax`, `Secure` cuando la conexión es TLS). El token es el de sesión, obtenido de `POST /auth/login`, y se muestra una única vez en esa respuesta; solo se persiste su hash.
+
+También se acepta como Bearer un **token de API** (§78, ADR-037), creado por el propio usuario ya autenticado en `/auth/api-tokens` — con nombre, expiración opcional y revocación propias, y de alcance todo-o-nada (actúa exactamente como su propietario en cualquier endpoint marcado como "sesión" en la tabla siguiente, no solo en los suyos). Útil para scripts e integraciones que no deben volver a pasar por contraseña + 2FA/passkey cada vez que expira una sesión normal. Se reconoce por su prefijo `nat_` (el de sesión no lleva prefijo); como el de sesión, se muestra una única vez al crearlo y solo se persiste su hash.
 
 ```
 Authorization: Bearer <token>
@@ -39,6 +41,9 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | POST | `/api/v1/auth/webdav/tokens` | sesión | `{label?}` → crea un token de acceso WebDAV (§43, ADR-034). La respuesta incluye `token` **una única vez** y `webdav_path` (donde está montado WebDAV); 400 si `label` pasa de 100 caracteres. Solo con `webdav.enabled=true`: con WebDAV desactivado estas tres rutas responden 404 |
 | GET | `/api/v1/auth/webdav/tokens` | sesión | Lista los tokens propios: `id`, `label`, `created_at`, `last_used_at` (nunca el token ni su hash, §172) |
 | DELETE | `/api/v1/auth/webdav/tokens/{id}` | sesión, propietario | Revoca un token propio (404 si no existe o no es tuyo, §198) |
+| POST | `/api/v1/auth/api-tokens` | sesión | `{label?, expires_at?}` → crea un token de API (§78, ADR-037), alcance todo-o-nada. La respuesta incluye `token` **una única vez**; `expires_at` ausente o `null` = nunca expira; 400 si `label` pasa de 100 caracteres. Siempre disponible (sin opción de config que lo desactive) |
+| GET | `/api/v1/auth/api-tokens` | sesión | Lista los tokens propios: `id`, `label`, `created_at`, `expires_at`, `last_used_at` (nunca el token ni su hash, §172) |
+| DELETE | `/api/v1/auth/api-tokens/{id}` | sesión, propietario | Revoca un token propio (404 si no existe o no es tuyo, §198) |
 | GET | `/api/v1/users/me` | sesión | Usuario autenticado |
 | GET | `/api/v1/users/me/quota` | sesión | Uso y límite de almacenamiento de quien pregunta (§24, [ADR-036](architecture/decisions/ADR-036-cuotas-de-almacenamiento.md)): `{used_bytes, files_bytes, trash_bytes, versions_bytes, limit_bytes?, source, group_name?}`. El uso es la huella real (archivos + papelera + versiones); `limit_bytes` se omite si no hay límite; `source` es `user`, `group`, `global` o `none`. Endpoint aparte de `/users/me` porque calcula sumas sobre los archivos |
 | GET | `/api/v1/users` | admin | Lista usuarios |

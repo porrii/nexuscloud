@@ -366,6 +366,32 @@ para trabajar con editores, `trash.enabled: false` lo evita a costa de la red
 de seguridad. Detalle completo, guía por cliente y límites conocidos en
 [`nexuscloud/docs/webdav.md`](../nexuscloud/docs/webdav.md).
 
+## Tokens de API
+
+Para scripts e integraciones que hablan con la API REST sin pasar por el
+navegador (§78, ADR-037). A diferencia del acceso WebDAV, **siempre están
+disponibles** (no hay un `enabled` que los desactive) y el token actúa
+exactamente como su propietario en cualquier endpoint: no tienen permisos
+más finos que el resto de la cuenta.
+
+Cada persona crea los suyos en la web —Cuenta → Tokens de API—, con un
+nombre y, si quiere, una expiración (nunca / 30 días / 90 días / 1 año). Se
+usan como cabecera `Authorization: Bearer <token>` contra cualquier ruta de
+`/api/v1`.
+
+Por CLI:
+
+```sh
+nexuscloud --config config.yaml users api-token create --username maria --label "script de backup" --expires-in 90d
+nexuscloud --config config.yaml users api-token list --username maria
+nexuscloud --config config.yaml users api-token revoke <id-del-token> --username maria
+```
+
+`create` imprime el token una sola vez; sin `--expires-in` no caduca nunca.
+`list` muestra la expiración y el último uso, para detectar los que ya no
+usa nadie. `revoke` lo invalida al instante y es la vía de recuperación si
+un token se filtra.
+
 ## Papelera y versiones de otro usuario
 
 El administrador puede gestionar la papelera y el historial de

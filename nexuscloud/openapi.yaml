@@ -73,6 +73,49 @@ paths:
         "204": { description: Sesión revocada }
         "404": { $ref: "#/components/responses/Error" }
 
+  /auth/api-tokens:
+    get:
+      summary: Listar los tokens de API del usuario autenticado (§78, ADR-037)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiToken" }
+    post:
+      summary: Crear un token de API (alcance todo-o-nada; se muestra una única vez)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiToken"
+                  - type: object
+                    properties:
+                      token: { type: string, description: "Solo aparece aquí; nunca se vuelve a mostrar" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /auth/api-tokens/{id}:
+    delete:
+      summary: Revocar un token de API propio
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Token revocado }
+        "404": { $ref: "#/components/responses/Error" }
+
   /auth/totp/enroll:
     post:
       summary: Generar un secreto TOTP para activar 2FA
@@ -977,6 +1020,15 @@ components:
         created_at: { type: string, format: date-time }
         last_seen_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+
+    ApiToken:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
 
     Invitation:
       type: object

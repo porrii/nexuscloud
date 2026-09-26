@@ -65,6 +65,23 @@ export interface CreatedWebDAVToken extends WebDAVToken {
   webdav_path: string
 }
 
+// ApiToken refleja apiTokenResponse (internal/api/v1/api_token_handlers.go):
+// nunca expone el hash (§172). CreatedApiToken añade el token en claro, que
+// solo viene en la respuesta de creación, una única vez (§78, ADR-037). A
+// diferencia del token WebDAV, autentica contra la API REST completa (no
+// solo WebDAV) y admite una expiración opcional (expires_at).
+export interface ApiToken {
+  id: string
+  label: string
+  created_at: string
+  expires_at?: string
+  last_used_at?: string
+}
+
+export interface CreatedApiToken extends ApiToken {
+  token: string
+}
+
 export interface DirectoryEntry {
   id: string
   parent_path: string
@@ -343,6 +360,17 @@ export const api = {
   createWebDAVToken: (label: string) =>
     request<CreatedWebDAVToken>('/api/v1/auth/webdav/tokens', { method: 'POST', body: JSON.stringify({ label }) }),
   revokeWebDAVToken: (id: string) => request<void>(`/api/v1/auth/webdav/tokens/${id}`, { method: 'DELETE' }),
+
+  // Tokens de API (§78, ADR-037): acceso todo-o-nada a la API REST completa
+  // -- el token actúa exactamente como el usuario. A diferencia de WebDAV,
+  // siempre están disponibles (sin opción de config que los desactive).
+  apiTokens: () => request<ApiToken[]>('/api/v1/auth/api-tokens'),
+  createApiToken: (label: string, expiresAt?: string) =>
+    request<CreatedApiToken>('/api/v1/auth/api-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ label, expires_at: expiresAt }),
+    }),
+  revokeApiToken: (id: string) => request<void>(`/api/v1/auth/api-tokens/${id}`, { method: 'DELETE' }),
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
   upload: uploadWithProgress,

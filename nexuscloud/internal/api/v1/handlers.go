@@ -20,6 +20,11 @@ type Handlers struct {
 	Invitations    *auth.InvitationService
 	InvitationRepo auth.InvitationRepository
 	SessionRepo    auth.SessionRepository
+	// APITokens (§78, ADR-037): tokens de acceso a la API REST completa, de
+	// alcance todo-o-nada. A diferencia de WebDAVTokens, no depende de
+	// ninguna opción de config -- siempre está disponible, como las
+	// sesiones.
+	APITokens      *auth.APITokenService
 	UserSvc        *users.Service
 	UserRepo       users.Repository
 	Files          *storage.FileService

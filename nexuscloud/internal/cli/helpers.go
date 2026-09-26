@@ -19,6 +19,13 @@ import (
 	"github.com/porrii/nexuscloud/internal/users"
 )
 
+// openAPITokenService abre el servicio de tokens de API (§78, ADR-037)
+// sobre la conexión ya abierta -- mismo patrón que openWebDAVTokenService
+// (users_cmd.go), pero sin ninguna opción de config que lo desactive.
+func openAPITokenService(cfg *config.Config, sqlDB *sql.DB, userRepo users.Repository) *auth.APITokenService {
+	return auth.NewAPITokenService(auth.NewSQLAPITokenRepository(db.Wrap(cfg.Database.Driver, sqlDB)), userRepo, nil)
+}
+
 // openUsersRepo abre la base de datos configurada (aplicando migraciones si
 // migrate=true) y devuelve tanto la conexión cruda (para poder cerrarla)
 // como un repositorio de usuarios listo para usar. Común a admin/users/doctor.

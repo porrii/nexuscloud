@@ -23,7 +23,8 @@ func newUsersCmd() *cobra.Command {
 		Short: "Gestión de usuarios (§20-21)",
 	}
 	cmd.AddCommand(newUsersListCmd(), newUsersCreateCmd(), newUsersDisableCmd(), newUsersEnableCmd(),
-		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersQuotaCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(), newUsersWebdavTokenCmd(), newUsersInvitationCmd())
+		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersQuotaCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(),
+		newUsersWebdavTokenCmd(), newUsersAPITokenCmd(), newUsersInvitationCmd())
 	return cmd
 }
 

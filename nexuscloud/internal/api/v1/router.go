@@ -72,6 +72,13 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Post("/auth/totp/enroll", h.EnrollTOTP)
 		r.Post("/auth/totp/verify", h.VerifyTOTP)
 
+		// Tokens de API (§78, ADR-037): acceso todo-o-nada a la API REST
+		// completa, sin la opción de config que sí tiene WebDAV -- siempre
+		// disponibles, como las sesiones.
+		r.Post("/auth/api-tokens", h.CreateAPIToken)
+		r.Get("/auth/api-tokens", h.ListAPITokens)
+		r.Delete("/auth/api-tokens/{id}", h.RevokeAPIToken)
+
 		if h.WebAuthn != nil {
 			r.Post("/auth/webauthn/register/begin", h.BeginWebAuthnRegistration)
 			r.Post("/auth/webauthn/register/finish", h.FinishWebAuthnRegistration)

@@ -41,6 +41,8 @@ const (
 	// estos tres son propios del módulo.
 	EventWebDAVTokenCreated = "webdav_token_created"
 	EventWebDAVTokenRevoked = "webdav_token_revoked"
+	EventAPITokenCreated    = "api_token_created"
+	EventAPITokenRevoked    = "api_token_revoked"
 	EventWebDAVAuthFailed   = "webdav_auth_failed"
 )
 

@@ -87,6 +87,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	userRepo := users.NewSQLRepository(conn)
 	sessionRepo := auth.NewSQLSessionRepository(conn)
+	apiTokenRepo := auth.NewSQLAPITokenRepository(conn)
 	invitationRepo := auth.NewSQLInvitationRepository(conn)
 	webauthnCredRepo := auth.NewSQLWebAuthnCredentialRepository(conn)
 	webauthnCeremonyRepo := auth.NewSQLWebAuthnCeremonyRepository(conn)
@@ -112,6 +113,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	hasher := auth.NewHasher(cfg.Security.Argon2)
 	userSvc := users.NewService(userRepo, users.WithDefaultQuota(cfg.Storage.DefaultQuotaBytes))
 	authenticator := auth.NewAuthenticatorFromConfig(userRepo, sessionRepo, webauthnCredRepo, cfg, logger)
+	// APITokens (§78, ADR-037): siempre disponible, sin opción de config que
+	// lo desactive -- mismo criterio que las sesiones, no el de WebDAV.
+	apiTokenSvc := auth.NewAPITokenService(apiTokenRepo, userRepo, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
@@ -180,6 +184,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		Invitations:    invitationSvc,
 		InvitationRepo: invitationRepo,
 		SessionRepo:    sessionRepo,
+		APITokens:      apiTokenSvc,
 		UserSvc:        userSvc,
 		UserRepo:       userRepo,
 		Files:          fileSvc,

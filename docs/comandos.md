@@ -146,6 +146,17 @@ nexuscloud users webdav-token list --username <usuario>                         
 nexuscloud users webdav-token revoke <id-del-token> --username <usuario>                 # lo invalida al instante
 ```
 
+Tokens de API (§78, ADR-037) — siempre disponibles, sin opción de config que
+los desactive. El token actúa exactamente como el usuario en cualquier
+endpoint (alcance todo-o-nada); ver
+[`administracion.md`](../docs/administracion.md#tokens-de-api):
+
+```
+nexuscloud users api-token create --username <usuario> [--label "script"] [--expires-in 30d|90d|1y|never]   # imprime el token UNA vez
+nexuscloud users api-token list --username <usuario>                                                          # id, nombre, creado, expira, último uso
+nexuscloud users api-token revoke <id-del-token> --username <usuario>                                       # lo invalida al instante
+```
+
 ## Archivos de un usuario (`files`)
 
 El día a día: subir, bajar, listar, mover y borrar archivos, en nombre de
