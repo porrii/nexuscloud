@@ -102,6 +102,23 @@ export default function FilesPage() {
     }
   }
 
+  // toggleFavorite (§87, ADR-038): recarga el listado tras cambiar, igual
+  // criterio que el resto de acciones de esta página (crear carpeta,
+  // borrar...) -- así favorite_id siempre sale de la verdad del servidor,
+  // nunca de una actualización optimista local.
+  async function toggleFavorite(entry: { id: string; favorite_id?: string }, resourceType: 'file' | 'directory') {
+    try {
+      if (entry.favorite_id) {
+        await api.removeFavorite(entry.favorite_id)
+      } else {
+        await api.addFavorite(resourceType, entry.id)
+      }
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : 'No se pudo actualizar el favorito.')
+    }
+  }
+
   async function handleConfirmDelete() {
     if (!pendingDelete) return
     try {
@@ -254,6 +271,17 @@ export default function FilesPage() {
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(d.created_at)}</td>
                   <td className="px-4 py-2 text-right">
                     <button
+                      onClick={() => void toggleFavorite(d, 'directory')}
+                      title={d.favorite_id ? 'Quitar de favoritos' : 'Marcar como favorito'}
+                      className={`mr-3 rounded px-2 py-1 text-xs ${
+                        d.favorite_id
+                          ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950'
+                          : 'invisible text-slate-400 hover:bg-slate-100 group-hover:visible dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {d.favorite_id ? '★' : '☆'}
+                    </button>
+                    <button
                       onClick={() => setShareTarget({ id: d.id, name: d.name, isDirectory: true })}
                       className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
                     >
@@ -279,6 +307,17 @@ export default function FilesPage() {
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatBytes(f.size_bytes)}</td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(f.updated_at)}</td>
                   <td className="px-4 py-2 text-right">
+                    <button
+                      onClick={() => void toggleFavorite(f, 'file')}
+                      title={f.favorite_id ? 'Quitar de favoritos' : 'Marcar como favorito'}
+                      className={`mr-3 rounded px-2 py-1 text-xs ${
+                        f.favorite_id
+                          ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950'
+                          : 'invisible text-slate-400 hover:bg-slate-100 group-hover:visible dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {f.favorite_id ? '★' : '☆'}
+                    </button>
                     <a
                       href={api.downloadUrl(f.id)}
                       download={f.name}

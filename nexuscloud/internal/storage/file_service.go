@@ -60,6 +60,9 @@ type FileService struct {
 	quotaResolver QuotaResolver
 	usage         UsageRepository
 	owners        ownerLocks
+
+	// Favoritos (§87, ADR-038): nil = sin favoritos activados, ver WithFavorites.
+	favorites FavoriteRepository
 }
 
 func NewFileService(

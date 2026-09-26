@@ -44,6 +44,13 @@ const (
 	EventAPITokenCreated    = "api_token_created"
 	EventAPITokenRevoked    = "api_token_revoked"
 	EventWebDAVAuthFailed   = "webdav_auth_failed"
+
+	// Favoritos (§87, ADR-038): NO entran en el feed de "Recientes" (§88) --
+	// marcar un favorito no es la clase de actividad que describe su
+	// ejemplo ("Ivan subió: documento.pdf"). Se auditan igual que el resto
+	// de altas/bajas de credenciales/comparticiones por consistencia.
+	EventFavoriteAdded   = "favorite_added"
+	EventFavoriteRemoved = "favorite_removed"
 )
 
 type Event struct {
@@ -60,4 +67,8 @@ type Event struct {
 type Repository interface {
 	RecordEvent(ctx context.Context, e *Event) error
 	ListEvents(ctx context.Context, limit, offset int) ([]*Event, error)
+	// ListEventsForActor da el feed de "Recientes" (§88, ADR-038): eventos
+	// de actorUserID cuyo event_type esté en eventTypes (nunca vacío -- qué
+	// cuenta como "actividad" lo decide el llamador, no este paquete).
+	ListEventsForActor(ctx context.Context, actorUserID string, eventTypes []string, limit, offset int) ([]*Event, error)
 }

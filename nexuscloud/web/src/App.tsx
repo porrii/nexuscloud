@@ -3,6 +3,7 @@ import { AuthProvider } from './auth/AuthContext'
 import RequireAuth from './auth/RequireAuth'
 import AppShell from './components/AppShell'
 import AccountPage from './pages/AccountPage'
+import FavoritesPage from './pages/FavoritesPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
 import PublicSharePage from './pages/PublicSharePage'
@@ -26,6 +27,7 @@ export default function App() {
           >
             <Route path="/" element={<FilesPage />} />
             <Route path="/shared" element={<SharedPage />} />
+            <Route path="/favorites" element={<FavoritesPage />} />
             <Route path="/trash" element={<TrashPage />} />
             <Route path="/account" element={<AccountPage />} />
           </Route>

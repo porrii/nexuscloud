@@ -63,6 +63,10 @@ type directoryResponse struct {
 	Name       string     `json:"name"`
 	CreatedAt  time.Time  `json:"created_at"`
 	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	// FavoriteID (§87, ADR-038): presente = favorito, y es el ID a usar
+	// para quitarlo (DELETE /favorites/{id}). Campo aditivo, solo lo anota
+	// ListFiles (árbol propio y activo) -- ausente en trash/shared/versiones.
+	FavoriteID *string `json:"favorite_id,omitempty"`
 }
 
 func toDirectoryResponse(d *storage.Directory) directoryResponse {
@@ -79,6 +83,8 @@ type fileResponse struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	// FavoriteID (§87, ADR-038): ver el mismo campo en directoryResponse.
+	FavoriteID *string `json:"favorite_id,omitempty"`
 }
 
 func toFileResponse(f *storage.FileMeta) fileResponse {

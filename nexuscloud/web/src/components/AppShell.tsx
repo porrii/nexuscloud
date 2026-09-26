@@ -26,6 +26,9 @@ export default function AppShell() {
           <NavLink to="/shared" className={navLinkClasses}>
             Compartido
           </NavLink>
+          <NavLink to="/favorites" className={navLinkClasses}>
+            Favoritos
+          </NavLink>
           <NavLink to="/trash" className={navLinkClasses}>
             Papelera
           </NavLink>

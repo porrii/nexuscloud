@@ -26,6 +26,7 @@ type testEnv struct {
 	directories DirectoryRepository
 	versions    VersionRepository
 	shares      ShareRepository
+	favorites   FavoriteRepository
 	pools       *SQLPoolRepository
 	poolDir     string
 	provider    *LocalFilesystemProvider
@@ -79,16 +80,18 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	directories := NewSQLDirectoryRepository(conn)
 	versions := NewSQLVersionRepository(conn)
 	shares := NewSQLShareRepository(conn)
+	favorites := NewSQLFavoriteRepository(conn)
 	userRepo := users.NewSQLRepository(conn)
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
 			trashEnabled, versioningEnabled, maxVersionsPerFile, maxVersionAgeDays, maxVersionsTotalSizeBytes,
-			sharingEnabled, publicLinksEnabled),
+			sharingEnabled, publicLinksEnabled, WithFavorites(favorites)),
 		files:       files,
 		directories: directories,
 		versions:    versions,
 		shares:      shares,
+		favorites:   favorites,
 		pools:       pools,
 		poolDir:     poolDir,
 		provider:    provider,

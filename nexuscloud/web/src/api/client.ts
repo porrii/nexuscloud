@@ -88,6 +88,9 @@ export interface DirectoryEntry {
   name: string
   created_at: string
   deleted_at?: string
+  // favorite_id (§87, ADR-038): presente = favorito, y es el ID a pasar a
+  // api.removeFavorite. Solo lo anota GET /files (árbol propio y activo).
+  favorite_id?: string
 }
 
 export interface FileEntry {
@@ -100,11 +103,32 @@ export interface FileEntry {
   created_at: string
   updated_at: string
   deleted_at?: string
+  favorite_id?: string
 }
 
 export interface ListResult {
   directories: DirectoryEntry[]
   files: FileEntry[]
+}
+
+// Favorite refleja favoriteResponse (internal/api/v1/favorite_handlers.go).
+export interface Favorite {
+  id: string
+  resource_type: 'file' | 'directory'
+  resource_id: string
+  created_at: string
+}
+
+// ActivityEvent refleja activityEventResponse (§88, ADR-038): el texto
+// humano ("Fulano subió X, hace 5 minutos") se construye en el cliente a
+// partir de event_type + metadata, ver describeActivity en FavoritesPage.
+export interface ActivityEvent {
+  id: string
+  occurred_at: string
+  event_type: string
+  target_type?: string
+  target_id?: string
+  metadata?: Record<string, unknown>
 }
 
 // SharedDirectoryListing refleja sharedListingResponse (internal/api/v1/
@@ -373,6 +397,18 @@ export const api = {
   revokeApiToken: (id: string) => request<void>(`/api/v1/auth/api-tokens/${id}`, { method: 'DELETE' }),
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
+
+  // Favoritos (§87, ADR-038): solo sobre el árbol propio del usuario.
+  favorites: () => request<ListResult>('/api/v1/favorites'),
+  addFavorite: (resourceType: 'file' | 'directory', resourceId: string) =>
+    request<Favorite>('/api/v1/favorites', {
+      method: 'POST',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId }),
+    }),
+  removeFavorite: (id: string) => request<void>(`/api/v1/favorites/${id}`, { method: 'DELETE' }),
+
+  // Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
+  activity: (limit?: number) => request<ActivityEvent[]>(`/api/v1/activity${limit ? `?limit=${limit}` : ''}`),
   upload: uploadWithProgress,
   downloadUrl: (id: string) => `/api/v1/files/${id}`,
   // Por defecto mueve a la papelera (§16); permanent=true la salta.

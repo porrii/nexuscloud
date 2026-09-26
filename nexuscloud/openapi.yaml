@@ -116,6 +116,73 @@ paths:
         "204": { description: Token revocado }
         "404": { $ref: "#/components/responses/Error" }
 
+  /favorites:
+    get:
+      summary: Listar los favoritos del usuario autenticado (§87, ADR-038)
+      description: Misma forma que GET /files, con favorite_id ya poblado; solo recursos activos.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+    post:
+      summary: Marcar un archivo o carpeta propios como favorito
+      description: Idempotente -- favoritar dos veces el mismo recurso devuelve el existente, no un error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, resource_id]
+              properties:
+                resource_type: { type: string, enum: [file, directory] }
+                resource_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Creado (o ya existente)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Favorite" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /favorites/{id}:
+    delete:
+      summary: Quitar un favorito propio
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Favorito quitado }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /activity:
+    get:
+      summary: Actividad reciente del usuario autenticado (§88, ADR-038)
+      description: Widget de dashboard ("Recientes") -- subidas/descargas/borrados/movimientos/comparticiones, más reciente primero.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ActivityEvent" }
+
   /auth/totp/enroll:
     post:
       summary: Generar un secreto TOTP para activar 2FA
@@ -1059,6 +1126,7 @@ components:
         name: { type: string }
         created_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
+        favorite_id: { type: string, format: uuid, nullable: true, description: "Presente si está en favoritos (§87, ADR-038); solo en GET /files" }
 
     File:
       type: object
@@ -1072,6 +1140,25 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
+        favorite_id: { type: string, format: uuid, nullable: true, description: "Presente si está en favoritos (§87, ADR-038); solo en GET /files" }
+
+    Favorite:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        resource_type: { type: string, enum: [file, directory] }
+        resource_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ActivityEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        event_type: { type: string }
+        target_type: { type: string }
+        target_id: { type: string }
+        metadata: { type: object, additionalProperties: true }
 
     Group:
       type: object

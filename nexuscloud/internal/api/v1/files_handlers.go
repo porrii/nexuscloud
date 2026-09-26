@@ -28,15 +28,30 @@ func (h *Handlers) ListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudieron listar los archivos.")
 		return
 	}
+	// favorite_id es aditivo (§87, ADR-038): un fallo al resolverlo no debe
+	// romper el listado completo, mismo criterio que shareResponseExtra.
+	fileFavIDs, dirFavIDs, err := h.Files.FavoriteIDsForOwner(r.Context(), u.ID)
+	if err != nil {
+		h.Logger.Warn("no se pudieron resolver los favoritos para anotar el listado", "error", err)
+		fileFavIDs, dirFavIDs = map[string]string{}, map[string]string{}
+	}
 	out := listResponse{
 		Directories: make([]directoryResponse, 0, len(result.Directories)),
 		Files:       make([]fileResponse, 0, len(result.Files)),
 	}
 	for _, d := range result.Directories {
-		out.Directories = append(out.Directories, toDirectoryResponse(d))
+		resp := toDirectoryResponse(d)
+		if id, ok := dirFavIDs[d.ID]; ok {
+			resp.FavoriteID = &id
+		}
+		out.Directories = append(out.Directories, resp)
 	}
 	for _, f := range result.Files {
-		out.Files = append(out.Files, toFileResponse(f))
+		resp := toFileResponse(f)
+		if id, ok := fileFavIDs[f.ID]; ok {
+			resp.FavoriteID = &id
+		}
+		out.Files = append(out.Files, resp)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -244,6 +259,10 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusNotFound, "not_found", "Versión no encontrada.")
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):
 		writeError(w, http.StatusBadRequest, "invalid_request", "Nombre o ruta inválidos.")
+	case errors.Is(err, storage.ErrFavoriteNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Favorito no encontrado.")
+	case errors.Is(err, storage.ErrFavoritesUnavailable):
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
 	}

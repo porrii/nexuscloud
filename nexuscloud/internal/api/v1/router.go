@@ -97,6 +97,13 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Get("/users/me", h.Me)
 		r.Get("/users/me/quota", h.MyQuota)
 
+		// Favoritos (§87, ADR-038): solo sobre el árbol propio del usuario.
+		r.Post("/favorites", h.CreateFavorite)
+		r.Get("/favorites", h.ListFavorites)
+		r.Delete("/favorites/{id}", h.DeleteFavorite)
+		// Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
+		r.Get("/activity", h.ListActivity)
+
 		r.Get("/files", h.ListFiles)
 		r.Post("/files", h.UploadFile)
 		r.Get("/files/{id}", h.DownloadFile)

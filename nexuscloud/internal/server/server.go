@@ -121,7 +121,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled,
-		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)))
+		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)),
+		// Favoritos (§87, ADR-038): siempre disponibles, sin opción de config.
+		storage.WithFavorites(storage.NewSQLFavoriteRepository(conn)))
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 	backupRepo := backup.NewSQLRepository(conn)
 	// backupManager lo consume el bucle automático de más abajo (ADR-016);
