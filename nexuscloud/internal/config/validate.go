@@ -50,6 +50,9 @@ func Validate(cfg *Config) error {
 	if cfg.Security.RateLimit.WebDAVPerMinute < 1 {
 		return fmt.Errorf("security.rateLimit.webdavPerMinute debe ser >= 1")
 	}
+	if cfg.Security.RateLimit.AnonymousUploadPerMinute < 1 {
+		return fmt.Errorf("security.rateLimit.anonymousUploadPerMinute debe ser >= 1")
+	}
 
 	for _, o := range cfg.Security.CORSAllowedOrigins {
 		if o == "*" {

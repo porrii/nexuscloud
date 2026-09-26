@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
+import AnonymousUploadDialog from '../components/AnonymousUploadDialog'
 import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
 import ShareDialog from '../components/ShareDialog'
@@ -46,6 +47,7 @@ export default function FilesPage() {
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const [historyFile, setHistoryFile] = useState<FileEntry | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; name: string; isDirectory: boolean } | null>(null)
+  const [anonymousUploadTarget, setAnonymousUploadTarget] = useState<{ id: string; name: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const navigateTo = useCallback(
@@ -288,6 +290,13 @@ export default function FilesPage() {
                       Compartir
                     </button>
                     <button
+                      onClick={() => setAnonymousUploadTarget({ id: d.id, name: d.name })}
+                      title="Enlace de subida anónima"
+                      className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Subida anónima
+                    </button>
+                    <button
                       onClick={() => setPendingDelete({ kind: 'directory', entry: d })}
                       className="invisible rounded px-2 py-1 text-xs text-red-600 hover:bg-red-50 group-hover:visible dark:text-red-400 dark:hover:bg-red-950"
                     >
@@ -367,6 +376,9 @@ export default function FilesPage() {
       )}
 
       {shareTarget && <ShareDialog resource={shareTarget} onClose={() => setShareTarget(null)} />}
+      {anonymousUploadTarget && (
+        <AnonymousUploadDialog directory={anonymousUploadTarget} onClose={() => setAnonymousUploadTarget(null)} />
+      )}
     </div>
   )
 }

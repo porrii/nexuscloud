@@ -11,8 +11,10 @@ import (
 // NewRouter construye el árbol de rutas /api/v1 (§42). loginLimiter aplica
 // rate limiting específico al endpoint de login (§27, más estricto);
 // apiLimiter cubre el resto de la API; publicLimiter cubre los enlaces
-// públicos de compartición (§37), la otra superficie sin sesión.
-func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.RateLimiter) http.Handler {
+// públicos de compartición (§37); anonymousUploadLimiter cubre los enlaces
+// de subida anónima (§38, ADR-039) -- superficie propia, más estricta que
+// publicLimiter (ver security.rateLimit.anonymousUploadPerMinute).
+func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUploadLimiter *security.RateLimiter) http.Handler {
 	r := chi.NewRouter()
 	keyFunc := func(req *http.Request) string { return security.ClientIP(req, h.TrustedProxies) }
 
@@ -61,6 +63,18 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Get("/public/client-updates/releases.json", h.GetClientUpdatesFeed)
 			r.Get("/public/client-updates/download/{assetName}", h.DownloadClientUpdateAsset)
 		}
+	})
+
+	// Subida anónima (§38, ADR-039): sin sesión, sin contraseña, y sin
+	// NINGÚN endpoint de navegación -- el token en la URL es la única
+	// autorización posible. Grupo propio (no publicLimiter compartido):
+	// cualquiera con el enlace escribe sin que el creador haya podido vetar
+	// a nadie, así que el límite por defecto es más estricto que el de
+	// shares.
+	r.Group(func(r chi.Router) {
+		r.Use(anonymousUploadLimiter.Middleware(keyFunc))
+		r.Get("/public/anonymous-uploads/{token}", h.GetAnonymousUploadLink)
+		r.Post("/public/anonymous-uploads/{token}/upload", h.UploadAnonymousUploadLink)
 	})
 
 	r.Group(func(r chi.Router) {
@@ -127,6 +141,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Delete("/shares/{id}", h.RevokeShare)
 		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
 		r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
+
+		// Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea,
+		// lista y revoca sus propios enlaces, siempre sobre una carpeta suya.
+		r.Post("/anonymous-uploads", h.CreateAnonymousUploadLink)
+		r.Get("/anonymous-uploads", h.ListAnonymousUploadLinks)
+		r.Delete("/anonymous-uploads/{id}", h.RevokeAnonymousUploadLink)
 
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)

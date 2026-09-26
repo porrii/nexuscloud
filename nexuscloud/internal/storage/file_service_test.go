@@ -21,17 +21,18 @@ import (
 // FK contra users(id) (integridad, §14), así que los tests deben crear
 // usuarios reales en vez de usar strings arbitrarios como "user-1".
 type testEnv struct {
-	svc         *FileService
-	files       FileRepository
-	directories DirectoryRepository
-	versions    VersionRepository
-	shares      ShareRepository
-	favorites   FavoriteRepository
-	pools       *SQLPoolRepository
-	poolDir     string
-	provider    *LocalFilesystemProvider
-	userSvc     *users.Service
-	userRepo    users.Repository
+	svc              *FileService
+	files            FileRepository
+	directories      DirectoryRepository
+	versions         VersionRepository
+	shares           ShareRepository
+	favorites        FavoriteRepository
+	anonymousUploads AnonymousUploadRepository
+	pools            *SQLPoolRepository
+	poolDir          string
+	provider         *LocalFilesystemProvider
+	userSvc          *users.Service
+	userRepo         users.Repository
 	// conn permite a los tests hacer lo que los repositorios no exponen (p.ej.
 	// quitar a alguien de un grupo).
 	conn *db.Conn
@@ -81,23 +82,25 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	versions := NewSQLVersionRepository(conn)
 	shares := NewSQLShareRepository(conn)
 	favorites := NewSQLFavoriteRepository(conn)
+	anonymousUploads := NewSQLAnonymousUploadRepository(conn)
 	userRepo := users.NewSQLRepository(conn)
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
 			trashEnabled, versioningEnabled, maxVersionsPerFile, maxVersionAgeDays, maxVersionsTotalSizeBytes,
-			sharingEnabled, publicLinksEnabled, WithFavorites(favorites)),
-		files:       files,
-		directories: directories,
-		versions:    versions,
-		shares:      shares,
-		favorites:   favorites,
-		pools:       pools,
-		poolDir:     poolDir,
-		provider:    provider,
-		userSvc:     users.NewService(userRepo),
-		userRepo:    userRepo,
-		conn:        conn,
+			sharingEnabled, publicLinksEnabled, WithFavorites(favorites), WithAnonymousUploads(anonymousUploads, true)),
+		files:            files,
+		directories:      directories,
+		versions:         versions,
+		shares:           shares,
+		favorites:        favorites,
+		anonymousUploads: anonymousUploads,
+		pools:            pools,
+		poolDir:          poolDir,
+		provider:         provider,
+		userSvc:          users.NewService(userRepo),
+		userRepo:         userRepo,
+		conn:             conn,
 	}
 }
 

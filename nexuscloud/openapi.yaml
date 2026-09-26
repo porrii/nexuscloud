@@ -839,6 +839,48 @@ paths:
         "413": { description: "upload_too_large: el archivo supera el límite de tamaño del permiso" }
         "507": { description: "quota_exceeded: no cabe en la cuota del PROPIETARIO de la carpeta (los archivos son suyos, ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
 
+  /anonymous-uploads:
+    post:
+      summary: Crear un enlace de subida anónima sobre una carpeta propia (§38, ADR-039)
+      description: >
+        Modelo SEPARADO de /shares, no una variante suya: sin contraseña, sin
+        permiso de descarga, y sin ningún endpoint de navegación -- la
+        garantía de "sin acceso al resto" es estructural. La respuesta
+        incluye token en claro una única vez.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAnonymousUploadRequest" }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnonymousUploadLink" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "anonymous_upload_disabled (desactivada en esta instancia) o forbidden (la carpeta no es tuya)" }
+        "404": { description: "La carpeta no existe" }
+    get:
+      summary: Listar los enlaces de subida anónima propios
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AnonymousUploadLink" }
+
+  /anonymous-uploads/{id}:
+    delete:
+      summary: Revocar un enlace de subida anónima propio (soft, propietario únicamente)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Revocado }
+        "404": { description: "No existe o no es tuyo (§198, IDOR-safe: mismo 404 en ambos casos)" }
+
   /public/shares/{token}:
     get:
       summary: Metadata de un enlace público (§37)
@@ -941,6 +983,61 @@ paths:
         "410": { description: "Enlace revocado, expirado o agotado" }
         "413": { description: "El archivo supera el límite de tamaño del enlace" }
         "507": { description: "quota_exceeded: no cabe en la cuota del propietario del enlace (ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
+
+  /public/anonymous-uploads/{token}:
+    get:
+      summary: Probe público de un enlace de subida anónima (§38, ADR-039)
+      description: >
+        Sin sesión, sin contraseña. Revela SOLO label y
+        max_upload_size_bytes si el enlace es válido -- nunca el
+        propietario, la carpeta ni su contenido. Un único 404 genérico
+        para inexistente/revocado/caducado, a propósito: quien solo tiene
+        el token no necesita distinguir el motivo, y no distinguirlo
+        reduce la superficie de enumeración (a diferencia de
+        GetPublicShare, que sí expone revoked/expired/exhausted por
+        separado).
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnonymousUploadInfo" }
+        "403": { description: "anonymous_upload_disabled: la subida anónima está desactivada en esta instancia" }
+        "404": { description: "not_found: inexistente, revocado o caducado (sin distinguir cuál)" }
+
+  /public/anonymous-uploads/{token}/upload:
+    post:
+      summary: Subir un archivo a la raíz de la carpeta de un enlace de subida anónima (§38, ADR-039)
+      description: >
+        Sin sesión, sin contraseña. Sin sub-ruta: el destino es siempre la
+        raíz de la carpeta del enlace, no hay concepto de navegar dentro.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Subido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "anonymous_upload_disabled" }
+        "404": { description: "not_found: inexistente, revocado o caducado (sin distinguir cuál)" }
+        "409": { description: "destination_occupied: ya hay un archivo con ese nombre (o algo suyo en la papelera del propietario, sin distinguirlo); no se sobrescribe" }
+        "413": { description: "upload_too_large: el archivo supera el límite de tamaño del enlace" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del propietario de la carpeta (ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
 
   /public/client-updates/releases.json:
     get:
@@ -1224,6 +1321,36 @@ components:
         can_download: { type: boolean }
         can_upload: { type: boolean }
         label: { type: string }
+
+    CreateAnonymousUploadRequest:
+      type: object
+      required: [directory_id]
+      properties:
+        directory_id: { type: string, format: uuid, description: "Debe ser una carpeta propia de quien crea el enlace" }
+        label: { type: string, description: "Nombre personalizado del enlace, cosmético" }
+        max_upload_size_bytes: { type: integer, format: int64, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+
+    AnonymousUploadLink:
+      type: object
+      description: Modelo SEPARADO de Share (§38, ADR-039) -- sin can_download/can_upload (el único permiso posible es subir) ni has_password (no se pidió).
+      properties:
+        id: { type: string, format: uuid }
+        directory_id: { type: string, format: uuid }
+        directory_name: { type: string }
+        label: { type: string }
+        max_upload_size_bytes: { type: integer, format: int64, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        upload_count: { type: integer, description: "Informativo para el propietario; no aplica ningún límite en esta versión" }
+        created_at: { type: string, format: date-time }
+        token: { type: string, description: "Solo presente en la respuesta de creación, una única vez" }
+
+    AnonymousUploadInfo:
+      type: object
+      description: Respuesta del probe público -- SOLO label y el límite de tamaño, nunca el propietario, la carpeta ni su contenido.
+      properties:
+        label: { type: string }
+        max_upload_size_bytes: { type: integer, format: int64 }
 
     AuditEvent:
       type: object

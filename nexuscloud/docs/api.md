@@ -85,6 +85,11 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/public/shares/{token}/download?path=` | — | Descarga vía enlace (streaming); incrementa el contador de descargas de forma atómica |
 | GET | `/api/v1/public/shares/{token}/browse?path=` | — | Lista el contenido de un enlace de carpeta (o una subcarpeta suya) |
 | POST | `/api/v1/public/shares/{token}/upload?path=&name=` | — | Sube a un enlace de carpeta con permiso de subida. No sobrescribe un archivo existente: `409 destination_occupied` (también si el nombre lo ocupa algo de la papelera del propietario). `507 quota_exceeded` si no cabe en la cuota del propietario del enlace (mensaje genérico) |
+| POST | `/api/v1/anonymous-uploads` | sesión | `{directory_id, label?, max_upload_size_bytes?, expires_at?}` → crea un enlace de subida anónima (§38, [ADR-039](architecture/decisions/ADR-039-subida-anonima.md)) sobre una carpeta propia; 403 si la carpeta no es tuya. Modelo SEPARADO de `/shares`: sin contraseña, sin permiso de descarga, sin ningún endpoint de navegación. La respuesta incluye `token` una única vez |
+| GET | `/api/v1/anonymous-uploads` | sesión | Enlaces de subida anónima propios, con `directory_name` resuelto y `upload_count` (nunca el token) |
+| DELETE | `/api/v1/anonymous-uploads/{id}` | sesión, propietario | Revoca un enlace propio (404 si no existe o no es tuyo, §198) |
+| GET | `/api/v1/public/anonymous-uploads/{token}` | — | Probe público: solo `{label, max_upload_size_bytes}` si el enlace es válido. Un único `404 not_found` genérico para inexistente, revocado o caducado — no distingue el motivo |
+| POST | `/api/v1/public/anonymous-uploads/{token}/upload?name=` | — | Sube directo a la raíz de la carpeta del enlace (sin sub-ruta: no hay navegación posible). No sobrescribe un archivo existente (`409 destination_occupied`); `413 upload_too_large` si supera el límite del enlace; `507 quota_exceeded` si no cabe en la cuota del propietario (mensaje genérico); mismo `404` genérico que el probe si el enlace ya no es válido |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
 | GET | `/api/v1/public/client-updates/releases.json` | — | Feed de actualizaciones del cliente de escritorio (Velopack), reenviado desde GitHub Releases; solo si `clientUpdates.enabled=true` (§ADR-032) |
 | GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |
@@ -93,12 +98,12 @@ Las rutas marcadas "propietario" comprueban la propiedad del recurso en el propi
 
 ## Cuotas (507)
 
-Una subida que no cabe en la cuota del propietario de los datos se rechaza con **`507 Insufficient Storage`** y `{"error": {"code": "quota_exceeded", "message": "..."}}` ([ADR-036](architecture/decisions/ADR-036-cuotas-de-almacenamiento.md)); `413 upload_too_large` sigue siendo el límite de tamaño **por archivo**. Vale para `POST /files`, para la subida a una carpeta compartida y a un enlace público, y para el `PUT`/`COPY` de WebDAV.
+Una subida que no cabe en la cuota del propietario de los datos se rechaza con **`507 Insufficient Storage`** y `{"error": {"code": "quota_exceeded", "message": "..."}}` ([ADR-036](architecture/decisions/ADR-036-cuotas-de-almacenamiento.md)); `413 upload_too_large` sigue siendo el límite de tamaño **por archivo**. Vale para `POST /files`, para la subida a una carpeta compartida, a un enlace público y a un enlace de subida anónima, y para el `PUT`/`COPY` de WebDAV.
 
 - **Sin cuota configurada no hay ninguna comprobación**: el comportamiento por defecto no cambia.
 - La cuota cuenta la huella real: archivos + papelera + versiones anteriores (`GET /users/me/quota` da el desglose).
 - Con `Content-Length` conocido, una subida que ya no cabe se rechaza **sin leer el cuerpo**; sin él, la lectura se corta al pasarse. Nunca queda un archivo a medias.
-- En una carpeta compartida o un enlace público la cuota que cuenta es la del **propietario** de la carpeta (los archivos son suyos) y el mensaje es genérico: no revela su uso ni su límite.
+- En una carpeta compartida, un enlace público o un enlace de subida anónima la cuota que cuenta es la del **propietario** de la carpeta (los archivos son suyos) y el mensaje es genérico: no revela su uso ni su límite.
 - Estando por encima de la cuota (p. ej. porque se bajó) siguen funcionando leer, descargar, mover y borrar: solo se bloquean las subidas nuevas.
 
 ## WebDAV (fuera de `/api/v1`)

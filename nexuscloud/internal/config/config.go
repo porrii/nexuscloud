@@ -162,9 +162,14 @@ type VersioningConfig struct {
 // enlaces públicos, la ÚNICA superficie que Sharing expone sin sesión --
 // coherente con el precedente ya sentado por web.enabled (§3, §47), su valor
 // por defecto es false: el administrador debe activarla explícitamente.
+// AnonymousUploadEnabled (§38, ADR-039) es un modelo SEPARADO de
+// PublicLinksEnabled, no una variante suya -- ver ADR-039 para por qué --
+// pero comparte el mismo criterio de valor por defecto (false: superficie
+// pública nueva, activación explícita).
 type SharingConfig struct {
-	Enabled            bool `yaml:"enabled"`
-	PublicLinksEnabled bool `yaml:"publicLinksEnabled"`
+	Enabled                bool `yaml:"enabled"`
+	PublicLinksEnabled     bool `yaml:"publicLinksEnabled"`
+	AnonymousUploadEnabled bool `yaml:"anonymousUploadEnabled"`
 }
 
 // BackupConfig gobierna el backup automático (§18 "programación"). A
@@ -242,6 +247,11 @@ type RateLimitConfig struct {
 	// dispara decenas de PROPFIND por segundo al abrir una carpeta, mucho más
 	// que la API REST, así que tiene su propio límite por IP, más holgado.
 	WebDAVPerMinute int `yaml:"webdavPerMinute"`
+	// AnonymousUploadPerMinute (§38, ADR-039): más estricto que
+	// PublicLinkPerMinute -- a diferencia de un share, aquí cualquiera con el
+	// enlace escribe sin que el creador haya podido vetar a nadie de
+	// antemano.
+	AnonymousUploadPerMinute int `yaml:"anonymousUploadPerMinute"`
 }
 
 // WebDAVConfig gobierna el módulo WebDAV (§43, ADR-034). Enabled=false por
@@ -305,10 +315,11 @@ func Defaults() *Config {
 				Parallelism: 4,
 			},
 			RateLimit: RateLimitConfig{
-				LoginPerMinute:      5,
-				APIPerMinute:        300,
-				PublicLinkPerMinute: 20,
-				WebDAVPerMinute:     1200,
+				LoginPerMinute:           5,
+				APIPerMinute:             300,
+				PublicLinkPerMinute:      20,
+				WebDAVPerMinute:          1200,
+				AnonymousUploadPerMinute: 10,
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
@@ -316,7 +327,7 @@ func Defaults() *Config {
 		},
 		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
-		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false},
+		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false, AnonymousUploadEnabled: false},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
 		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},

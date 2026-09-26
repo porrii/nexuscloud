@@ -51,6 +51,12 @@ const (
 	// de altas/bajas de credenciales/comparticiones por consistencia.
 	EventFavoriteAdded   = "favorite_added"
 	EventFavoriteRemoved = "favorite_removed"
+
+	// Subida anónima (§38, ADR-039): crear/revocar el enlace son eventos
+	// propios; la subida en sí reutiliza EventUpload con via=anonymous_upload
+	// en los metadatos (mismo criterio que via=shared_directory/public_share).
+	EventAnonymousUploadLinkCreated = "anonymous_upload_link_created"
+	EventAnonymousUploadLinkRevoked = "anonymous_upload_link_revoked"
 )
 
 type Event struct {

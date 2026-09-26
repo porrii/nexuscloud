@@ -39,12 +39,13 @@ type Server struct {
 	Handler http.Handler
 	DB      *sql.DB
 
-	loginLimiter  *security.RateLimiter
-	apiLimiter    *security.RateLimiter
-	publicLimiter *security.RateLimiter
-	webdavLimiter *security.RateLimiter // nil si webdav.enabled=false
-	stopPurge     chan struct{}
-	stopBackup    chan struct{}
+	loginLimiter           *security.RateLimiter
+	apiLimiter             *security.RateLimiter
+	publicLimiter          *security.RateLimiter
+	anonymousUploadLimiter *security.RateLimiter
+	webdavLimiter          *security.RateLimiter // nil si webdav.enabled=false
+	stopPurge              chan struct{}
+	stopBackup             chan struct{}
 }
 
 // Build realiza todo el arranque en frío: abrir BD, migrar, construir
@@ -123,7 +124,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled,
 		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)),
 		// Favoritos (§87, ADR-038): siempre disponibles, sin opción de config.
-		storage.WithFavorites(storage.NewSQLFavoriteRepository(conn)))
+		storage.WithFavorites(storage.NewSQLFavoriteRepository(conn)),
+		// Subida anónima (§38, ADR-039): el repositorio se conecta siempre;
+		// sharing.anonymousUploadEnabled es el interruptor real, comprobado
+		// dentro de FileService en cada operación que lo necesita.
+		storage.WithAnonymousUploads(storage.NewSQLAnonymousUploadRepository(conn), cfg.Sharing.AnonymousUploadEnabled))
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 	backupRepo := backup.NewSQLRepository(conn)
 	// backupManager lo consume el bucle automático de más abajo (ADR-016);
@@ -217,6 +222,11 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// de login/invitations.
 	publicLimiterBurst := cfg.Security.RateLimit.PublicLinkPerMinute
 	publicLimiter := security.NewRateLimiter(cfg.Security.RateLimit.PublicLinkPerMinute, publicLimiterBurst)
+	// anonymousUploadLimiter (§38, ADR-039): cubo propio, más estricto que
+	// publicLimiter -- aquí cualquiera con el enlace escribe sin que el
+	// creador haya podido vetar a nadie de antemano.
+	anonymousUploadBurst := cfg.Security.RateLimit.AnonymousUploadPerMinute
+	anonymousUploadLimiter := security.NewRateLimiter(cfg.Security.RateLimit.AnonymousUploadPerMinute, anonymousUploadBurst)
 
 	root := chi.NewRouter()
 	root.Use(security.Headers)
@@ -231,7 +241,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// no haya assets que servir (Fase 2): evita retrofitting del patrón de
 	// activación/desactivación más adelante (§3, §47).
 	if cfg.API.Enabled {
-		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter, publicLimiter))
+		root.Mount("/api/v1", apiv1.NewRouter(h, loginLimiter, apiLimiter, publicLimiter, anonymousUploadLimiter))
 	}
 	if webdavHandler != nil {
 		// Su propio rate limit por IP, más holgado que el de la API: un
@@ -266,7 +276,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 
 	return &Server{
 		Handler: root, DB: sqlDB,
-		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter, webdavLimiter: webdavLimiter,
+		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
+		anonymousUploadLimiter: anonymousUploadLimiter, webdavLimiter: webdavLimiter,
 		stopPurge: stopPurge, stopBackup: stopBackup,
 	}, nil
 }
@@ -360,6 +371,7 @@ func (s *Server) Close() error {
 	s.loginLimiter.Stop()
 	s.apiLimiter.Stop()
 	s.publicLimiter.Stop()
+	s.anonymousUploadLimiter.Stop()
 	if s.webdavLimiter != nil {
 		s.webdavLimiter.Stop()
 	}

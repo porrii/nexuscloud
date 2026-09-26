@@ -209,6 +209,38 @@ export interface PublicShareInfo {
   label?: string
 }
 
+// AnonymousUploadLink refleja anonymousUploadResponse (internal/api/v1/
+// dto.go): un modelo SEPARADO de Share (§38, ADR-039) -- sin
+// can_download/can_upload (no aplican: aquí el único permiso posible es
+// subir) ni has_password (no se pidió). token solo viene relleno en la
+// respuesta de creación, una única vez, igual que Share.
+export interface AnonymousUploadLink {
+  id: string
+  directory_id: string
+  directory_name?: string
+  label?: string
+  max_upload_size_bytes?: number
+  expires_at?: string
+  upload_count: number
+  created_at: string
+  token?: string
+}
+
+export interface CreateAnonymousUploadLinkInput {
+  directory_id: string
+  label?: string
+  max_upload_size_bytes?: number
+  expires_at?: string
+}
+
+// AnonymousUploadInfo refleja anonymousUploadInfoResponse: el probe público
+// SOLO revela label y el límite de tamaño, nunca el propietario, la carpeta
+// ni su contenido -- no hay ningún endpoint de navegación para este modelo.
+export interface AnonymousUploadInfo {
+  label?: string
+  max_upload_size_bytes?: number
+}
+
 export class ApiClientError extends Error {
   status: number
   code: string
@@ -471,6 +503,29 @@ export const api = {
   uploadToPublicShare: async (token: string, path: string, name: string, content: Blob, password?: string): Promise<FileEntry> => {
     const url = `/api/v1/public/shares/${token}/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`
     const res = await fetch(url, { method: 'POST', headers: password ? { 'X-Share-Password': password } : undefined, body: content })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
+      throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al subir el archivo')
+    }
+    return (await res.json()) as FileEntry
+  },
+
+  // Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea, lista
+  // y revoca sus propios enlaces, siempre sobre una carpeta suya.
+  createAnonymousUploadLink: (input: CreateAnonymousUploadLinkInput) =>
+    request<AnonymousUploadLink>('/api/v1/anonymous-uploads', { method: 'POST', body: JSON.stringify(input) }),
+  listAnonymousUploadLinks: () => request<AnonymousUploadLink[]>('/api/v1/anonymous-uploads'),
+  revokeAnonymousUploadLink: (id: string) => request<void>(`/api/v1/anonymous-uploads/${id}`, { method: 'DELETE' }),
+
+  // Las dos siguientes son la superficie pública (§38): sin contraseña -- el
+  // token de la URL es la única autorización posible. getAnonymousUpload usa
+  // request() igual que publicShareInfo (JSON, da igual si el navegador
+  // manda cookies de sesión); uploadToAnonymousUpload usa fetch en crudo
+  // igual que uploadToPublicShare (envía el Blob tal cual, sin credentials).
+  getAnonymousUpload: (token: string) => request<AnonymousUploadInfo>(`/api/v1/public/anonymous-uploads/${token}`),
+  uploadToAnonymousUpload: async (token: string, name: string, content: Blob): Promise<FileEntry> => {
+    const url = `/api/v1/public/anonymous-uploads/${token}/upload?name=${encodeURIComponent(name)}`
+    const res = await fetch(url, { method: 'POST', body: content })
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
       throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al subir el archivo')

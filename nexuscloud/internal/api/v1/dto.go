@@ -181,3 +181,32 @@ func toShareResponse(s *storage.Share, extra shareResponseExtra) shareResponse {
 		CreatedAt:          s.CreatedAt,
 	}
 }
+
+// anonymousUploadResponse nunca expone TokenHash (§172): Token solo se
+// rellena en la respuesta de creación, una única vez -- igual que
+// shareResponse. Sin CanDownload/CanUpload (no aplican: este modelo no tiene
+// más permiso que "subir", nunca "ver") ni HasPassword (§38 no lo pidió).
+type anonymousUploadResponse struct {
+	ID                 string     `json:"id"`
+	DirectoryID        string     `json:"directory_id"`
+	DirectoryName      string     `json:"directory_name,omitempty"`
+	Label              string     `json:"label,omitempty"`
+	MaxUploadSizeBytes *int64     `json:"max_upload_size_bytes,omitempty"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	UploadCount        int        `json:"upload_count"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Token              string     `json:"token,omitempty"`
+}
+
+func toAnonymousUploadResponse(a *storage.AnonymousUpload, directoryName string) anonymousUploadResponse {
+	return anonymousUploadResponse{
+		ID:                 a.ID,
+		DirectoryID:        a.DirectoryID,
+		DirectoryName:      directoryName,
+		Label:              a.Label,
+		MaxUploadSizeBytes: a.MaxUploadSizeBytes,
+		ExpiresAt:          a.ExpiresAt,
+		UploadCount:        a.UploadCount,
+		CreatedAt:          a.CreatedAt,
+	}
+}

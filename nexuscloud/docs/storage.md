@@ -124,7 +124,8 @@ Tres modos: usuario→usuario, usuario→grupo, y enlaces públicos. Activada po
 - **Contraseña de enlace**: siempre por cabecera `X-Share-Password`, nunca en la URL -- un enlace sin contraseña funciona como `<a href>` directo; uno con contraseña pasa por la web, que la pide y reintenta con la cabecera.
 - `GET /api/v1/public/shares/{token}` (probe de metadata) no revela nombre/tamaño de un enlace con contraseña hasta que la cabecera correcta llega -- solo indica si hace falta contraseña.
 - **Rate limit propio** (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) sobre todas las rutas `/api/v1/public/*`: es la otra superficie, además de login, expuesta a fuerza bruta.
-- Fuera de esta pasada: notificaciones por email; §38 (Subida Anónima) sigue totalmente separado y sin implementar; subir a carpetas compartidas desde el cliente de escritorio (servidor, web y CLI sí lo soportan).
+- **Subida anónima** (§38, [ADR-039](architecture/decisions/ADR-039-subida-anonima.md)): modelo SEPARADO de los enlaces públicos de arriba, no una variante suya -- `BrowsePublicShare` ignora `can_download`, así que un enlace público de solo-subida no garantiza de verdad "sin acceso al resto"; §38 lo resuelve sin ningún endpoint de navegación. Desactivada por defecto (`sharing.anonymousUploadEnabled: false`); el usuario elige su propia carpeta como destino una vez el administrador la activa. Sin contraseña, sin CLI. Rate limit propio y más estricto que el de enlaces normales (`security.rateLimit.anonymousUploadPerMinute`, 10/min por defecto): cualquiera con el enlace escribe sin que el creador haya podido vetar a nadie. `GET/POST /api/v1/public/anonymous-uploads/{token}` (probe + subida) y `POST/GET/DELETE /api/v1/anonymous-uploads` (autoservicio autenticado).
+- Fuera de esta pasada: notificaciones por email; subir a carpetas compartidas desde el cliente de escritorio (servidor, web y CLI sí lo soportan).
 
 ## Snapshots (§17)
 
@@ -158,9 +159,9 @@ CLI para lo manual (`nexuscloud backup run|list|restore|restore-to-pool|verify`)
 
 - **RAID hardware (controladoras dedicadas) y JBOD** (§12): descartado permanentemente, decisión del usuario (2026-09-13) -- ver nota en la sección RAID arriba.
 - **Backup Manager**: completo -- manual/automático/retención/verify/restore-to-pool/incremental/cifrado/destino remoto (ver sección Backup Manager, ADR-015 a ADR-029). Lo único explícitamente fuera de alcance: reintentos automáticos ante un fallo de red a medio backup remoto (ADR-029), y el sistema general de API Tokens (§78) que un destino remoto más flexible podría querer más adelante.
-- **Subida anónima** (§38): activación explícita del admin, foco anti-abuso -- modelo distinto al de un enlace normal de Sharing.
+- **Subida anónima** (§38): implementada ([ADR-039](architecture/decisions/ADR-039-subida-anonima.md)) -- ya no es un gap. Modelo separado de un enlace normal de Sharing, sin ningún endpoint de navegación, activación explícita del administrador.
 - **Miniaturas/previsualización/búsqueda de contenido** (§33-35): Fase 2, nunca empezado -- la pieza de mayor alcance de todo el backlog.
-- **Favoritos/Recientes** (§143): mencionado en el dashboard del explorador web pero sin backend que lo soporte todavía (ver `architecture.md`).
+- **Favoritos/Recientes** (§143): implementado ([ADR-038](architecture/decisions/ADR-038-favoritos-y-actividad-reciente.md)) -- ya no es un gap. Favoritos solo sobre el árbol propio (no lo compartido); "Recientes" es un feed de actividad sobre el log de auditoría, no solo fecha de modificación.
 - **Sharing** (§37): el permiso de subida a un usuario/grupo concreto está implementado ([ADR-035](architecture/decisions/ADR-035-subida-a-carpeta-compartida.md)) en servidor, web y CLI -- ya no es un gap. Siguen pendientes: subir a carpetas compartidas desde el cliente de escritorio, y las notificaciones por email.
 - **MySQL/MariaDB** (Fase 1): implementado ([ADR-031](architecture/decisions/ADR-031-mysql-mariadb.md)) -- tercer dialecto, `go-sql-driver/mysql`. Ver sección "Base de datos" arriba para las divergencias de esquema/SQL reales frente a sqlite/postgres.
 - **Mover/renombrar, limpieza de carpetas vacías, umbral de borrado configurable, auto-sync por par y detección de rutas solapadas en el motor de sync** (Fase 3, cliente Flutter): implementado (ADR-030 parte B, §85) -- ya no son gaps.

@@ -26,6 +26,9 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if cfg.Sharing.PublicLinksEnabled {
 		t.Error("sharing.publicLinksEnabled debe ser false por defecto (§3, §47): es la única superficie sin sesión que añade Sharing")
 	}
+	if cfg.Sharing.AnonymousUploadEnabled {
+		t.Error("sharing.anonymousUploadEnabled debe ser false por defecto (§3, §47, ADR-039): superficie pública nueva, separada de publicLinksEnabled")
+	}
 	if !cfg.Sharing.Enabled {
 		t.Error("sharing.enabled (compartición interna usuario/grupo, siempre autenticada) debe ser true por defecto, igual que trash/versioning")
 	}
@@ -315,6 +318,9 @@ func TestDefaultsKeepWebDAVAndWebAuthnOff(t *testing.T) {
 	if cfg.Security.RateLimit.WebDAVPerMinute < 1 {
 		t.Errorf("security.rateLimit.webdavPerMinute = %d, debe tener un valor por defecto útil", cfg.Security.RateLimit.WebDAVPerMinute)
 	}
+	if cfg.Security.RateLimit.AnonymousUploadPerMinute < 1 {
+		t.Errorf("security.rateLimit.anonymousUploadPerMinute = %d, debe tener un valor por defecto útil", cfg.Security.RateLimit.AnonymousUploadPerMinute)
+	}
 }
 
 func TestValidateWebDAVPath(t *testing.T) {
@@ -359,6 +365,14 @@ func TestValidateRejectsZeroWebDAVRateLimit(t *testing.T) {
 	cfg.Security.RateLimit.WebDAVPerMinute = 0
 	if err := Validate(cfg); err == nil {
 		t.Error("Validate debe rechazar security.rateLimit.webdavPerMinute < 1")
+	}
+}
+
+func TestValidateRejectsZeroAnonymousUploadRateLimit(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.RateLimit.AnonymousUploadPerMinute = 0
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar security.rateLimit.anonymousUploadPerMinute < 1")
 	}
 }
 

@@ -3,6 +3,7 @@ import { AuthProvider } from './auth/AuthContext'
 import RequireAuth from './auth/RequireAuth'
 import AppShell from './components/AppShell'
 import AccountPage from './pages/AccountPage'
+import AnonymousUploadPage from './pages/AnonymousUploadPage'
 import FavoritesPage from './pages/FavoritesPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
@@ -18,6 +19,8 @@ export default function App() {
           <Route path="/login" element={<LoginPage />} />
           {/* Enlaces públicos (§37): sin sesión, fuera del shell autenticado -- ver docs/storage.md#compartición-37. */}
           <Route path="/s/:token" element={<PublicSharePage />} />
+          {/* Subida anónima (§38, ADR-039): sin sesión, modelo separado de /s/:token. */}
+          <Route path="/u/:token" element={<AnonymousUploadPage />} />
           <Route
             element={
               <RequireAuth>

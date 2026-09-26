@@ -63,6 +63,17 @@ type FileService struct {
 
 	// Favoritos (§87, ADR-038): nil = sin favoritos activados, ver WithFavorites.
 	favorites FavoriteRepository
+
+	// Subida anónima (§38, ADR-039): nil = desactivada, ver WithAnonymousUploads.
+	// anonymousUploadEnabled es sharing.anonymousUploadEnabled -- mismo
+	// criterio exacto que ResolvePublicShare/publicLinksEnabled: crear un
+	// enlace nuevo Y resolver uno ya existente (la superficie PÚBLICA)
+	// exigen el interruptor activado, así que apagarlo corta también los
+	// enlaces ya creados, no solo los nuevos. Listar/revocar los propios
+	// (autoservicio, autenticado) no lo exigen -- un usuario siempre puede
+	// limpiar lo suyo, aunque el administrador haya apagado la función.
+	anonymousUploads       AnonymousUploadRepository
+	anonymousUploadEnabled bool
 }
 
 func NewFileService(
