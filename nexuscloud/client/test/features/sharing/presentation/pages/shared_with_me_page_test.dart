@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/di/service_locator.dart';
+import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
@@ -26,6 +27,12 @@ class _FakeSharingRepository implements SharingRepository {
   final Map<String, DirectoryListing> listingsByDirectoryId = {};
   final List<String> requestedDirectoryIds = [];
 
+  // Subida a carpeta compartida (§37, ADR-035): `uploadCalls` guarda cada
+  // llamada para comprobar a qué carpeta y con qué nombre se subió;
+  // `uploadError` simula el rechazo del servidor (p.ej. `upload_not_allowed`).
+  final List<Map<String, String>> uploadCalls = [];
+  ApiException? uploadError;
+
   @override
   Future<List<Share>> listShares({required ShareDirection direction}) async {
     requestedDirections.add(direction);
@@ -37,6 +44,28 @@ class _FakeSharingRepository implements SharingRepository {
     requestedDirectoryIds.add(directoryId);
     return listingsByDirectoryId[directoryId] ??
         const DirectoryListing(directories: [], files: []);
+  }
+
+  @override
+  Future<FileEntry> uploadToSharedDirectory({
+    required String directoryId,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) async {
+    uploadCalls.add({'directoryId': directoryId, 'fileName': fileName});
+    onProgress?.call(1, 1);
+    if (uploadError != null) throw uploadError!;
+    return FileEntry(
+      id: 'nuevo-$fileName',
+      parentPath: '/',
+      name: fileName,
+      sizeBytes: 1,
+      sha256: 'x',
+      mimeType: 'application/octet-stream',
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+    );
   }
 
   @override
@@ -277,6 +306,76 @@ void main() {
 
     expect(find.text('Esta carpeta está vacía.'), findsOneWidget);
   });
+
+  testWidgets(
+    'el botón de subir no aparece en la lista plana (sin navegar dentro)',
+    (tester) async {
+      final repo = sl<SharingRepository>() as _FakeSharingRepository;
+      repo.withMeShares = [_directoryShare(resourceId: 'd1')];
+      repo.listingsByDirectoryId['d1'] =
+          const DirectoryListing(directories: [], files: [], canUpload: true);
+
+      await tester.pumpWidget(const MaterialApp(home: SharedWithMePage()));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Subir archivo'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'el botón de subir no aparece si la carpeta no permite subir',
+    (tester) async {
+      final repo = sl<SharingRepository>() as _FakeSharingRepository;
+      repo.withMeShares = [_directoryShare(resourceId: 'd1')];
+      repo.listingsByDirectoryId['d1'] =
+          const DirectoryListing(directories: [], files: []); // canUpload: false por defecto
+
+      await tester.pumpWidget(const MaterialApp(home: SharedWithMePage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Documentos'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Subir archivo'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'el botón de subir aparece al navegar dentro de una carpeta con permiso de subida',
+    (tester) async {
+      final repo = sl<SharingRepository>() as _FakeSharingRepository;
+      repo.withMeShares = [_directoryShare(resourceId: 'd1')];
+      repo.listingsByDirectoryId['d1'] =
+          const DirectoryListing(directories: [], files: [], canUpload: true);
+
+      await tester.pumpWidget(const MaterialApp(home: SharedWithMePage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Documentos'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Subir archivo'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'volver a la raíz por la migaja oculta de nuevo el botón de subir',
+    (tester) async {
+      final repo = sl<SharingRepository>() as _FakeSharingRepository;
+      repo.withMeShares = [_directoryShare(resourceId: 'd1')];
+      repo.listingsByDirectoryId['d1'] =
+          const DirectoryListing(directories: [], files: [], canUpload: true);
+
+      await tester.pumpWidget(const MaterialApp(home: SharedWithMePage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Documentos'));
+      await tester.pumpAndSettle();
+      expect(find.byTooltip('Subir archivo'), findsOneWidget);
+
+      await tester.tap(find.text('Compartido conmigo'));
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Subir archivo'), findsNothing);
+    },
+  );
 
   testWidgets('navegar dos niveles de profundidad (carpeta dentro de carpeta)',
       (tester) async {

@@ -1,4 +1,5 @@
 import '../../../files/domain/entities/directory_listing.dart';
+import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart' show TransferProgress;
 import '../entities/group.dart';
 import '../entities/share.dart';
@@ -49,6 +50,19 @@ abstract interface class SharingRepository {
   /// (así que un archivo encontrado aquí se descarga con
   /// `FilesRepository.downloadFile`, no con [downloadSharedFile]).
   Future<DirectoryListing> listSharedDirectory(String directoryId);
+
+  /// Sube el archivo local en [localFilePath] como [fileName] dentro de la
+  /// carpeta compartida [directoryId] -- mismo endpoint que ya usan la web y
+  /// la CLI (§37, ADR-035). El destino sale solo del ID de la carpeta: la
+  /// autorización (`canUpload` del listado) se vuelve a comprobar en el
+  /// servidor en cada petición, nunca se confía en lo que devolvió un
+  /// [listSharedDirectory] anterior. Devuelve los metadatos ya creados.
+  Future<FileEntry> uploadToSharedDirectory({
+    required String directoryId,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  });
 
   /// Descarga un archivo compartido DIRECTAMENTE conmigo (sin pasar por
   /// una carpeta) -- a diferencia de `FilesRepository.downloadFile`, no

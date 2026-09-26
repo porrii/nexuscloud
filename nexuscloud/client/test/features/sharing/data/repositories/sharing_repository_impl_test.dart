@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
 import 'package:nexuscloud_client/core/storage/server_config_store.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart' show TransferProgress;
 import 'package:nexuscloud_client/features/sharing/data/datasources/sharing_remote_data_source.dart';
 import 'package:nexuscloud_client/features/sharing/data/repositories/sharing_repository_impl.dart';
@@ -81,6 +82,27 @@ class _FakeSharingRemoteDataSource implements SharingRemoteDataSource {
     if (sharedDirectoryError != null) throw sharedDirectoryError!;
     return sharedDirectoryListing ??
         const DirectoryListing(directories: [], files: []);
+  }
+
+  FileEntry? uploadResult;
+  ApiException? uploadError;
+  final List<Map<String, String>> uploadCalls = [];
+
+  @override
+  Future<FileEntry> uploadToSharedDirectory({
+    required String directoryId,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) async {
+    uploadCalls.add({
+      'directoryId': directoryId,
+      'localFilePath': localFilePath,
+      'fileName': fileName,
+    });
+    onProgress?.call(1, 1);
+    if (uploadError != null) throw uploadError!;
+    return uploadResult!;
   }
 
   @override
@@ -292,6 +314,69 @@ void main() {
       throwsA(isA<ApiException>().having((e) => e.code, 'code', 'forbidden')),
     );
   });
+
+  test(
+    'uploadToSharedDirectory delega con los parámetros correctos y devuelve el FileEntry creado',
+    () async {
+      final created = FileEntry(
+        id: 'f9',
+        parentPath: '/',
+        name: 'informe.pdf',
+        sizeBytes: 10,
+        sha256: 'x',
+        mimeType: 'application/pdf',
+        createdAt: DateTime.utc(2026),
+        updatedAt: DateTime.utc(2026),
+      );
+      final fake = _FakeSharingRemoteDataSource()..uploadResult = created;
+      final repo = SharingRepositoryImpl(
+        remoteDataSource: fake,
+        serverConfigStore: _FakeServerConfigStore(),
+      );
+
+      final result = await repo.uploadToSharedDirectory(
+        directoryId: 'd1',
+        localFilePath: '/tmp/informe.pdf',
+        fileName: 'informe.pdf',
+      );
+
+      expect(result, created);
+      expect(fake.uploadCalls, [
+        {
+          'directoryId': 'd1',
+          'localFilePath': '/tmp/informe.pdf',
+          'fileName': 'informe.pdf',
+        },
+      ]);
+    },
+  );
+
+  test(
+    'una ApiException de uploadToSharedDirectory (p.ej. upload_not_allowed) se propaga',
+    () async {
+      final fake = _FakeSharingRemoteDataSource()
+        ..uploadError = const ApiException(
+          code: 'upload_not_allowed',
+          message: 'x',
+        );
+      final repo = SharingRepositoryImpl(
+        remoteDataSource: fake,
+        serverConfigStore: _FakeServerConfigStore(),
+      );
+
+      await expectLater(
+        repo.uploadToSharedDirectory(
+          directoryId: 'd1',
+          localFilePath: '/tmp/informe.pdf',
+          fileName: 'informe.pdf',
+        ),
+        throwsA(
+          isA<ApiException>()
+              .having((e) => e.code, 'code', 'upload_not_allowed'),
+        ),
+      );
+    },
+  );
 
   test('downloadSharedFile delega con el fileId correcto', () async {
     final fake = _FakeSharingRemoteDataSource();

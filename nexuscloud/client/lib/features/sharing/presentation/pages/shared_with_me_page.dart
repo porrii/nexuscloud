@@ -18,8 +18,20 @@ class _BrowseEntry {
 }
 
 /// Estado efímero de una descarga en curso -- igual criterio que
-/// `FileVersionsPage._VersionDownload` (aquí nunca hay subida).
+/// `FileVersionsPage._VersionDownload`.
 class _SharedDownload {
+  double progress = 0;
+  String? error;
+}
+
+/// Estado efímero de una subida en curso a una carpeta compartida (§37,
+/// ADR-035). A diferencia de las descargas (que sí tienen un `FileEntry`
+/// conocido de antemano para servir de clave, `_browseDownloads`), un
+/// archivo nuevo no tiene ningún id todavía -- así que se sigue en una
+/// lista simple por nombre, igual que `FileBrowserPage._Transfer`.
+class _SharedUpload {
+  _SharedUpload({required this.name});
+  final String name;
   double progress = 0;
   String? error;
 }
@@ -60,6 +72,12 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
   // vez (`_isBrowsing` las alterna), separar los mapas no cuesta nada.
   final Map<String, _SharedDownload> _flatDownloads = {};
   final Map<String, _SharedDownload> _browseDownloads = {};
+
+  // Subidas en curso a la carpeta que se está navegando -- lista simple
+  // (no un mapa por id, ninguno existe todavía), igual criterio que
+  // `FileBrowserPage._transfers`: sin vaciarla al navegar a otra carpeta,
+  // una subida sigue corriendo aunque se cambie de vista mientras tanto.
+  final List<_SharedUpload> _uploads = [];
 
   // Guarda contra respuestas obsoletas: a diferencia de un `_currentPath`
   // escalar (donde como mucho se pisa el contenido un instante),
@@ -190,6 +208,40 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
     }
   }
 
+  /// Sube a la carpeta que se está navegando ahora mismo (§37, ADR-035) --
+  /// solo se llama con el botón visible, que a su vez solo aparece con
+  /// `_isBrowsing` y `canUpload` en la carpeta actual (ver `build`). Mismo
+  /// patrón que `FileBrowserPage._uploadFiles`: subida secuencial, el error
+  /// de una se queda en su propia fila sin abortar las demás, y se
+  /// refresca el listado una sola vez al final del lote.
+  Future<void> _uploadFiles() async {
+    final picked = await openFiles();
+    if (picked.isEmpty || !mounted) return;
+    final directoryId = _browseStack.last.id;
+
+    for (final xfile in picked) {
+      final upload = _SharedUpload(name: xfile.name);
+      setState(() => _uploads.add(upload));
+
+      try {
+        await _sharingRepository.uploadToSharedDirectory(
+          directoryId: directoryId,
+          localFilePath: xfile.path,
+          fileName: xfile.name,
+          onProgress: (done, total) {
+            if (!mounted || total <= 0) return;
+            setState(() => upload.progress = done / total);
+          },
+        );
+        if (mounted) setState(() => _uploads.remove(upload));
+      } on ApiException catch (e) {
+        if (mounted) setState(() => upload.error = e.message);
+      }
+    }
+
+    if (mounted) await _refresh();
+  }
+
   Future<void> _downloadFlatShare(Share share) async {
     final location =
         await getSaveLocation(suggestedName: share.resourceName ?? share.resourceId);
@@ -231,6 +283,12 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
       appBar: AppBar(
         title: _isBrowsing ? _buildBreadcrumb() : const Text('Compartido conmigo'),
         actions: [
+          if (_isBrowsing && (_browseListing?.canUpload ?? false))
+            IconButton(
+              tooltip: 'Subir archivo',
+              icon: const Icon(Icons.upload_file),
+              onPressed: _uploadFiles,
+            ),
           IconButton(
             tooltip: 'Actualizar',
             icon: const Icon(Icons.refresh),
@@ -238,7 +296,53 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
           ),
         ],
       ),
-      body: _buildBody(),
+      body: Column(
+        children: [
+          if (_uploads.isNotEmpty) _buildUploadsPanel(),
+          Expanded(child: _buildBody()),
+        ],
+      ),
+    );
+  }
+
+  /// Mismo widget exacto que `FileBrowserPage._buildTransfersPanel`, pero
+  /// solo para subidas (aquí nunca hay descargas en este panel -- las
+  /// descargas de esta página se muestran inline, por fila, con
+  /// [_buildDownloadTrailing]).
+  Widget _buildUploadsPanel() {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 160),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          children: [
+            for (final upload in _uploads)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.upload),
+                title: Text(upload.name),
+                subtitle: upload.error != null
+                    ? Text(
+                        upload.error!,
+                        style: TextStyle(color: Theme.of(context).colorScheme.error),
+                      )
+                    : LinearProgressIndicator(
+                        value: upload.progress == 0 ? null : upload.progress,
+                      ),
+                trailing: upload.error != null
+                    ? IconButton(
+                        tooltip: 'Descartar',
+                        icon: const Icon(Icons.close),
+                        onPressed: () => setState(() => _uploads.remove(upload)),
+                      )
+                    : null,
+              ),
+          ],
+        ),
+      ),
     );
   }
 

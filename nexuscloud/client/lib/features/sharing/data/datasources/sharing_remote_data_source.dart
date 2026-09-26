@@ -1,12 +1,14 @@
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
 
 import '../../../../core/network/api_client.dart';
 import '../../../../core/network/api_exception.dart';
 import '../../../files/data/models/directory_entry_model.dart';
 import '../../../files/data/models/file_entry_model.dart';
 import '../../../files/domain/entities/directory_listing.dart';
+import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart' show TransferProgress;
 import '../../domain/entities/group.dart';
 import '../../domain/entities/share.dart';
@@ -94,7 +96,10 @@ class SharingRemoteDataSource {
 
   /// Misma forma que `GET /files` (mismos `directories`/`files`, parseados
   /// con los mismos modelos) -- confirmado en el servidor real: usa los
-  /// mismos mappers de respuesta que el listado normal.
+  /// mismos mappers de respuesta que el listado normal. Además trae
+  /// `can_upload`/`max_upload_size_bytes` (§37, ADR-035, campos aditivos en
+  /// `sharedListingResponse`), que la web ya usa para decidir si ofrecer el
+  /// botón de subir.
   Future<DirectoryListing> listSharedDirectory(String directoryId) async {
     final response = await _apiClient.request(
       (dio) => dio.get<Map<String, dynamic>>('/shared-directories/$directoryId'),
@@ -108,7 +113,42 @@ class SharingRemoteDataSource {
         .cast<Map<String, dynamic>>()
         .map(FileEntryModel.fromJson)
         .toList();
-    return DirectoryListing(directories: directories, files: files);
+    return DirectoryListing(
+      directories: directories,
+      files: files,
+      canUpload: data['can_upload'] as bool? ?? false,
+      maxUploadSizeBytes: data['max_upload_size_bytes'] as int?,
+    );
+  }
+
+  /// Mismo patrón exacto que `FilesRemoteDataSource.uploadFile` (cuerpo en
+  /// streaming, `Content-Length` obligatorio -- sin él Dio nunca llama a
+  /// `onSendProgress` --, y el mismo `receiveTimeout` alargado para lo que
+  /// tarde el servidor en escribir+hashear+insertar). La única diferencia es
+  /// la ruta: el destino sale del ID de la carpeta compartida, nunca de una
+  /// ruta que el cliente elija (§37, ADR-035) -- el servidor re-deriva el
+  /// permiso de subida de la base de datos en cada petición.
+  Future<FileEntry> uploadToSharedDirectory({
+    required String directoryId,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) async {
+    final file = File(localFilePath);
+    final length = await file.length();
+    final response = await _apiClient.request(
+      (dio) => dio.post<Map<String, dynamic>>(
+        '/shared-directories/$directoryId/files',
+        queryParameters: {'name': fileName},
+        data: file.openRead(),
+        options: Options(
+          headers: {Headers.contentLengthHeader: length},
+          receiveTimeout: const Duration(minutes: 2),
+        ),
+        onSendProgress: onProgress,
+      ),
+    );
+    return FileEntryModel.fromJson(response.data!);
   }
 
   /// Mismo patrón que `FilesRemoteDataSource.downloadFile` (mismo
