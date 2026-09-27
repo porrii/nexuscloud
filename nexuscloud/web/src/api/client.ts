@@ -494,6 +494,13 @@ export const api = {
   activity: (limit?: number) => request<ActivityEvent[]>(`/api/v1/activity${limit ? `?limit=${limit}` : ''}`),
   upload: uploadWithProgress,
   downloadUrl: (id: string) => `/api/v1/files/${id}`,
+  // Miniatura bajo demanda (§34, ADR-041): mismas cookies de sesión que el
+  // resto de <img>/<a href> de este cliente (ver la nota de arriba), así que
+  // un <img src> plano basta -- sin fetch+Blob, igual que downloadUrl. Puede
+  // 404/503 (desactivado, sin miniatura posible, o contención transitoria);
+  // quien la use debe manejar onError con un icono de repuesto, nunca asumir
+  // que siempre carga.
+  thumbnailUrl: (id: string) => `/api/v1/files/${id}/thumbnail`,
   fetchPreviewText,
   // Por defecto mueve a la papelera (§16); permanent=true la salta.
   deleteFile: (id: string) => request<void>(`/api/v1/files/${id}`, { method: 'DELETE' }),

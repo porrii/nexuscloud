@@ -46,6 +46,7 @@ type Server struct {
 	webdavLimiter          *security.RateLimiter // nil si webdav.enabled=false
 	stopPurge              chan struct{}
 	stopBackup             chan struct{}
+	stopThumbnails         chan struct{}
 }
 
 // Build realiza todo el arranque en frío: abrir BD, migrar, construir
@@ -118,6 +119,36 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	// lo desactive -- mismo criterio que las sesiones, no el de WebDAV.
 	apiTokenSvc := auth.NewAPITokenService(apiTokenRepo, userRepo, logger)
 	invitationSvc := auth.NewInvitationService(invitationRepo, userSvc, hasher)
+
+	// Miniaturas (§34, ADR-041): la caché se construye siempre (barre
+	// Layout.Thumbnails una vez para conocer su tamaño actual), igual que
+	// SQLAnonymousUploadRepository -- cfg.Thumbnails.Enabled es el
+	// interruptor real, comprobado dentro de FileService en cada operación
+	// que lo necesita (WithThumbnails más abajo). Así arrancar con
+	// thumbnails.enabled=false (el default) sigue sin tener ningún coste
+	// de decodificación ni de subproceso, solo esta contabilidad barata.
+	thumbnailCache, err := storage.NewThumbnailCache(layout.Thumbnails, cfg.Thumbnails.MaxCacheBytes)
+	if err != nil {
+		sqlDB.Close()
+		return nil, fmt.Errorf("preparando caché de miniaturas: %w", err)
+	}
+	thumbnailLimits := storage.ThumbnailLimits{
+		Image: storage.ImageThumbnailLimits{
+			MaxInputBytes: cfg.Thumbnails.MaxInputBytes,
+			MaxPixels:     cfg.Thumbnails.MaxPixels,
+			Timeout:       storage.DefaultImageThumbnailTimeout,
+		},
+		Video: storage.ExecThumbnailLimits{
+			MaxInputBytes: cfg.Thumbnails.MaxVideoInputBytes,
+			Timeout:       storage.DefaultVideoThumbnailTimeout,
+		},
+		PDF: storage.ExecThumbnailLimits{
+			MaxInputBytes: cfg.Thumbnails.MaxPDFInputBytes,
+			Timeout:       storage.DefaultPDFThumbnailTimeout,
+		},
+		MaxConcurrentGenerations: cfg.Thumbnails.MaxConcurrentGenerations,
+	}
+
 	fileSvc := storage.NewFileService(fileRepo, directoryRepo, versionRepo, shareRepo, poolRepo, providers, hasher,
 		cfg.Trash.Enabled, cfg.Versioning.Enabled, cfg.Versioning.MaxVersionsPerFile,
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
@@ -128,7 +159,8 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		// Subida anónima (§38, ADR-039): el repositorio se conecta siempre;
 		// sharing.anonymousUploadEnabled es el interruptor real, comprobado
 		// dentro de FileService en cada operación que lo necesita.
-		storage.WithAnonymousUploads(storage.NewSQLAnonymousUploadRepository(conn), cfg.Sharing.AnonymousUploadEnabled))
+		storage.WithAnonymousUploads(storage.NewSQLAnonymousUploadRepository(conn), cfg.Sharing.AnonymousUploadEnabled),
+		storage.WithThumbnails(storage.NewSQLThumbnailJobRepository(conn), thumbnailCache, layout.Temp, thumbnailLimits, cfg.Thumbnails.Enabled))
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 	backupRepo := backup.NewSQLRepository(conn)
 	// backupManager lo consume el bucle automático de más abajo (ADR-016);
@@ -275,11 +307,16 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 			os.Getenv("NEXUSCLOUD_BACKUP_PASSPHRASE"), os.Getenv("NEXUSCLOUD_BACKUP_REMOTE_TOKEN"), logger, stopBackup)
 	}
 
+	stopThumbnails := make(chan struct{})
+	if cfg.Thumbnails.Enabled {
+		startThumbnailLoop(fileSvc, auditRecorder, logger, stopThumbnails)
+	}
+
 	return &Server{
 		Handler: root, DB: sqlDB,
 		loginLimiter: loginLimiter, apiLimiter: apiLimiter, publicLimiter: publicLimiter,
 		anonymousUploadLimiter: anonymousUploadLimiter, webdavLimiter: webdavLimiter,
-		stopPurge: stopPurge, stopBackup: stopBackup,
+		stopPurge: stopPurge, stopBackup: stopBackup, stopThumbnails: stopThumbnails,
 	}, nil
 }
 
@@ -306,6 +343,60 @@ func startTrashPurgeLoop(fileSvc *storage.FileService, cfg config.TrashConfig, l
 	go func() {
 		runOnce()
 		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				runOnce()
+			case <-stop:
+				return
+			}
+		}
+	}()
+}
+
+// startThumbnailLoop lanza la generación de miniaturas en segundo plano
+// (§34, ADR-041 Decisión 1), esqueleto de startTrashPurgeLoop: toma UN
+// job pendiente por tick (secuencial, sin worker pool -- ningún otro
+// punto del proyecto tiene patrón de pool de trabajadores) y lo procesa.
+// Se ejecuta una vez al arrancar (por si quedaron jobs pendientes de
+// antes de un reinicio) y luego cada 10s.
+//
+// runOnce va envuelto en su propio recover(): a diferencia de un handler
+// HTTP (protegido por middleware.Recoverer, ver NewRouter), esta
+// goroutine de fondo no tiene ningún wrapper que la proteja de un panic
+// de decodificación -- un panic aquí sin recover tumbaría el proceso
+// entero para todos los inquilinos (§34 Decisión 6, hallazgo CRÍTICO del
+// pase de seguridad).
+func startThumbnailLoop(fileSvc *storage.FileService, auditLog *audit.Recorder, logger *slog.Logger, stop <-chan struct{}) {
+	runOnce := func() {
+		defer func() {
+			if p := recover(); p != nil {
+				logger.Error("panic procesando job de miniatura, el bucle sigue vivo para el siguiente tick", "panic", p)
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		result, err := fileSvc.ProcessNextThumbnailJob(ctx)
+		if err != nil {
+			logger.Error("procesando job de miniatura", "error", err)
+			return
+		}
+		if !result.Processed {
+			return
+		}
+		if result.BecameFailed {
+			// Solo al agotar los reintentos (§34 Decisión 1) -- nunca en
+			// cada intento intermedio ni en éxito. Sin actor humano: lo
+			// dispara este bucle, no una petición de usuario.
+			logger.Warn("miniatura agotó reintentos", "file_id", result.FileID, "error", result.LastError)
+			auditLog.Record(ctx, audit.EventThumbnailGenerationFailed, "", "file", result.FileID, "", map[string]any{"error": result.LastError})
+		}
+	}
+
+	go func() {
+		runOnce()
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
@@ -381,6 +472,9 @@ func (s *Server) Close() error {
 	}
 	if s.stopBackup != nil {
 		close(s.stopBackup)
+	}
+	if s.stopThumbnails != nil {
+		close(s.stopThumbnails)
 	}
 	return s.DB.Close()
 }

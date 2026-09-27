@@ -4,6 +4,7 @@ import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResu
 import AnonymousUploadDialog from '../components/AnonymousUploadDialog'
 import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
+import FileThumbnail from '../components/FileThumbnail'
 import ShareDialog from '../components/ShareDialog'
 import VersionHistoryDialog from '../components/VersionHistoryDialog'
 import { notifyUsageChanged } from '../quota'
@@ -318,7 +319,7 @@ export default function FilesPage() {
                       title="Previsualizar"
                       className="flex items-center gap-2 text-slate-800 hover:text-blue-700 dark:text-slate-200 dark:hover:text-blue-400"
                     >
-                      <span aria-hidden>📄</span>
+                      <FileThumbnail fileId={f.id} mimeType={f.mime_type} />
                       {f.name}
                     </button>
                   </td>

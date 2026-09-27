@@ -44,6 +44,68 @@ Modelo de autorización SEPARADO de los enlaces públicos de arriba, no una vari
 
 **Pendiente**: por defecto **no hay ninguna cuota** (hasta que el administrador configure `users edit --quota` o `storage.defaultQuotaBytes` el riesgo sigue abierto), y las cuotas no sustituyen a vigilar el espacio libre del disco: que la suma de cuotas supere lo que hay es cosa del administrador. Una subida por la CLI a la vez que el servidor, para el mismo usuario, puede pasarse de la cuota por un archivo (el cerrojo es de proceso).
 
+## Miniaturas (§34, [ADR-041](../architecture/decisions/ADR-041-miniaturas.md))
+
+Distinto de "Previsualización de contenido" de arriba en un punto esencial:
+la previsualización interpreta contenido de usuario en el NAVEGADOR de quien
+mira; las miniaturas lo hacen en el **servidor**, y para vídeo/PDF además
+ejecutando un binario externo (`ffmpeg`/`pdftoppm`) — la primera vez que
+NexusCloud hace cualquiera de las dos cosas. Por eso tiene su propia sección
+en vez de ampliar la de arriba: el actor relevante no es "quien mira", es
+"cualquier usuario autenticado que sube un archivo" — la generación se
+dispara automáticamente (`FileService.Upload` encola el job) sin que nadie
+tenga que llamar a ningún endpoint de miniatura para que el procesamiento
+ocurra.
+
+**Puede intentar**: subir una imagen con dimensiones declaradas
+astronómicas para una decompression bomb; subir un `.mp4`/`.pdf` cuyo
+contenido real intente hacer que ffmpeg/pdftoppm lean un archivo del propio
+servidor o una URL interna (LFI/SSRF vía demuxer); pedir muchas miniaturas
+de vídeo grandes nunca vistas a la vez para agotar memoria/CPU del host;
+provocar un panic en un decodificador con bytes malformados para tumbar el
+proceso; averiguar por temporización si otro inquilino ya subió un archivo
+de contenido idéntico al suyo.
+
+**Mitigado hoy**: **desactivado por defecto**
+(`thumbnails.enabled: false`) — la superficie de decodificación/subproceso
+ni existe hasta que el administrador la activa explícitamente, mismo
+criterio que `sharing.publicLinksEnabled`/`anonymousUploadEnabled`, aquí
+reforzado por ser además la primera vez que se cambia la imagen Docker de
+producción para dar cabida a un gestor de paquetes real. Límite de tamaño
+de entrada y de píxeles declarados (`image.DecodeConfig` antes de decodificar
+completo) antes de tocar el contenido de una imagen; un fuzz test dedicado
+(89.208 ejecuciones sin panic) cubre el pipeline de decodificación completo,
+no solo casos elegidos a mano. `ffmpeg` se invoca siempre con
+`-protocol_whitelist file`: el contenido de un `.mp4` que intente referenciar
+`file://` u otro protocolo se rechaza (confirmado con un fixture real que lo
+intenta); `pdftoppm` con `-f 1 -l 1` nunca procesa más de una página. Un
+semáforo de concurrencia global (`thumbnails.maxConcurrentGenerations`, 4
+por defecto) compartido por los tres pipelines, más `singleflight` para no
+duplicar trabajo, evita que muchas peticiones simultáneas agoten
+memoria/CPU — con el cupo lleno, `503` inmediato en vez de encolar sin
+límite. `middleware.Recoverer` (nuevo, protege TODO el servidor, no solo
+esta función) más `recover()` explícito en la goroutine de decodificación
+con timeout y en el bucle en segundo plano: un panic de decodificación se
+convierte en un intento fallido del job, nunca en una caída del proceso
+completo. La caché de miniaturas está particionada por propietario
+(`<ThumbnailsDir>/<owner_id>/<sha256>...`), no por contenido puro — cierra
+el oráculo de temporización cross-tenant que un diseño de deduplicación
+global habría abierto, sin renunciar a deduplicar dentro de un mismo
+usuario. Escritura de caché atómica (staging + rename): confirmada sin
+corrupción bajo escritura concurrente real (`-race`, 20 goroutines).
+
+**Pendiente**: sin sandboxing por namespaces/seccomp de ffmpeg/pdftoppm —
+un 0-day de memoria en cualquiera de los dos (ambos C/C++, con historial de
+bugs encontrados por fuzzing) da ejecución como el usuario del servicio;
+aceptado como límite conocido de esta fase, ver ADR-041. Sin eviction LRU
+de la caché de miniaturas: `thumbnails.maxCacheBytes` deja de generar
+miniaturas nuevas al llenarse, pero no libera espacio de las existentes por
+su cuenta. En Windows, sin `Setpgid`/cgroups: el timeout mata el proceso
+principal de ffmpeg/pdftoppm pero no tiene el mismo mecanismo de contención
+de recursos a nivel de SO que Linux (systemd `MemoryMax`/`CPUQuota` o
+`docker run --memory`/`--cpus`) — misma asimetría ya documentada en
+`docs/deployment.md` para el hardening general.
+
 ## Sesión/cuenta comprometida (credential theft)
 
 **Puede intentar**: usar una sesión o contraseña robada.

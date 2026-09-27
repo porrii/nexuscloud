@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/porrii/nexuscloud/internal/idgen"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -74,6 +75,23 @@ type FileService struct {
 	// limpiar lo suyo, aunque el administrador haya apagado la función.
 	anonymousUploads       AnonymousUploadRepository
 	anonymousUploadEnabled bool
+
+	// Miniaturas (§34, ADR-041): nil = desactivadas, ver WithThumbnails.
+	// thumbnailSem+thumbnailSingle son COMPARTIDOS por las 3 pipelines
+	// (imagen/vídeo/PDF) -- hallazgo ALTO del pase de security-reviewer
+	// sobre el diseño: sin límite de concurrencia, pedir la miniatura de
+	// muchos archivos nunca vistos a la vez puede agotar memoria (imagen:
+	// goroutines de decodificación abandonadas tras un timeout; vídeo/PDF:
+	// procesos concurrentes contra el mismo cgroup que el proceso
+	// principal) hasta que el OOM-killer del kernel mate al servidor
+	// entero, no solo a la función de miniaturas.
+	thumbnailJobs     ThumbnailJobRepository
+	thumbnailCache    *ThumbnailCache
+	thumbnailTempDir  string
+	thumbnailLimits   ThumbnailLimits
+	thumbnailsEnabled bool
+	thumbnailSem      chan struct{}
+	thumbnailSingle   singleflight.Group
 }
 
 func NewFileService(
@@ -282,6 +300,7 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 	if err := s.files.UpsertFile(ctx, meta); err != nil {
 		return nil, err
 	}
+	s.enqueueThumbnailJob(ctx, meta)
 	return meta, nil
 }
 
@@ -462,6 +481,11 @@ func (s *FileService) RestoreVersion(ctx context.Context, requesterID, fileID st
 	if err := s.files.UpsertFile(ctx, meta); err != nil {
 		return nil, err
 	}
+	// Restaurar una versión cambia qué contenido es "el actual" (nuevo
+	// SHA256) -- la miniatura cacheada de la versión anterior ya no
+	// corresponde a este archivo, así que hace falta un job nuevo, mismo
+	// criterio que una subida (§34, ADR-041).
+	s.enqueueThumbnailJob(ctx, meta)
 	return meta, nil
 }
 

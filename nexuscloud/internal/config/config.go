@@ -29,6 +29,7 @@ type Config struct {
 	Versioning    VersioningConfig    `yaml:"versioning"`
 	Sharing       SharingConfig       `yaml:"sharing"`
 	Search        SearchConfig        `yaml:"search"`
+	Thumbnails    ThumbnailsConfig    `yaml:"thumbnails"`
 	Backup        BackupConfig        `yaml:"backup"`
 	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
 	WebDAV        WebDAVConfig        `yaml:"webdav"`
@@ -184,6 +185,44 @@ type SearchConfig struct {
 	Enabled bool `yaml:"enabled"`
 }
 
+// ThumbnailsConfig gobierna la generación de miniaturas (§34, ADR-041).
+// Enabled es false por defecto: es la PRIMERA vez que el servidor
+// decodifica contenido de usuario Y ejecuta binarios externos
+// (ffmpeg/poppler-utils) sobre él -- mismo criterio que Backup.Enabled
+// (activación explícita y consciente del administrador), reforzado aquí
+// por el cambio de imagen Docker que exige vídeo/PDF (Decisión 0): un
+// administrador que actualice sin leer el changelog no debe encontrarse
+// de repente con ffmpeg corriendo sobre su contenido.
+type ThumbnailsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxInputBytes/MaxVideoInputBytes/MaxPDFInputBytes acotan el tamaño de
+	// ENTRADA antes de intentar decodificar/invocar un subproceso --
+	// primera línea de defensa contra decompression bombs y agotamiento
+	// de recursos (§34 Decisión 4). Límites separados porque un vídeo/PDF
+	// legítimo suele pesar mucho más que una imagen.
+	MaxInputBytes      int64 `yaml:"maxInputBytes"`
+	MaxVideoInputBytes int64 `yaml:"maxVideoInputBytes"`
+	MaxPDFInputBytes   int64 `yaml:"maxPdfInputBytes"`
+	// MaxPixels acota ancho*alto DECLARADOS de una imagen (leídos antes de
+	// decodificar completo) -- mitigación estándar contra decompression
+	// bombs de imagen.
+	MaxPixels int64 `yaml:"maxPixels"`
+	// MaxCacheBytes topa el tamaño TOTAL de la caché de miniaturas en
+	// disco (§34 Decisión 3) -- independiente de la cuota de cualquier
+	// usuario (las miniaturas no cuentan para ninguna cuota, son un
+	// artefacto de caché regenerable). Al superarlo, se deja de generar
+	// miniaturas nuevas; las existentes se siguen sirviendo. Sin eviction
+	// LRU en esta ronda -- límite conocido, documentado en ADR-041.
+	MaxCacheBytes int64 `yaml:"maxCacheBytes"`
+	// MaxConcurrentGenerations acota cuántas miniaturas se generan a la
+	// vez, compartido por las 3 pipelines (§34 Decisión 6, hallazgo ALTO
+	// del pase de security-reviewer sobre el diseño): sin este límite,
+	// pedir la miniatura de muchos archivos nunca vistos a la vez puede
+	// agotar memoria hasta que el OOM-killer del kernel mate al proceso
+	// entero, no solo a la función de miniaturas.
+	MaxConcurrentGenerations int `yaml:"maxConcurrentGenerations"`
+}
+
 // BackupConfig gobierna el backup automático (§18 "programación"). A
 // diferencia de Trash/Versioning/Sharing (que son "gratis" y por eso
 // activadas por defecto), un backup automático copia datos reales a
@@ -337,10 +376,19 @@ func Defaults() *Config {
 			PublicRegistrationEnabled: false,
 			WebAuthn:                  WebAuthnConfig{Enabled: false},
 		},
-		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
-		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
-		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false, AnonymousUploadEnabled: false},
-		Search:        SearchConfig{Enabled: true},
+		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
+		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
+		Sharing:    SharingConfig{Enabled: true, PublicLinksEnabled: false, AnonymousUploadEnabled: false},
+		Search:     SearchConfig{Enabled: true},
+		Thumbnails: ThumbnailsConfig{
+			Enabled:                  false,
+			MaxInputBytes:            25 * 1024 * 1024,
+			MaxVideoInputBytes:       200 * 1024 * 1024,
+			MaxPDFInputBytes:         50 * 1024 * 1024,
+			MaxPixels:                40_000_000,
+			MaxCacheBytes:            2 * 1024 * 1024 * 1024,
+			MaxConcurrentGenerations: 4,
+		},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
 		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},

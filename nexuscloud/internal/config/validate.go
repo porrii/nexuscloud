@@ -104,6 +104,33 @@ func Validate(cfg *Config) error {
 		return fmt.Errorf("versioning.maxVersionsTotalSizeBytes no puede ser negativo (0 = sin límite)")
 	}
 
+	// Miniaturas (§34, ADR-041): estos límites son la primera línea de
+	// defensa contra decompression bombs/agotamiento de recursos (Decisión
+	// 4) y contra el OOM del proceso principal (Decisión 6) -- solo tienen
+	// sentido exigirlos si la función está activada; con enabled=false ni
+	// se registran las rutas ni arranca el bucle, así que un valor
+	// disparatado ahí no puede hacer daño.
+	if cfg.Thumbnails.Enabled {
+		if cfg.Thumbnails.MaxConcurrentGenerations < 1 {
+			return fmt.Errorf("thumbnails.maxConcurrentGenerations debe ser >= 1 cuando thumbnails.enabled=true")
+		}
+		if cfg.Thumbnails.MaxInputBytes < 1 {
+			return fmt.Errorf("thumbnails.maxInputBytes debe ser mayor que 0 cuando thumbnails.enabled=true")
+		}
+		if cfg.Thumbnails.MaxVideoInputBytes < 1 {
+			return fmt.Errorf("thumbnails.maxVideoInputBytes debe ser mayor que 0 cuando thumbnails.enabled=true")
+		}
+		if cfg.Thumbnails.MaxPDFInputBytes < 1 {
+			return fmt.Errorf("thumbnails.maxPdfInputBytes debe ser mayor que 0 cuando thumbnails.enabled=true")
+		}
+		if cfg.Thumbnails.MaxPixels < 1 {
+			return fmt.Errorf("thumbnails.maxPixels debe ser mayor que 0 cuando thumbnails.enabled=true")
+		}
+	}
+	if cfg.Thumbnails.MaxCacheBytes < 0 {
+		return fmt.Errorf("thumbnails.maxCacheBytes no puede ser negativo (0 = sin límite)")
+	}
+
 	if cfg.Backup.Enabled && cfg.Backup.IntervalMinutes < 1 {
 		return fmt.Errorf("backup.intervalMinutes debe ser >= 1 cuando backup.enabled=true")
 	}

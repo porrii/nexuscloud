@@ -53,7 +53,7 @@ storage:
   # los archivos de usuario; config validate lo rechaza).
   databaseDir: ""       # vacío = <dataDir>/database   (fichero SQLite, si driver=sqlite)
   cacheDir: ""          # vacío = <dataDir>/cache
-  thumbnailsDir: ""     # vacío = <dataDir>/thumbnails (miniaturas, cuando se implementen)
+  thumbnailsDir: ""     # vacío = <dataDir>/thumbnails (caché de miniaturas, ver bloque thumbnails más abajo)
   versionsDir: ""       # vacío = <dataDir>/versions   (historial de versiones)
   tempDir: ""           # vacío = <dataDir>/tmp        (temporales de uso general)
   logsDir: ""           # vacío = <dataDir>/logs
@@ -126,6 +126,27 @@ sharing:
 # con una salvedad explícita de privacidad).
 search:
   enabled: true
+
+# Miniaturas (§34, ADR-041): JPG/PNG/GIF/WEBP se decodifican en el propio
+# proceso (stdlib de Go + x/image/webp); vídeo y PDF invocan ffmpeg/
+# pdftoppm (poppler-utils) como subproceso -- el PRIMER exec.Command de
+# NexusCloud sobre contenido de usuario. Por eso, a diferencia de
+# search.enabled, esto empieza DESACTIVADO: actívalo a propósito.
+# ffmpeg/poppler-utils deben estar instalados en el sistema (la imagen
+# Docker oficial de esta fase ya los trae) -- si faltan, los archivos de
+# vídeo/PDF simplemente se quedan sin miniatura (icono genérico), nunca
+# rompen nada. Los límites de tamaño de entrada y de dimensiones son la
+# primera línea de defensa contra decompression bombs; maxCacheBytes topa
+# el disco que ocupa la caché en TOTAL, independiente de la cuota de
+# cualquier usuario (las miniaturas no cuentan para ninguna cuota).
+thumbnails:
+  enabled: false
+  maxInputBytes: 26214400        # 25 MiB -- imágenes (JPG/PNG/GIF/WEBP)
+  maxVideoInputBytes: 209715200  # 200 MiB
+  maxPdfInputBytes: 52428800     # 50 MiB
+  maxPixels: 40000000            # 40 megapíxeles declarados, antes de decodificar completo
+  maxCacheBytes: 2147483648      # 2 GiB en total, sin eviction LRU todavía (límite conocido)
+  maxConcurrentGenerations: 4    # compartido por los 3 tipos -- evita agotar memoria con muchas a la vez
 
 api:
   enabled: true

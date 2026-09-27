@@ -220,3 +220,25 @@ func toAnonymousUploadResponse(a *storage.AnonymousUpload, directoryName string)
 		CreatedAt:          a.CreatedAt,
 	}
 }
+
+// thumbnailJobResponse (§34, ADR-041): GET /admin/thumbnail-jobs -- solo lo
+// que un administrador necesita para decidir si algo va mal (qué archivo,
+// qué tipo, cuántos intentos lleva, cuál fue el último error), nunca el
+// SHA256 interno (sin valor para esa decisión, ver §172).
+type thumbnailJobResponse struct {
+	ID        string    `json:"id"`
+	FileID    string    `json:"file_id"`
+	Kind      string    `json:"kind"`
+	Status    string    `json:"status"`
+	Attempts  int       `json:"attempts"`
+	LastError string    `json:"last_error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func toThumbnailJobResponse(j *storage.ThumbnailJob) thumbnailJobResponse {
+	return thumbnailJobResponse{
+		ID: j.ID, FileID: j.FileID, Kind: string(j.Kind), Status: string(j.Status),
+		Attempts: j.Attempts, LastError: j.LastError, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt,
+	}
+}

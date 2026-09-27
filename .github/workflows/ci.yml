@@ -4,6 +4,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Rebuild semanal (§34, ADR-041 Decisión 0): la imagen de runtime pasó de
+  # distroless a debian:12-slim con ffmpeg/poppler-utils instalados vía apt
+  # -- ni govulncheck (solo módulos Go) ni Dependabot (ecosistema "docker"
+  # solo sigue la línea FROM) ven nunca lo que "apt-get install" resuelve en
+  # cada build, así que sin este disparador programado los paquetes de apt
+  # quedarían congelados sin ninguna alerta de CVE hasta el próximo cambio
+  # de código. Miércoles a las 05:23 UTC -- día/hora sin significado
+  # especial, solo lejos de medianoche/inicio de semana para no competir
+  # con la hora en punto que usa todo el mundo.
+  schedule:
+    - cron: "23 5 * * 3"
 
 permissions:
   contents: read
@@ -14,8 +25,17 @@ env:
 # Todo el código Go vive en nexuscloud/ (reestructuración 2026-09-14, ver
 # README.md de la raíz) -- working-directory a nivel de job en vez de
 # repetirlo en cada "run:" individual.
+#
+# Los 4 jobs de más abajo (build-test/lint/security-scan/cross-compile) se
+# saltan en el disparador "schedule" (`if: github.event_name != 'schedule'`):
+# no dependen del reloj, solo del código, así que repetirlos cada semana sin
+# ningún cambio sería puro gasto de minutos de CI. El rebuild semanal existe
+# única y exclusivamente para que docker-build + el escaneo Trivy de abajo
+# vean parches de apt nuevos -- ver el comentario del disparador "schedule"
+# más arriba.
 jobs:
   build-test:
+    if: github.event_name != 'schedule'
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
@@ -33,6 +53,7 @@ jobs:
       - run: go test ./... -race -cover
 
   lint:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -52,6 +73,7 @@ jobs:
           fi
 
   security-scan:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -71,6 +93,7 @@ jobs:
   # Verifica que el binario cruza a las plataformas objetivo de §60/§63/§64:
   # Linux amd64/arm64 (servidor, Raspberry Pi) y Windows amd64.
   cross-compile:
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -98,3 +121,21 @@ jobs:
       # Sin working-directory aquí (ese default es para "run:" de shell,
       # no afecta a "docker build") -- el contexto se pasa explícito.
       - run: docker build -t nexuscloud:ci -f nexuscloud/Dockerfile nexuscloud
+      # Escaneo de vulnerabilidades de la imagen (§34, ADR-041 Decisión 0):
+      # el paso anterior a esta fase no tenía nada que escanear (runtime
+      # distroless, sin gestor de paquetes) -- desde debian:12-slim +
+      # ffmpeg/poppler-utils sí. Pinnado por commit SHA, NUNCA por tag: el
+      # 2026-03-19 aquasecurity/trivy-action sufrió un compromiso real de
+      # cadena de suministro (credenciales robadas, 76 de 77 tags de
+      # versión reapuntados a un commit malicioso que robaba secretos del
+      # runner) -- un tag sigue siendo mutable después de ese incidente, un
+      # SHA no. ed142fd0673e97e23eac54620cfb913e5ce36c25 = v0.36.0,
+      # publicado el 2026-04-22, después de la remediación (el primer tag
+      # ya parcheado fue 0.35.0).
+      - name: Escaneo de vulnerabilidades (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: nexuscloud:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          ignore-unfixed: true

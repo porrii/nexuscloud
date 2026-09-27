@@ -66,6 +66,7 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | DELETE | `/api/v1/files/{id}` | sesión, propietario | Mueve a la papelera (§16); `?permanent=true` borra directamente para siempre |
 | PATCH | `/api/v1/files/{id}` | sesión, propietario | `{parent_path?, name?}` → mueve y/o renombra de verdad (ADR-030, §85); mismo id, historial de versiones y comparticiones intactos; 409 si el destino ya está ocupado |
 | POST | `/api/v1/files/{id}/restore` | sesión, propietario | Saca un archivo de la papelera |
+| GET | `/api/v1/files/{id}/thumbnail` | sesión, propietario | Miniatura JPEG, máx. 320px en su lado mayor (§34, [ADR-041](architecture/decisions/ADR-041-miniaturas.md)); solo imagen/vídeo/PDF. Genera bajo demanda si no está en caché. `404 not_found` si `thumbnails.enabled=false` o el tipo no tiene miniatura posible; `503 service_unavailable` si hay contención transitoria (caché llena o demasiadas generándose a la vez) — reintenta más tarde |
 | GET | `/api/v1/files/{id}/versions` | sesión, propietario | Historial de versiones, más reciente primero (§15) |
 | GET | `/api/v1/files/{id}/versions/{n}` | sesión, propietario | Descarga el contenido de esa versión concreta |
 | POST | `/api/v1/files/{id}/versions/{n}/restore` | sesión, propietario | Restaura esa versión como contenido actual (la actual pasa al historial) |
@@ -93,6 +94,7 @@ Los mensajes son siempre genéricos (§170); nunca incluyen detalles internos (S
 | GET | `/api/v1/public/anonymous-uploads/{token}` | — | Probe público: solo `{label, max_upload_size_bytes}` si el enlace es válido. Un único `404 not_found` genérico para inexistente, revocado o caducado — no distingue el motivo |
 | POST | `/api/v1/public/anonymous-uploads/{token}/upload?name=` | — | Sube directo a la raíz de la carpeta del enlace (sin sub-ruta: no hay navegación posible). No sobrescribe un archivo existente (`409 destination_occupied`); `413 upload_too_large` si supera el límite del enlace; `507 quota_exceeded` si no cabe en la cuota del propietario (mensaje genérico); mismo `404` genérico que el probe si el enlace ya no es válido |
 | GET | `/api/v1/audit?limit=&offset=` | admin | Eventos de auditoría, paginado |
+| GET | `/api/v1/admin/thumbnail-jobs?status=pending\|failed&limit=&offset=` | admin | Cola persistente de miniaturas (§34, [ADR-041](architecture/decisions/ADR-041-miniaturas.md)): qué está pendiente o se dio por fallido tras agotar reintentos. `status` por defecto `pending`; `400 invalid_request` si es otro valor |
 | GET | `/api/v1/public/client-updates/releases.json` | — | Feed de actualizaciones del cliente de escritorio (Velopack), reenviado desde GitHub Releases; solo si `clientUpdates.enabled=true` (§ADR-032) |
 | GET | `/api/v1/public/client-updates/download/{assetName}` | — | Descarga un asset exacto de esa misma release (paquete/instalador); 404 si el nombre no coincide con ningún asset real |
 

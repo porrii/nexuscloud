@@ -57,6 +57,16 @@ const (
 	// en los metadatos (mismo criterio que via=shared_directory/public_share).
 	EventAnonymousUploadLinkCreated = "anonymous_upload_link_created"
 	EventAnonymousUploadLinkRevoked = "anonymous_upload_link_revoked"
+
+	// Miniaturas (§34, ADR-041): solo al agotar los reintentos de un job
+	// (thumbnail_jobs.status pasa a failed), nunca en cada intento
+	// intermedio ni en éxito -- sería ruido, no señal de auditoría. Sin
+	// actor humano (lo dispara el bucle en segundo plano o, bajo demanda,
+	// la propia petición del dueño del archivo) -- ActorUserID puede ir
+	// vacío, mismo criterio que EventLoginFailed. NO entra en
+	// recentActivityEventTypes (activity_handlers.go), mismo criterio que
+	// EventFavoriteAdded/Removed.
+	EventThumbnailGenerationFailed = "thumbnail_generation_failed"
 )
 
 type Event struct {

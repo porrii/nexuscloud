@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/porrii/nexuscloud/internal/security"
 )
@@ -18,6 +19,15 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 	r := chi.NewRouter()
 	keyFunc := func(req *http.Request) string { return security.ClientIP(req, h.TrustedProxies) }
 
+	// middleware.Recoverer (§34, ADR-041 Decisión 6, hallazgo CRÍTICO del
+	// pase de security-reviewer sobre el diseño de miniaturas): hasta esta
+	// fase ningún panic de Go se recuperaba en todo el proyecto -- nunca
+	// había código de parseo real expuesto a bytes adversariales. Un panic
+	// de decodificación (índice fuera de rango, división por cero...) en
+	// CUALQUIER handler tumbaría el proceso entero para todos los
+	// inquilinos. Va primero, antes que cualquier otro middleware, para
+	// cubrir también un panic dentro de ellos.
+	r.Use(middleware.Recoverer)
 	r.Use(apiLimiter.Middleware(keyFunc))
 
 	// Rutas públicas: login e invitations/redeem son los dos únicos puntos
@@ -131,6 +141,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 		r.Delete("/files/{id}", h.DeleteFile)
 		r.Patch("/files/{id}", h.MoveFile)
 		r.Post("/files/{id}/restore", h.RestoreFile)
+		// Miniaturas (§34, ADR-041): sin flag propio de activación de ruta
+		// (a diferencia de /search) -- thumbnails.enabled se comprueba
+		// dentro de FileService, mismo criterio que
+		// sharing.anonymousUploadEnabled; con la función desactivada,
+		// responde 404 en vez de dejar de existir la ruta.
+		r.Get("/files/{id}/thumbnail", h.GetFileThumbnail)
 		r.Get("/files/{id}/versions", h.ListFileVersions)
 		r.Get("/files/{id}/versions/{versionNum}", h.DownloadFileVersion)
 		r.Post("/files/{id}/versions/{versionNum}/restore", h.RestoreFileVersion)
@@ -174,6 +190,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 			r.Get("/audit", h.ListAuditEvents)
 
 			r.Get("/storage/disks", h.ListDisks)
+
+			// Miniaturas (§34, ADR-041 Decisión 1): visibilidad
+			// administrativa sobre la cola persistente -- qué está pendiente
+			// o qué se dio por fallido tras agotar reintentos. Sin flag de
+			// activación propio, igual que la ruta bajo demanda de arriba.
+			r.Get("/admin/thumbnail-jobs", h.ListThumbnailJobs)
 
 			// Búsqueda cruzando usuarios (§33 "Usuario" como criterio):
 			// mismo interruptor que la búsqueda personal.

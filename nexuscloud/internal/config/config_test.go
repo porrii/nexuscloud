@@ -38,6 +38,62 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if cfg.Backup.Enabled {
 		t.Error("backup.enabled debe ser false por defecto: copia datos reales, por defecto al mismo disco (§19), el admin debe activarlo a propósito (ADR-016)")
 	}
+	if cfg.Thumbnails.Enabled {
+		t.Error("thumbnails.enabled debe ser false por defecto (§34, ADR-041): primera vez que el servidor decodifica contenido de usuario y ejecuta binarios externos, el admin debe activarlo a propósito")
+	}
+}
+
+func TestDefaultsThumbnailsLimitsSonPositivos(t *testing.T) {
+	d := Defaults()
+	if d.Thumbnails.MaxInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxInputBytes)
+	}
+	if d.Thumbnails.MaxVideoInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxVideoInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxVideoInputBytes)
+	}
+	if d.Thumbnails.MaxPDFInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxPDFInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxPDFInputBytes)
+	}
+	if d.Thumbnails.MaxPixels <= 0 {
+		t.Errorf("Thumbnails.MaxPixels = %d, esperado > 0 por defecto", d.Thumbnails.MaxPixels)
+	}
+	if d.Thumbnails.MaxCacheBytes <= 0 {
+		t.Errorf("Thumbnails.MaxCacheBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxCacheBytes)
+	}
+	if d.Thumbnails.MaxConcurrentGenerations < 1 {
+		t.Errorf("Thumbnails.MaxConcurrentGenerations = %d, esperado >= 1 por defecto", d.Thumbnails.MaxConcurrentGenerations)
+	}
+}
+
+func TestValidateRechazaThumbnailsMalConfigurado(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"maxConcurrentGenerations en 0", func(c *Config) { c.Thumbnails.MaxConcurrentGenerations = 0 }},
+		{"maxInputBytes en 0", func(c *Config) { c.Thumbnails.MaxInputBytes = 0 }},
+		{"maxVideoInputBytes en 0", func(c *Config) { c.Thumbnails.MaxVideoInputBytes = 0 }},
+		{"maxPdfInputBytes en 0", func(c *Config) { c.Thumbnails.MaxPDFInputBytes = 0 }},
+		{"maxPixels en 0", func(c *Config) { c.Thumbnails.MaxPixels = 0 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Thumbnails.Enabled = true
+			tc.mutate(cfg)
+			if err := Validate(cfg); err == nil {
+				t.Errorf("Validate no rechazó thumbnails con %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestValidateRechazaMaxCacheBytesNegativo(t *testing.T) {
+	cfg := Defaults()
+	cfg.Thumbnails.MaxCacheBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate no rechazó thumbnails.maxCacheBytes negativo")
+	}
 }
 
 func TestLoadMissingFileFallsBackToDefaults(t *testing.T) {

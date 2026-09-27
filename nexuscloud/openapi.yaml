@@ -626,6 +626,37 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
 
+  /files/{id}/thumbnail:
+    get:
+      summary: Obtener la miniatura de un archivo (§34, ADR-041)
+      description: >
+        Solo imagen/vídeo/PDF tienen miniatura posible. Genera bajo demanda
+        si todavía no está en caché (síncrono); siempre JPEG, máx. 320px en
+        su lado mayor preservando proporción, sea cual sea el formato de
+        entrada.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "200":
+          description: Miniatura JPEG
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404":
+          description: >
+            Archivo no encontrado, thumbnails.enabled=false, o el tipo de
+            archivo no tiene miniatura posible (mismo código de error
+            "not_found" en los tres casos).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Contención transitoria (caché llena o demasiadas generándose a la vez) -- reintenta más tarde
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /directories:
     post:
       summary: Crear una carpeta (idempotente)
@@ -1172,6 +1203,33 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/AuditEvent" }
 
+  /admin/thumbnail-jobs:
+    get:
+      summary: Listar la cola persistente de miniaturas (admin, §34, ADR-041)
+      description: >
+        Visibilidad administrativa sobre qué está pendiente o se dio por
+        fallido tras agotar reintentos -- la razón por la que la cola es
+        una tabla persistente en vez de una cola en memoria.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, failed], default: pending }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ThumbnailJob" }
+        "400": { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -1469,3 +1527,16 @@ components:
         target_id: { type: string }
         ip: { type: string }
         metadata: { type: object, additionalProperties: true }
+
+    ThumbnailJob:
+      type: object
+      description: Un job pendiente o fallido de generación de miniatura (§34, ADR-041). Un job resuelto con éxito se borra -- solo aparecen aquí los que necesitan atención.
+      properties:
+        id: { type: string, format: uuid }
+        file_id: { type: string, format: uuid }
+        kind: { type: string, enum: [image, video, pdf] }
+        status: { type: string, enum: [pending, failed] }
+        attempts: { type: integer }
+        last_error: { type: string, description: "Ausente si nunca falló todavía" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
