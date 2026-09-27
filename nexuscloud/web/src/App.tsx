@@ -8,6 +8,7 @@ import FavoritesPage from './pages/FavoritesPage'
 import FilesPage from './pages/FilesPage'
 import LoginPage from './pages/LoginPage'
 import PublicSharePage from './pages/PublicSharePage'
+import SearchPage from './pages/SearchPage'
 import SharedPage from './pages/SharedPage'
 import TrashPage from './pages/TrashPage'
 
@@ -29,6 +30,7 @@ export default function App() {
             }
           >
             <Route path="/" element={<FilesPage />} />
+            <Route path="/search" element={<SearchPage />} />
             <Route path="/shared" element={<SharedPage />} />
             <Route path="/favorites" element={<FavoritesPage />} />
             <Route path="/trash" element={<TrashPage />} />

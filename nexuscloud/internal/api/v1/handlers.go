@@ -59,4 +59,8 @@ type Handlers struct {
 	// real a configurar en el cliente en vez de suponer "/webdav". Solo
 	// tiene efecto si WebDAVTokens != nil.
 	WebDAVPath string
+	// SearchEnabled (§33): solo se usa si search.enabled=true en
+	// config.yaml. Con false (nunca por defecto), NewRouter ni siquiera
+	// registra las rutas de búsqueda, mismo criterio que ClientUpdatesProxy.
+	SearchEnabled bool
 }

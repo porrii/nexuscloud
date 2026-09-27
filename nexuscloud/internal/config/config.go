@@ -28,6 +28,7 @@ type Config struct {
 	Trash         TrashConfig         `yaml:"trash"`
 	Versioning    VersioningConfig    `yaml:"versioning"`
 	Sharing       SharingConfig       `yaml:"sharing"`
+	Search        SearchConfig        `yaml:"search"`
 	Backup        BackupConfig        `yaml:"backup"`
 	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
 	WebDAV        WebDAVConfig        `yaml:"webdav"`
@@ -170,6 +171,17 @@ type SharingConfig struct {
 	Enabled                bool `yaml:"enabled"`
 	PublicLinksEnabled     bool `yaml:"publicLinksEnabled"`
 	AnonymousUploadEnabled bool `yaml:"anonymousUploadEnabled"`
+}
+
+// SearchConfig gobierna el buscador de metadatos (§33). A diferencia de
+// PublicLinksEnabled/AnonymousUploadEnabled (que empiezan en false por ser
+// superficies SIN sesión), buscar es 100% autenticado y de solo lectura
+// sobre datos que el usuario ya podía ver por GET /files -- no añade
+// superficie nueva, así que Enabled es true por defecto, mismo criterio que
+// Trash/Versioning. Con Enabled=false, las rutas de búsqueda ni se
+// registran en el router (mismo patrón que ClientUpdatesProxy).
+type SearchConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // BackupConfig gobierna el backup automático (§18 "programación"). A
@@ -328,6 +340,7 @@ func Defaults() *Config {
 		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
 		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
 		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false, AnonymousUploadEnabled: false},
+		Search:        SearchConfig{Enabled: true},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
 		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},

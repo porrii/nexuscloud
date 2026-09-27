@@ -237,6 +237,45 @@ func escapeLikePattern(s string) string {
 	return s
 }
 
+// SearchDirectories busca carpetas ACTIVAS de un propietario según f (§33).
+// MimeType/Ext/SizeMin/SizeMax de f se ignoran -- una carpeta no tiene tipo,
+// extensión ni tamaño propio.
+func (r *SQLDirectoryRepository) SearchDirectories(ctx context.Context, ownerID string, f SearchFilters) ([]*Directory, error) {
+	conds, args := searchConditions(f)
+	where := "owner_id = ? AND deleted_at IS NULL"
+	allArgs := append([]any{ownerID}, args...)
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	rows, err := r.conn.QueryContext(ctx, directorySelectColumns+` WHERE `+where+` ORDER BY name`, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("buscando carpetas: %w", err)
+	}
+	defer rows.Close()
+	return scanDirectoryRows(rows)
+}
+
+// SearchDirectoriesAllOwners es la variante admin: ver el mismo criterio en
+// SQLFileRepository.SearchFilesAllOwners.
+func (r *SQLDirectoryRepository) SearchDirectoriesAllOwners(ctx context.Context, f SearchFilters, ownerID string) ([]*Directory, error) {
+	conds, args := searchConditions(f)
+	where := "deleted_at IS NULL"
+	allArgs := args
+	if ownerID != "" {
+		where = "owner_id = ? AND " + where
+		allArgs = append([]any{ownerID}, args...)
+	}
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	rows, err := r.conn.QueryContext(ctx, directorySelectColumns+` WHERE `+where+` ORDER BY owner_id, name`, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("buscando carpetas (admin): %w", err)
+	}
+	defer rows.Close()
+	return scanDirectoryRows(rows)
+}
+
 const directorySelectColumns = `SELECT id, pool_id, owner_id, parent_path, name, created_at, deleted_at FROM directories`
 
 func scanDirectoryRows(rows *sql.Rows) ([]*Directory, error) {

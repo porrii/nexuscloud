@@ -41,6 +41,16 @@ func toUserResponse(u *users.User) userResponse {
 	}
 }
 
+// meResponse extiende userResponse con is_admin -- solo GET /users/me lo
+// necesita (la web lo usa para decidir si mostrar la búsqueda entre
+// usuarios, §33), así que se calcula aparte en vez de tocar userResponse/
+// toUserResponse, usados también por login/redeem/listar/crear/editar
+// usuario, donde el rol de la respuesta no aporta nada.
+type meResponse struct {
+	userResponse
+	IsAdmin bool `json:"is_admin"`
+}
+
 type sessionResponse struct {
 	ID         string    `json:"id"`
 	Device     string    `json:"device,omitempty"`

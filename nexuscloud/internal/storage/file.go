@@ -76,4 +76,14 @@ type FileRepository interface {
 	// move no cambia contenido, actualizarlo dispararía descargas
 	// innecesarias en otros dispositivos que ya tengan este archivo.
 	MoveFile(ctx context.Context, id, newParentPath, newName string) error
+	// SearchFiles busca archivos ACTIVOS de un único propietario según f
+	// (§33). SearchFilesAllOwners es la variante admin: ownerID vacío = sin
+	// acotar a nadie (busca en TODOS los propietarios), o un ID concreto
+	// para filtrar por uno. Se separan en dos métodos -- en vez de un único
+	// SearchFiles con un ownerID que "" pudiera leerse como "sin filtro" por
+	// accidente -- para que la autorización de cada camino quede explícita
+	// en la propia firma: solo FileService.SearchAsAdmin llama a la
+	// variante AllOwners.
+	SearchFiles(ctx context.Context, ownerID string, f SearchFilters) ([]*FileMeta, error)
+	SearchFilesAllOwners(ctx context.Context, f SearchFilters, ownerID string) ([]*FileMeta, error)
 }

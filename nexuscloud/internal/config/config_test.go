@@ -32,6 +32,9 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if !cfg.Sharing.Enabled {
 		t.Error("sharing.enabled (compartición interna usuario/grupo, siempre autenticada) debe ser true por defecto, igual que trash/versioning")
 	}
+	if !cfg.Search.Enabled {
+		t.Error("search.enabled debe ser true por defecto (§33): solo lectura sobre datos que el usuario ya podía ver, no añade superficie nueva")
+	}
 	if cfg.Backup.Enabled {
 		t.Error("backup.enabled debe ser false por defecto: copia datos reales, por defecto al mismo disco (§19), el admin debe activarlo a propósito (ADR-016)")
 	}

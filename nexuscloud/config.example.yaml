@@ -119,6 +119,14 @@ sharing:
   publicLinksEnabled: false
   anonymousUploadEnabled: false
 
+# Buscador de metadatos (§33): nombre/ruta/tipo/extensión/fecha/tamaño sobre
+# lo que el propio usuario ya podía ver por GET /files -- solo lectura, no
+# añade superficie nueva, por eso activado por defecto. Búsqueda de
+# CONTENIDO no está implementada (el spec solo pide "preparar arquitectura",
+# con una salvedad explícita de privacidad).
+search:
+  enabled: true
+
 api:
   enabled: true
 

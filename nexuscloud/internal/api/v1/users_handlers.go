@@ -15,7 +15,13 @@ import (
 
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFromContext(r.Context())
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	isAdmin, err := h.UserSvc.IsAdmin(r.Context(), u.ID)
+	if err != nil {
+		h.Logger.Error("comprobando privilegios de administrador", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
+		return
+	}
+	writeJSON(w, http.StatusOK, meResponse{userResponse: toUserResponse(u), IsAdmin: isAdmin})
 }
 
 func (h *Handlers) ListUsers(w http.ResponseWriter, r *http.Request) {

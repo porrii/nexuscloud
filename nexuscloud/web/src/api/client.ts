@@ -13,6 +13,9 @@ export interface User {
   has_totp: boolean
   created_at: string
   last_login_at?: string
+  // is_admin (§33): solo lo rellena GET /users/me -- la web lo usa para
+  // decidir si mostrar la búsqueda entre usuarios.
+  is_admin?: boolean
 }
 
 export type QuotaSource = 'user' | 'group' | 'global' | 'none'
@@ -109,6 +112,31 @@ export interface FileEntry {
 export interface ListResult {
   directories: DirectoryEntry[]
   files: FileEntry[]
+}
+
+// SearchFilters refleja los query params que aceptan GET /search y
+// GET /admin/search (§33). Todos opcionales; ausente = sin ese filtro.
+export interface SearchFilters {
+  q?: string
+  type?: string
+  ext?: string
+  date_from?: string
+  date_to?: string
+  size_min?: number
+  size_max?: number
+}
+
+function searchQueryString(f: SearchFilters, owner?: string): string {
+  const params = new URLSearchParams()
+  if (f.q) params.set('q', f.q)
+  if (f.type) params.set('type', f.type)
+  if (f.ext) params.set('ext', f.ext)
+  if (f.date_from) params.set('date_from', f.date_from)
+  if (f.date_to) params.set('date_to', f.date_to)
+  if (f.size_min !== undefined) params.set('size_min', String(f.size_min))
+  if (f.size_max !== undefined) params.set('size_max', String(f.size_max))
+  if (owner) params.set('owner', owner)
+  return params.toString()
 }
 
 // Favorite refleja favoriteResponse (internal/api/v1/favorite_handlers.go).
@@ -429,6 +457,11 @@ export const api = {
   revokeApiToken: (id: string) => request<void>(`/api/v1/auth/api-tokens/${id}`, { method: 'DELETE' }),
 
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
+
+  // Búsqueda (§33): recursiva sobre todo el árbol propio (search) o
+  // cruzando usuarios (searchAsAdmin, admin-only; owner es un username).
+  search: (f: SearchFilters) => request<ListResult>(`/api/v1/search?${searchQueryString(f)}`),
+  searchAsAdmin: (f: SearchFilters, owner?: string) => request<ListResult>(`/api/v1/admin/search?${searchQueryString(f, owner)}`),
 
   // Favoritos (§87, ADR-038): solo sobre el árbol propio del usuario.
   favorites: () => request<ListResult>('/api/v1/favorites'),

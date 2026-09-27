@@ -118,6 +118,13 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 		// Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
 		r.Get("/activity", h.ListActivity)
 
+		// Búsqueda (§33): recursiva sobre TODO el árbol propio, a diferencia
+		// de GET /files (una carpeta concreta). Con search.enabled=false,
+		// esta ruta ni se registra -- mismo criterio que ClientUpdatesProxy.
+		if h.SearchEnabled {
+			r.Get("/search", h.Search)
+		}
+
 		r.Get("/files", h.ListFiles)
 		r.Post("/files", h.UploadFile)
 		r.Get("/files/{id}", h.DownloadFile)
@@ -167,6 +174,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 			r.Get("/audit", h.ListAuditEvents)
 
 			r.Get("/storage/disks", h.ListDisks)
+
+			// Búsqueda cruzando usuarios (§33 "Usuario" como criterio):
+			// mismo interruptor que la búsqueda personal.
+			if h.SearchEnabled {
+				r.Get("/admin/search", h.AdminSearch)
+			}
 		})
 	})
 

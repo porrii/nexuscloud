@@ -183,6 +183,78 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/ActivityEvent" }
 
+  /search:
+    get:
+      summary: Búsqueda de metadatos sobre el árbol propio (§33, ADR-040)
+      description: >
+        Filtra por nombre/ruta (q, case-insensitive), tipo MIME (type, como
+        prefijo, p.ej. "image/"), extensión exacta sin punto (ext), fecha de
+        creación (date_from/date_to) y tamaño en bytes (size_min/size_max).
+        Solo metadatos, nunca contenido. Misma forma de respuesta que
+        GET /files, con favorite_id ya anotado. 404 si search.enabled=false.
+      parameters:
+        - $ref: "#/components/parameters/searchQ"
+        - $ref: "#/components/parameters/searchType"
+        - $ref: "#/components/parameters/searchExt"
+        - $ref: "#/components/parameters/searchDateFrom"
+        - $ref: "#/components/parameters/searchDateTo"
+        - $ref: "#/components/parameters/searchSizeMin"
+        - $ref: "#/components/parameters/searchSizeMax"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /admin/search:
+    get:
+      summary: Búsqueda de metadatos cruzando todos los usuarios (§33, ADR-040)
+      description: >
+        Igual que GET /search pero sin acotar a un propietario; owner
+        (username) opcional restringe a uno concreto, ausente = todos.
+      parameters:
+        - $ref: "#/components/parameters/searchQ"
+        - $ref: "#/components/parameters/searchType"
+        - $ref: "#/components/parameters/searchExt"
+        - $ref: "#/components/parameters/searchDateFrom"
+        - $ref: "#/components/parameters/searchDateTo"
+        - $ref: "#/components/parameters/searchSizeMin"
+        - $ref: "#/components/parameters/searchSizeMax"
+        - name: owner
+          in: query
+          schema: { type: string }
+          description: "Username del propietario a filtrar; ausente = todos los usuarios"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
   /auth/totp/enroll:
     post:
       summary: Generar un secreto TOTP para activar 2FA
@@ -1121,6 +1193,39 @@ components:
       required: true
       schema: { type: string }
       description: Token en claro del enlace público (256 bits, base64url)
+    searchQ:
+      name: q
+      in: query
+      schema: { type: string }
+      description: "Substring de nombre/ruta, case-insensitive"
+    searchType:
+      name: type
+      in: query
+      schema: { type: string }
+      description: "Prefijo de MIME, p.ej. \"image/\""
+    searchExt:
+      name: ext
+      in: query
+      schema: { type: string }
+      description: "Extensión exacta sin punto, p.ej. \"pdf\""
+    searchDateFrom:
+      name: date_from
+      in: query
+      schema: { type: string, format: date-time }
+    searchDateTo:
+      name: date_to
+      in: query
+      schema: { type: string, format: date-time }
+    searchSizeMin:
+      name: size_min
+      in: query
+      schema: { type: integer, format: int64 }
+      description: "En bytes"
+    searchSizeMax:
+      name: size_max
+      in: query
+      schema: { type: integer, format: int64 }
+      description: "En bytes"
     sharePasswordHeader:
       name: X-Share-Password
       in: header
@@ -1156,6 +1261,7 @@ components:
         email: { type: string }
         status: { type: string, enum: [active, disabled] }
         has_totp: { type: boolean }
+        is_admin: { type: boolean, description: "Solo en GET /users/me (§33, ADR-040) -- decide si la web ofrece la búsqueda entre usuarios" }
         created_at: { type: string, format: date-time }
         last_login_at: { type: string, format: date-time, nullable: true }
         quota_bytes:

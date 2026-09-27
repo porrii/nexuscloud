@@ -211,6 +211,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		WebAuthn:           webauthnSvc,
 		WebDAVTokens:       webdavTokens,
 		WebDAVPath:         cfg.WebDAV.Path,
+		SearchEnabled:      cfg.Search.Enabled,
 	}
 
 	loginBurst := cfg.Security.RateLimit.LoginPerMinute
