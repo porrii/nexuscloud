@@ -71,13 +71,24 @@ func GenerateImageThumbnail(ctx context.Context, r io.Reader, sizeBytes int64, l
 		err  error
 	}
 	resultCh := make(chan result, 1)
+	// decodeAndResizeImageFn se captura AQUÍ, antes de lanzar la goroutine,
+	// nunca se relee dentro de ella: esta goroutine puede seguir viva
+	// después de que esta función ya haya vuelto por timeout (comentario de
+	// arriba), y un test posterior que reasigne la variable de paquete para
+	// inyectar un panic (decodeAndResizeImageFn = ...) mientras esa
+	// goroutine huérfana todavía la lee produce una data race real -- lo
+	// confirmó `go test -race` en Windows CI (no en todas las ejecuciones:
+	// depende de que la goroutine huérfana de un test siga viva cuando el
+	// siguiente test reasigna la variable). Capturar una copia local aquí
+	// lo hace imposible sea cual sea el timing.
+	fn := decodeAndResizeImageFn
 	go func() {
 		defer func() {
 			if p := recover(); p != nil {
 				resultCh <- result{err: fmt.Errorf("panic decodificando imagen: %v", p)}
 			}
 		}()
-		data, err := decodeAndResizeImageFn(r, limits.MaxPixels)
+		data, err := fn(r, limits.MaxPixels)
 		resultCh <- result{data: data, err: err}
 	}()
 

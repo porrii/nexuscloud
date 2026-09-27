@@ -109,6 +109,21 @@ func (c *ThumbnailCache) Put(ownerID, sha256Hex string, data []byte) error {
 	}
 	if err := os.Rename(tmp, dest); err != nil {
 		os.Remove(tmp)
+		// A diferencia de POSIX (rename atómico, reemplaza aunque el
+		// destino esté abierto), en Windows renombrar ENCIMA de un destino
+		// que otra goroutine está renombrando en ese mismo instante puede
+		// devolver "Access is denied" en vez de reemplazar sin más --
+		// confirmado de verdad por `go test -race` en Windows CI con 20
+		// goroutines escribiendo la MISMA clave a la vez (nunca reprodujo
+		// en Linux). No es una corrupción: es una caché direccionada por
+		// contenido, así que si el destino YA EXISTE cuando llegamos aquí,
+		// alguien más ganó la carrera escribiendo un valor válido para esta
+		// misma clave -- no hace falta el nuestro. Solo se trata como éxito
+		// en ese caso concreto (dest existe de verdad); cualquier otro
+		// motivo de fallo se sigue reportando tal cual.
+		if _, statErr := os.Stat(dest); statErr == nil {
+			return nil
+		}
 		return fmt.Errorf("moviendo miniatura a su destino final: %w", err)
 	}
 	c.currentBytes.Add(int64(len(data)))
