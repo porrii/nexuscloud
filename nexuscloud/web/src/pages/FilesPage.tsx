@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
 import AnonymousUploadDialog from '../components/AnonymousUploadDialog'
@@ -7,6 +7,10 @@ import ConfirmDialog from '../components/ConfirmDialog'
 import ShareDialog from '../components/ShareDialog'
 import VersionHistoryDialog from '../components/VersionHistoryDialog'
 import { notifyUsageChanged } from '../quota'
+
+// Carga perezosa (§35): marked/dompurify/highlight.js solo pesan para quien
+// de verdad abre una previsualización, no en la carga inicial de la SPA.
+const PreviewDialog = lazy(() => import('../components/PreviewDialog'))
 
 interface UploadProgress {
   key: string
@@ -46,6 +50,7 @@ export default function FilesPage() {
   const [newFolderName, setNewFolderName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const [historyFile, setHistoryFile] = useState<FileEntry | null>(null)
+  const [previewFile, setPreviewFile] = useState<FileEntry | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; name: string; isDirectory: boolean } | null>(null)
   const [anonymousUploadTarget, setAnonymousUploadTarget] = useState<{ id: string; name: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -308,10 +313,14 @@ export default function FilesPage() {
               {result?.files.map((f) => (
                 <tr key={f.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="px-4 py-2">
-                    <span className="flex items-center gap-2 text-slate-800 dark:text-slate-200">
+                    <button
+                      onClick={() => setPreviewFile(f)}
+                      title="Previsualizar"
+                      className="flex items-center gap-2 text-slate-800 hover:text-blue-700 dark:text-slate-200 dark:hover:text-blue-400"
+                    >
                       <span aria-hidden>📄</span>
                       {f.name}
-                    </span>
+                    </button>
                   </td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatBytes(f.size_bytes)}</td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(f.updated_at)}</td>
@@ -373,6 +382,11 @@ export default function FilesPage() {
 
       {historyFile && (
         <VersionHistoryDialog file={historyFile} onClose={() => setHistoryFile(null)} onRestored={() => void load()} />
+      )}
+      {previewFile && (
+        <Suspense fallback={null}>
+          <PreviewDialog file={previewFile} onClose={() => setPreviewFile(null)} />
+        </Suspense>
       )}
 
       {shareTarget && <ShareDialog resource={shareTarget} onClose={() => setShareTarget(null)} />}

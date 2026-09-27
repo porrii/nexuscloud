@@ -366,6 +366,24 @@ function uploadToSharedDirectory(
   return postWithProgress(`/api/v1/shared-directories/${directoryId}/files?name=${encodeURIComponent(name)}`, content, onProgress)
 }
 
+// fetchPreviewText (§35, ADR-040 Fase 2): igual que GET /files/{id}, pero
+// leyendo el cuerpo como texto -- request() descartaría el cuerpo porque no
+// es JSON. Solo la llama PreviewDialog, y solo por debajo de su propio
+// límite de tamaño (comprobado con size_bytes antes de llamar, sin esperar
+// a que llegue el cuerpo).
+async function fetchPreviewText(id: string): Promise<string> {
+  const res = await fetch(`/api/v1/files/${id}`, { credentials: 'include' })
+  if (!res.ok) {
+    const contentType = res.headers.get('content-type') ?? ''
+    if (contentType.includes('application/json')) {
+      const body = (await res.json()) as { error?: { code: string; message: string } }
+      throw new ApiClientError(res.status, body.error?.code ?? 'unknown', body.error?.message ?? 'Error desconocido')
+    }
+    throw new ApiClientError(res.status, 'unknown', `Error ${res.status}`)
+  }
+  return res.text()
+}
+
 export const api = {
   login: (username: string, password: string, totp_code?: string) =>
     request<{ token: string; user: User; session: Session }>('/api/v1/auth/login', {
@@ -476,6 +494,7 @@ export const api = {
   activity: (limit?: number) => request<ActivityEvent[]>(`/api/v1/activity${limit ? `?limit=${limit}` : ''}`),
   upload: uploadWithProgress,
   downloadUrl: (id: string) => `/api/v1/files/${id}`,
+  fetchPreviewText,
   // Por defecto mueve a la papelera (§16); permanent=true la salta.
   deleteFile: (id: string) => request<void>(`/api/v1/files/${id}`, { method: 'DELETE' }),
   deleteFileForever: (id: string) => request<void>(`/api/v1/files/${id}?permanent=true`, { method: 'DELETE' }),

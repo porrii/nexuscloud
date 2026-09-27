@@ -44,6 +44,39 @@ func TestParseResumeRange(t *testing.T) {
 	}
 }
 
+// TestContentDisposition cubre la lista blanca de tipos que pueden
+// previsualizarse en línea (§35, ADR-040 Fase 2) -- PDF/vídeo/audio nunca
+// ejecutan script como documento de nivel superior en este origen, a
+// diferencia de text/html o image/svg+xml, que deben seguir forzando la
+// descarga.
+func TestContentDisposition(t *testing.T) {
+	cases := []struct {
+		mimeType string
+		want     string
+	}{
+		{"application/pdf", "inline"},
+		{"video/mp4", "inline"},
+		{"video/webm", "inline"},
+		{"audio/mpeg", "inline"},
+		{"audio/ogg", "inline"},
+		{"image/png", "attachment"},
+		{"image/jpeg", "attachment"},
+		{"image/svg+xml", "attachment"},
+		{"text/html", "attachment"},
+		{"text/plain", "attachment"},
+		{"application/octet-stream", "attachment"},
+		{"application/zip", "attachment"},
+		{"", "attachment"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.mimeType, func(t *testing.T) {
+			if got := contentDisposition(tc.mimeType); got != tc.want {
+				t.Errorf("contentDisposition(%q) = %q, esperado %q", tc.mimeType, got, tc.want)
+			}
+		})
+	}
+}
+
 // nonSeekableReadCloser solo implementa io.Reader/io.Closer -- simula el
 // tipo de stream que un provider de storage no local (§157) podría
 // devolver algún día, sin io.Seeker.
@@ -75,6 +108,58 @@ func TestServeFileContentSinRange(t *testing.T) {
 	}
 	if w.Body.String() != string(content) {
 		t.Errorf("cuerpo = %q, esperado %q", w.Body.String(), content)
+	}
+	if got := w.Header().Get("Content-Disposition"); got != `attachment; filename="archivo.txt"` {
+		t.Errorf(`Content-Disposition = %q, esperado attachment; filename="archivo.txt"`, got)
+	}
+}
+
+// TestServeFileContentInlineParaPDF confirma que la previsualización (§35,
+// ADR-040 Fase 2) llega de verdad hasta las cabeceras reales, no solo hasta
+// las funciones puras -- un <embed type="application/pdf"> se queda en
+// blanco si Content-Disposition dice "attachment" O si X-Frame-Options
+// sigue en DENY (encontrado verificando la previsualización en un
+// navegador real, no con un test: dos causas distintas del mismo síntoma).
+func TestServeFileContentInlineParaPDF(t *testing.T) {
+	content := []byte("%PDF-1.4 contenido de prueba")
+	req := httptest.NewRequest(http.MethodGet, "/files/x", nil)
+	w := httptest.NewRecorder()
+	w.Header().Set("X-Frame-Options", "DENY") // security.Headers ya lo puso así antes de llegar aquí
+
+	err := serveFileContent(w, req, "informe.pdf", "application/pdf", "deadbeef", int64(len(content)),
+		io.NopCloser(bytes.NewReader(content)))
+	if err != nil {
+		t.Fatalf("serveFileContent falló: %v", err)
+	}
+	if got := w.Header().Get("Content-Disposition"); got != `inline; filename="informe.pdf"` {
+		t.Errorf(`Content-Disposition = %q, esperado inline; filename="informe.pdf"`, got)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "SAMEORIGIN" {
+		t.Errorf("X-Frame-Options = %q, esperado SAMEORIGIN (si no, el <embed> del PDF se queda en blanco)", got)
+	}
+}
+
+// TestServeFileContentNoRelajaXFrameOptionsFueraDePDF confirma que la
+// relajación de arriba no se cuela para ningún otro tipo -- en especial
+// audio/vídeo, que no la necesitan (no son un contexto de framing para el
+// navegador), y cualquier tipo que sí pudiera ejecutar script si se abriera
+// como documento de nivel superior (text/html, image/svg+xml).
+func TestServeFileContentNoRelajaXFrameOptionsFueraDePDF(t *testing.T) {
+	for _, mimeType := range []string{"audio/mpeg", "video/mp4", "text/html", "image/svg+xml", "text/plain"} {
+		t.Run(mimeType, func(t *testing.T) {
+			content := []byte("contenido")
+			req := httptest.NewRequest(http.MethodGet, "/files/x", nil)
+			w := httptest.NewRecorder()
+			w.Header().Set("X-Frame-Options", "DENY")
+
+			if err := serveFileContent(w, req, "archivo", mimeType, "deadbeef", int64(len(content)),
+				io.NopCloser(bytes.NewReader(content))); err != nil {
+				t.Fatalf("serveFileContent falló: %v", err)
+			}
+			if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+				t.Errorf("X-Frame-Options = %q para %s, esperado que siguiera en DENY", got, mimeType)
+			}
+		})
 	}
 }
 

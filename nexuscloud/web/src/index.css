@@ -1,4 +1,9 @@
 @import 'tailwindcss';
+/* Resaltado de código en la previsualización (§35, ADR-040 Fase 2) --
+   mismo criterio de tema que el resto de la app: sigue prefers-color-scheme,
+   sin selector manual (ver color-scheme más abajo). */
+@import 'highlight.js/styles/github.css' screen and (prefers-color-scheme: light);
+@import 'highlight.js/styles/github-dark.css' screen and (prefers-color-scheme: dark);
 
 :root {
   color-scheme: light dark;
