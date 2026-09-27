@@ -53,12 +53,21 @@ storage:
   # los archivos de usuario; config validate lo rechaza).
   databaseDir: ""       # vacío = <dataDir>/database   (fichero SQLite, si driver=sqlite)
   cacheDir: ""          # vacío = <dataDir>/cache
-  thumbnailsDir: ""     # vacío = <dataDir>/thumbnails (miniaturas, cuando se implementen)
+  thumbnailsDir: ""     # vacío = <dataDir>/thumbnails (caché de miniaturas, ver bloque thumbnails más abajo)
   versionsDir: ""       # vacío = <dataDir>/versions   (historial de versiones)
   tempDir: ""           # vacío = <dataDir>/tmp        (temporales de uso general)
   logsDir: ""           # vacío = <dataDir>/logs
   backupsDir: ""        # vacío = <dataDir>/backups
   configDir: ""         # vacío = <dataDir>/config
+
+  # Cuota global de almacenamiento por usuario, en bytes (§24): se aplica a
+  # quien no tiene cuota propia ni de grupo. 0 = sin cuota global (por defecto:
+  # nadie tiene límite hasta que lo configures). 107374182400 = 100 GiB. Cuenta
+  # archivos + papelera + versiones anteriores. También por variable de
+  # entorno: NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES. Cuota de un usuario o de un
+  # grupo concreto: `nexuscloud users edit --quota` / `users group edit --quota`.
+  # Detalle: docs/administracion.md.
+  defaultQuotaBytes: 0
 
 security:
   sessionTTLHours: 720   # 30 días
@@ -71,6 +80,7 @@ security:
     apiPerMinute: 300
     publicLinkPerMinute: 20 # enlaces públicos de compartición (§37): objetivo de fuerza bruta sobre su contraseña, igual motivo que loginPerMinute
     webdavPerMinute: 1200   # WebDAV (§43): cubo propio por IP, mucho más holgado que apiPerMinute -- un cliente WebDAV lanza decenas de PROPFIND por segundo
+    anonymousUploadPerMinute: 10 # subida anónima (§38, ADR-039): más estricto que publicLinkPerMinute -- aquí cualquiera con el enlace escribe sin que el creador haya podido vetar a nadie
   corsAllowedOrigins: []  # nunca "*" (§69); añade aquí el origen de tu web/futuros clientes
   publicRegistrationEnabled: false   # §21: no cambiar salvo que sepas lo que haces
   # Passkeys / WebAuthn (§25, ADR-033): segundo factor más fuerte que TOTP y
@@ -101,9 +111,42 @@ versioning:
 # por defecto. publicLinksEnabled cubre los enlaces públicos, la ÚNICA
 # superficie de Sharing accesible sin sesión: desactivada por defecto
 # (secure-by-default, §3/§47), actívala explícitamente si los necesitas.
+# anonymousUploadEnabled (§38, ADR-039) es un modelo SEPARADO de los enlaces
+# públicos -- enlaces de subida sin ningún acceso al resto del contenido --
+# mismo criterio de valor por defecto (false).
 sharing:
   enabled: true
   publicLinksEnabled: false
+  anonymousUploadEnabled: false
+
+# Buscador de metadatos (§33): nombre/ruta/tipo/extensión/fecha/tamaño sobre
+# lo que el propio usuario ya podía ver por GET /files -- solo lectura, no
+# añade superficie nueva, por eso activado por defecto. Búsqueda de
+# CONTENIDO no está implementada (el spec solo pide "preparar arquitectura",
+# con una salvedad explícita de privacidad).
+search:
+  enabled: true
+
+# Miniaturas (§34, ADR-041): JPG/PNG/GIF/WEBP se decodifican en el propio
+# proceso (stdlib de Go + x/image/webp); vídeo y PDF invocan ffmpeg/
+# pdftoppm (poppler-utils) como subproceso -- el PRIMER exec.Command de
+# NexusCloud sobre contenido de usuario. Por eso, a diferencia de
+# search.enabled, esto empieza DESACTIVADO: actívalo a propósito.
+# ffmpeg/poppler-utils deben estar instalados en el sistema (la imagen
+# Docker oficial de esta fase ya los trae) -- si faltan, los archivos de
+# vídeo/PDF simplemente se quedan sin miniatura (icono genérico), nunca
+# rompen nada. Los límites de tamaño de entrada y de dimensiones son la
+# primera línea de defensa contra decompression bombs; maxCacheBytes topa
+# el disco que ocupa la caché en TOTAL, independiente de la cuota de
+# cualquier usuario (las miniaturas no cuentan para ninguna cuota).
+thumbnails:
+  enabled: false
+  maxInputBytes: 26214400        # 25 MiB -- imágenes (JPG/PNG/GIF/WEBP)
+  maxVideoInputBytes: 209715200  # 200 MiB
+  maxPdfInputBytes: 52428800     # 50 MiB
+  maxPixels: 40000000            # 40 megapíxeles declarados, antes de decodificar completo
+  maxCacheBytes: 2147483648      # 2 GiB en total, sin eviction LRU todavía (límite conocido)
+  maxConcurrentGenerations: 4    # compartido por los 3 tipos -- evita agotar memoria con muchas a la vez
 
 api:
   enabled: true

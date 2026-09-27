@@ -1,10 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
+import AnonymousUploadDialog from '../components/AnonymousUploadDialog'
 import Breadcrumbs from '../components/Breadcrumbs'
 import ConfirmDialog from '../components/ConfirmDialog'
+import FileThumbnail from '../components/FileThumbnail'
 import ShareDialog from '../components/ShareDialog'
 import VersionHistoryDialog from '../components/VersionHistoryDialog'
+import { notifyUsageChanged } from '../quota'
+
+// Carga perezosa (§35): marked/dompurify/highlight.js solo pesan para quien
+// de verdad abre una previsualización, no en la carga inicial de la SPA.
+const PreviewDialog = lazy(() => import('../components/PreviewDialog'))
 
 interface UploadProgress {
   key: string
@@ -44,7 +51,9 @@ export default function FilesPage() {
   const [newFolderName, setNewFolderName] = useState('')
   const [pendingDelete, setPendingDelete] = useState<PendingDelete | null>(null)
   const [historyFile, setHistoryFile] = useState<FileEntry | null>(null)
+  const [previewFile, setPreviewFile] = useState<FileEntry | null>(null)
   const [shareTarget, setShareTarget] = useState<{ id: string; name: string; isDirectory: boolean } | null>(null)
+  const [anonymousUploadTarget, setAnonymousUploadTarget] = useState<{ id: string; name: string } | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const navigateTo = useCallback(
@@ -79,6 +88,7 @@ export default function FilesPage() {
           setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, percent } : u)))
         })
         setUploads((prev) => prev.filter((u) => u.key !== key))
+        notifyUsageChanged()
         await load()
       } catch (err) {
         const message = err instanceof ApiClientError ? err.message : 'Error al subir el archivo.'
@@ -100,6 +110,23 @@ export default function FilesPage() {
     }
   }
 
+  // toggleFavorite (§87, ADR-038): recarga el listado tras cambiar, igual
+  // criterio que el resto de acciones de esta página (crear carpeta,
+  // borrar...) -- así favorite_id siempre sale de la verdad del servidor,
+  // nunca de una actualización optimista local.
+  async function toggleFavorite(entry: { id: string; favorite_id?: string }, resourceType: 'file' | 'directory') {
+    try {
+      if (entry.favorite_id) {
+        await api.removeFavorite(entry.favorite_id)
+      } else {
+        await api.addFavorite(resourceType, entry.id)
+      }
+      await load()
+    } catch (err) {
+      setError(err instanceof ApiClientError ? err.message : 'No se pudo actualizar el favorito.')
+    }
+  }
+
   async function handleConfirmDelete() {
     if (!pendingDelete) return
     try {
@@ -109,6 +136,7 @@ export default function FilesPage() {
         await api.deleteDirectory(pendingDelete.entry.id)
       }
       setPendingDelete(null)
+      notifyUsageChanged() // con papelera el espacio no se libera, pero el desglose cambia
       await load()
     } catch (err) {
       setPendingDelete(null)
@@ -251,10 +279,28 @@ export default function FilesPage() {
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(d.created_at)}</td>
                   <td className="px-4 py-2 text-right">
                     <button
+                      onClick={() => void toggleFavorite(d, 'directory')}
+                      title={d.favorite_id ? 'Quitar de favoritos' : 'Marcar como favorito'}
+                      className={`mr-3 rounded px-2 py-1 text-xs ${
+                        d.favorite_id
+                          ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950'
+                          : 'invisible text-slate-400 hover:bg-slate-100 group-hover:visible dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {d.favorite_id ? '★' : '☆'}
+                    </button>
+                    <button
                       onClick={() => setShareTarget({ id: d.id, name: d.name, isDirectory: true })}
                       className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
                     >
                       Compartir
+                    </button>
+                    <button
+                      onClick={() => setAnonymousUploadTarget({ id: d.id, name: d.name })}
+                      title="Enlace de subida anónima"
+                      className="invisible mr-3 rounded px-2 py-1 text-xs text-slate-600 hover:bg-slate-100 group-hover:visible dark:text-slate-300 dark:hover:bg-slate-800"
+                    >
+                      Subida anónima
                     </button>
                     <button
                       onClick={() => setPendingDelete({ kind: 'directory', entry: d })}
@@ -268,14 +314,29 @@ export default function FilesPage() {
               {result?.files.map((f) => (
                 <tr key={f.id} className="group hover:bg-slate-50 dark:hover:bg-slate-800/50">
                   <td className="px-4 py-2">
-                    <span className="flex items-center gap-2 text-slate-800 dark:text-slate-200">
-                      <span aria-hidden>📄</span>
+                    <button
+                      onClick={() => setPreviewFile(f)}
+                      title="Previsualizar"
+                      className="flex items-center gap-2 text-slate-800 hover:text-blue-700 dark:text-slate-200 dark:hover:text-blue-400"
+                    >
+                      <FileThumbnail fileId={f.id} mimeType={f.mime_type} />
                       {f.name}
-                    </span>
+                    </button>
                   </td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatBytes(f.size_bytes)}</td>
                   <td className="px-4 py-2 text-slate-500 dark:text-slate-400">{formatDate(f.updated_at)}</td>
                   <td className="px-4 py-2 text-right">
+                    <button
+                      onClick={() => void toggleFavorite(f, 'file')}
+                      title={f.favorite_id ? 'Quitar de favoritos' : 'Marcar como favorito'}
+                      className={`mr-3 rounded px-2 py-1 text-xs ${
+                        f.favorite_id
+                          ? 'text-amber-500 hover:bg-amber-50 dark:hover:bg-amber-950'
+                          : 'invisible text-slate-400 hover:bg-slate-100 group-hover:visible dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {f.favorite_id ? '★' : '☆'}
+                    </button>
                     <a
                       href={api.downloadUrl(f.id)}
                       download={f.name}
@@ -323,8 +384,16 @@ export default function FilesPage() {
       {historyFile && (
         <VersionHistoryDialog file={historyFile} onClose={() => setHistoryFile(null)} onRestored={() => void load()} />
       )}
+      {previewFile && (
+        <Suspense fallback={null}>
+          <PreviewDialog file={previewFile} onClose={() => setPreviewFile(null)} />
+        </Suspense>
+      )}
 
       {shareTarget && <ShareDialog resource={shareTarget} onClose={() => setShareTarget(null)} />}
+      {anonymousUploadTarget && (
+        <AnonymousUploadDialog directory={anonymousUploadTarget} onClose={() => setAnonymousUploadTarget(null)} />
+      )}
     </div>
   )
 }

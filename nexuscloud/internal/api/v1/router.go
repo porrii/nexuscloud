@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/porrii/nexuscloud/internal/security"
 )
@@ -11,11 +12,22 @@ import (
 // NewRouter construye el árbol de rutas /api/v1 (§42). loginLimiter aplica
 // rate limiting específico al endpoint de login (§27, más estricto);
 // apiLimiter cubre el resto de la API; publicLimiter cubre los enlaces
-// públicos de compartición (§37), la otra superficie sin sesión.
-func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.RateLimiter) http.Handler {
+// públicos de compartición (§37); anonymousUploadLimiter cubre los enlaces
+// de subida anónima (§38, ADR-039) -- superficie propia, más estricta que
+// publicLimiter (ver security.rateLimit.anonymousUploadPerMinute).
+func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUploadLimiter *security.RateLimiter) http.Handler {
 	r := chi.NewRouter()
 	keyFunc := func(req *http.Request) string { return security.ClientIP(req, h.TrustedProxies) }
 
+	// middleware.Recoverer (§34, ADR-041 Decisión 6, hallazgo CRÍTICO del
+	// pase de security-reviewer sobre el diseño de miniaturas): hasta esta
+	// fase ningún panic de Go se recuperaba en todo el proyecto -- nunca
+	// había código de parseo real expuesto a bytes adversariales. Un panic
+	// de decodificación (índice fuera de rango, división por cero...) en
+	// CUALQUIER handler tumbaría el proceso entero para todos los
+	// inquilinos. Va primero, antes que cualquier otro middleware, para
+	// cubrir también un panic dentro de ellos.
+	r.Use(middleware.Recoverer)
 	r.Use(apiLimiter.Middleware(keyFunc))
 
 	// Rutas públicas: login e invitations/redeem son los dos únicos puntos
@@ -63,6 +75,18 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		}
 	})
 
+	// Subida anónima (§38, ADR-039): sin sesión, sin contraseña, y sin
+	// NINGÚN endpoint de navegación -- el token en la URL es la única
+	// autorización posible. Grupo propio (no publicLimiter compartido):
+	// cualquiera con el enlace escribe sin que el creador haya podido vetar
+	// a nadie, así que el límite por defecto es más estricto que el de
+	// shares.
+	r.Group(func(r chi.Router) {
+		r.Use(anonymousUploadLimiter.Middleware(keyFunc))
+		r.Get("/public/anonymous-uploads/{token}", h.GetAnonymousUploadLink)
+		r.Post("/public/anonymous-uploads/{token}/upload", h.UploadAnonymousUploadLink)
+	})
+
 	r.Group(func(r chi.Router) {
 		r.Use(h.RequireAuth)
 
@@ -71,6 +95,13 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Delete("/auth/sessions/{id}", h.RevokeSession)
 		r.Post("/auth/totp/enroll", h.EnrollTOTP)
 		r.Post("/auth/totp/verify", h.VerifyTOTP)
+
+		// Tokens de API (§78, ADR-037): acceso todo-o-nada a la API REST
+		// completa, sin la opción de config que sí tiene WebDAV -- siempre
+		// disponibles, como las sesiones.
+		r.Post("/auth/api-tokens", h.CreateAPIToken)
+		r.Get("/auth/api-tokens", h.ListAPITokens)
+		r.Delete("/auth/api-tokens/{id}", h.RevokeAPIToken)
 
 		if h.WebAuthn != nil {
 			r.Post("/auth/webauthn/register/begin", h.BeginWebAuthnRegistration)
@@ -88,6 +119,21 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		}
 
 		r.Get("/users/me", h.Me)
+		r.Get("/users/me/quota", h.MyQuota)
+
+		// Favoritos (§87, ADR-038): solo sobre el árbol propio del usuario.
+		r.Post("/favorites", h.CreateFavorite)
+		r.Get("/favorites", h.ListFavorites)
+		r.Delete("/favorites/{id}", h.DeleteFavorite)
+		// Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
+		r.Get("/activity", h.ListActivity)
+
+		// Búsqueda (§33): recursiva sobre TODO el árbol propio, a diferencia
+		// de GET /files (una carpeta concreta). Con search.enabled=false,
+		// esta ruta ni se registra -- mismo criterio que ClientUpdatesProxy.
+		if h.SearchEnabled {
+			r.Get("/search", h.Search)
+		}
 
 		r.Get("/files", h.ListFiles)
 		r.Post("/files", h.UploadFile)
@@ -95,6 +141,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Delete("/files/{id}", h.DeleteFile)
 		r.Patch("/files/{id}", h.MoveFile)
 		r.Post("/files/{id}/restore", h.RestoreFile)
+		// Miniaturas (§34, ADR-041): sin flag propio de activación de ruta
+		// (a diferencia de /search) -- thumbnails.enabled se comprueba
+		// dentro de FileService, mismo criterio que
+		// sharing.anonymousUploadEnabled; con la función desactivada,
+		// responde 404 en vez de dejar de existir la ruta.
+		r.Get("/files/{id}/thumbnail", h.GetFileThumbnail)
 		r.Get("/files/{id}/versions", h.ListFileVersions)
 		r.Get("/files/{id}/versions/{versionNum}", h.DownloadFileVersion)
 		r.Post("/files/{id}/versions/{versionNum}/restore", h.RestoreFileVersion)
@@ -113,6 +165,12 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
 		r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
 
+		// Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea,
+		// lista y revoca sus propios enlaces, siempre sobre una carpeta suya.
+		r.Post("/anonymous-uploads", h.CreateAnonymousUploadLink)
+		r.Get("/anonymous-uploads", h.ListAnonymousUploadLinks)
+		r.Delete("/anonymous-uploads/{id}", h.RevokeAnonymousUploadLink)
+
 		r.Group(func(r chi.Router) {
 			r.Use(h.RequireAdmin)
 
@@ -126,11 +184,24 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter *security.Ra
 			r.Delete("/invitations/{id}", h.RevokeInvitation)
 
 			r.Post("/groups", h.CreateGroup)
+			r.Patch("/groups/{id}", h.PatchGroup)
 			r.Post("/groups/{id}/members", h.AddGroupMember)
 
 			r.Get("/audit", h.ListAuditEvents)
 
 			r.Get("/storage/disks", h.ListDisks)
+
+			// Miniaturas (§34, ADR-041 Decisión 1): visibilidad
+			// administrativa sobre la cola persistente -- qué está pendiente
+			// o qué se dio por fallido tras agotar reintentos. Sin flag de
+			// activación propio, igual que la ruta bajo demanda de arriba.
+			r.Get("/admin/thumbnail-jobs", h.ListThumbnailJobs)
+
+			// Búsqueda cruzando usuarios (§33 "Usuario" como criterio):
+			// mismo interruptor que la búsqueda personal.
+			if h.SearchEnabled {
+				r.Get("/admin/search", h.AdminSearch)
+			}
 		})
 	})
 

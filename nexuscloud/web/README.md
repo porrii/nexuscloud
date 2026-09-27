@@ -10,7 +10,7 @@ Explorador de archivos web de NexusCloud (§44, §83): React 18 + TypeScript + V
 
 Todo consume exclusivamente la API documentada en [`../openapi.yaml`](../openapi.yaml) — no hay ningún acceso directo a base de datos ni al filesystem del servidor desde el frontend.
 
-**Fuera de esta pasada** (porque el backend todavía no los soporta): compartición, papelera, versionado, favoritos, búsqueda, previsualización de contenido, panel de administración de usuarios/invitaciones. Solo se construyó UI para lo que el backend ya ofrece de verdad — nada de pantallas que aparenten una función inexistente.
+**Fuera de esta pasada** (porque el backend todavía no los soporta): búsqueda, previsualización de contenido, panel de administración de usuarios/invitaciones. Solo se construyó UI para lo que el backend ya ofrece de verdad — nada de pantallas que aparenten una función inexistente. (Compartición, papelera, versionado y favoritos/actividad reciente, mencionados aquí como pendientes en una versión anterior de este documento, ya están implementados — ver `docs/architecture.md` y los ADR correspondientes.)
 
 ## Autenticación en el navegador
 

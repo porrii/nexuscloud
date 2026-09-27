@@ -28,15 +28,30 @@ func (h *Handlers) ListFiles(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudieron listar los archivos.")
 		return
 	}
+	// favorite_id es aditivo (§87, ADR-038): un fallo al resolverlo no debe
+	// romper el listado completo, mismo criterio que shareResponseExtra.
+	fileFavIDs, dirFavIDs, err := h.Files.FavoriteIDsForOwner(r.Context(), u.ID)
+	if err != nil {
+		h.Logger.Warn("no se pudieron resolver los favoritos para anotar el listado", "error", err)
+		fileFavIDs, dirFavIDs = map[string]string{}, map[string]string{}
+	}
 	out := listResponse{
 		Directories: make([]directoryResponse, 0, len(result.Directories)),
 		Files:       make([]fileResponse, 0, len(result.Files)),
 	}
 	for _, d := range result.Directories {
-		out.Directories = append(out.Directories, toDirectoryResponse(d))
+		resp := toDirectoryResponse(d)
+		if id, ok := dirFavIDs[d.ID]; ok {
+			resp.FavoriteID = &id
+		}
+		out.Directories = append(out.Directories, resp)
 	}
 	for _, f := range result.Files {
-		out.Files = append(out.Files, toFileResponse(f))
+		resp := toFileResponse(f)
+		if id, ok := fileFavIDs[f.ID]; ok {
+			resp.FavoriteID = &id
+		}
+		out.Files = append(out.Files, resp)
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -53,8 +68,10 @@ func (h *Handlers) UploadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// SizeHint permite rechazar por cuota antes de leer el cuerpo (ADR-036);
+	// ContentLength es -1 si el cliente sube en chunked, y entonces no se usa.
 	meta, err := h.Files.Upload(r.Context(), storage.UploadInput{
-		OwnerID: u.ID, ParentPath: parentPath, Name: name, Content: r.Body,
+		OwnerID: u.ID, ParentPath: parentPath, Name: name, Content: r.Body, SizeHint: r.ContentLength,
 	})
 	if err != nil {
 		writeFileError(w, err)
@@ -236,10 +253,27 @@ func writeFileError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "destination_occupied", err.Error())
 	case errors.Is(err, storage.ErrInvalidMoveDestination):
 		writeError(w, http.StatusBadRequest, "invalid_move_destination", err.Error())
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		writeQuotaExceeded(w)
 	case errors.Is(err, storage.ErrVersionNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Versión no encontrada.")
 	case errors.Is(err, storage.ErrInvalidName), errors.Is(err, storage.ErrInvalidPath), errors.Is(err, storage.ErrPathEscapesRoot):
 		writeError(w, http.StatusBadRequest, "invalid_request", "Nombre o ruta inválidos.")
+	case errors.Is(err, storage.ErrFavoriteNotFound):
+		writeError(w, http.StatusNotFound, "not_found", "Favorito no encontrado.")
+	case errors.Is(err, storage.ErrFavoritesUnavailable):
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
+	// Miniaturas (§34, ADR-041): ErrThumbnailsDisabled y
+	// ErrThumbnailUnsupportedFormat responden igual que "no hay nada que
+	// servir" (404) -- desde el punto de vista del cliente, ambos casos
+	// significan lo mismo: no hay miniatura para este archivo, con icono
+	// genérico como fallback en la web. ErrThumbnailCacheFull/ErrThumbnailBusy
+	// sí son distintos: contención transitoria, no un estado permanente
+	// (Decisión 6) -- 503 anima a reintentar, 404 no lo haría.
+	case errors.Is(err, storage.ErrThumbnailsDisabled), errors.Is(err, storage.ErrThumbnailUnsupportedFormat):
+		writeError(w, http.StatusNotFound, "not_found", "No hay miniatura disponible para este archivo.")
+	case errors.Is(err, storage.ErrThumbnailCacheFull), errors.Is(err, storage.ErrThumbnailBusy):
+		writeError(w, http.StatusServiceUnavailable, "service_unavailable", "No se puede generar la miniatura ahora mismo, inténtalo de nuevo en un momento.")
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
 	}

@@ -19,6 +19,7 @@ type testEnv struct {
 	invitations      InvitationRepository
 	webauthnCreds    WebAuthnCredentialRepository
 	webauthnCeremony WebAuthnCeremonyRepository
+	apiTokens        APITokenRepository
 	hasher           *Hasher
 }
 
@@ -44,12 +45,17 @@ func newTestEnv(t *testing.T) *testEnv {
 		invitations:      NewSQLInvitationRepository(conn),
 		webauthnCreds:    NewSQLWebAuthnCredentialRepository(conn),
 		webauthnCeremony: NewSQLWebAuthnCeremonyRepository(conn),
+		apiTokens:        NewSQLAPITokenRepository(conn),
 		hasher:           NewHasher(config.Argon2Config{MemoryKiB: 8 * 1024, Iterations: 1, Parallelism: 1}),
 	}
 }
 
 func (e *testEnv) authenticator() *Authenticator {
 	return NewAuthenticator(e.users, e.sessions, e.webauthnCreds, e.hasher, 24, nil)
+}
+
+func (e *testEnv) apiTokenService() *APITokenService {
+	return NewAPITokenService(e.apiTokens, e.users, nil)
 }
 
 func (e *testEnv) webAuthnService(t *testing.T) *WebAuthnService {

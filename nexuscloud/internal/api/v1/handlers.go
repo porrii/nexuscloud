@@ -20,6 +20,11 @@ type Handlers struct {
 	Invitations    *auth.InvitationService
 	InvitationRepo auth.InvitationRepository
 	SessionRepo    auth.SessionRepository
+	// APITokens (§78, ADR-037): tokens de acceso a la API REST completa, de
+	// alcance todo-o-nada. A diferencia de WebDAVTokens, no depende de
+	// ninguna opción de config -- siempre está disponible, como las
+	// sesiones.
+	APITokens      *auth.APITokenService
 	UserSvc        *users.Service
 	UserRepo       users.Repository
 	Files          *storage.FileService
@@ -54,4 +59,8 @@ type Handlers struct {
 	// real a configurar en el cliente en vez de suponer "/webdav". Solo
 	// tiene efecto si WebDAVTokens != nil.
 	WebDAVPath string
+	// SearchEnabled (§33): solo se usa si search.enabled=true en
+	// config.yaml. Con false (nunca por defecto), NewRouter ni siquiera
+	// registra las rutas de búsqueda, mismo criterio que ClientUpdatesProxy.
+	SearchEnabled bool
 }

@@ -25,5 +25,16 @@ PrivateTmp=true
 ReadWritePaths=/var/lib/nexuscloud
 UMask=0027
 
+# Contención de recursos por cgroup (§34, ADR-041 Decisión 0/6): cubre TODO
+# el árbol de procesos, el propio servidor MÁS cada ffmpeg/pdftoppm que
+# lance al generar una miniatura (thumbnails.enabled=true) -- sin esto,
+# generar muchas miniaturas de vídeo a la vez podría agotar la memoria de
+# la máquina entera, no solo de NexusCloud. 2 GiB/2 CPUs es un punto de
+# partida razonable para uso personal/familiar con
+# thumbnails.maxConcurrentGenerations en su valor por defecto (4); ajusta
+# según tu hardware y carga real.
+MemoryMax=2G
+CPUQuota=200%
+
 [Install]
 WantedBy=multi-user.target

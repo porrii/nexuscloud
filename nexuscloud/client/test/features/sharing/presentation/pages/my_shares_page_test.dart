@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nexuscloud_client/core/di/service_locator.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
+import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart' show TransferProgress;
 import 'package:nexuscloud_client/features/sharing/domain/entities/group.dart';
 import 'package:nexuscloud_client/features/sharing/domain/entities/share.dart';
@@ -46,6 +47,15 @@ class _FakeSharingRepository implements SharingRepository {
 
   @override
   Future<DirectoryListing> listSharedDirectory(String directoryId) =>
+      throw UnimplementedError();
+
+  @override
+  Future<FileEntry> uploadToSharedDirectory({
+    required String directoryId,
+    required String localFilePath,
+    required String fileName,
+    TransferProgress? onProgress,
+  }) =>
       throw UnimplementedError();
 
   @override

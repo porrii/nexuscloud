@@ -215,7 +215,7 @@ func (h *Handlers) UploadToSharedDirectory(w http.ResponseWriter, r *http.Reques
 	}
 
 	meta, shareID, err := h.Files.UploadToSharedDirectory(r.Context(), storage.SharedUploadInput{
-		RequesterID: u.ID, DirectoryID: id, Name: name, Content: r.Body,
+		RequesterID: u.ID, DirectoryID: id, Name: name, Content: r.Body, SizeHint: r.ContentLength,
 	})
 	if err != nil {
 		writeSharedUploadError(w, err)
@@ -253,6 +253,10 @@ func writeSharedUploadError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusRequestEntityTooLarge, "upload_too_large", "El archivo supera el límite de tamaño de esta carpeta compartida.")
 	case errors.Is(err, storage.ErrSharingDisabled):
 		writeError(w, http.StatusForbidden, "sharing_disabled", "La compartición está desactivada en esta instancia.")
+	case errors.Is(err, storage.ErrQuotaExceeded):
+		// La cuota que se agotó es la del PROPIETARIO de la carpeta (ADR-036):
+		// mensaje genérico, sin revelar su uso ni su límite.
+		writeNoSpaceInFolder(w)
 	default:
 		writeFileError(w, err)
 	}

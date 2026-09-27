@@ -1,4 +1,4 @@
-# Administración: usuarios, grupos, sesiones, compartición, doble factor
+# Administración: usuarios, grupos, cuotas, sesiones, compartición, doble factor
 
 Todo lo de aquí se hace por CLI, siempre como el usuario de servicio
 (`sudo -u nexuscloud ...` en Linux) o directamente en Windows. Referencia
@@ -36,13 +36,15 @@ nexuscloud --config config.yaml users enable maria
 `disable` bloquea el login inmediatamente; sus archivos y configuración
 no se tocan, y `enable` lo devuelve exactamente al estado anterior.
 
-### Editar nombre visible o email
+### Editar nombre visible, email o cuota
 
 ```sh
 nexuscloud --config config.yaml users edit maria --display-name "María Real" --email maria@ejemplo.com
+nexuscloud --config config.yaml users edit maria --quota 100GB
 ```
 
-Al menos uno de los dos flags es obligatorio; el que omitas no se toca.
+Al menos uno de los flags es obligatorio; el que omitas no se toca. La cuota
+está explicada [más abajo](#cuotas-de-almacenamiento).
 
 ### Borrar un usuario para siempre
 
@@ -145,6 +147,101 @@ Usuario "maria" añadido al grupo "Familia"
 
 `add-member` es idempotente: repetir la misma llamada no da error ni
 duplica nada. Un nombre de grupo repetido sí da error (409/"ya existe").
+
+Un grupo también puede llevar una cuota de almacenamiento para sus miembros
+(`--quota`, ver [Cuotas de almacenamiento](#cuotas-de-almacenamiento)).
+
+## Cuotas de almacenamiento
+
+Una cuota limita cuánto espacio puede ocupar cada usuario. **Por defecto no hay
+ninguna**: hasta que configures una, nadie tiene límite y todo funciona como
+siempre.
+
+**Qué cuenta.** Lo que la persona ocupa de verdad en disco: sus archivos, lo que
+tiene en la papelera y las versiones anteriores de sus archivos. Por eso borrar
+un archivo no libera espacio hasta que se vacía la papelera (o pasa su tiempo
+de retención), y sobrescribir uno deja la versión anterior ocupando. La web
+muestra la barra «Almacenamiento» en la barra lateral, con el desglose al pasar
+el ratón por encima.
+
+Los archivos que otra persona sube a una carpeta que le has compartido (o por
+un enlace público de subida) son tuyos: cuentan contra **tu** cuota, no contra
+la de quien los sube.
+
+**Dónde se fija.** Hay tres niveles y manda el primero que esté fijado: la
+cuota del **usuario**, si no la de su **grupo** y si no la **global**.
+
+```sh
+# Por usuario
+nexuscloud --config config.yaml users create --username maria --password '...' --quota 100GB
+nexuscloud --config config.yaml users edit maria --quota 200GB
+
+# Por grupo: cada miembro puede usar hasta esa cantidad (no es un espacio compartido)
+nexuscloud --config config.yaml users group create Familia --quota 500GB
+nexuscloud --config config.yaml users group edit Familia --quota 1TB
+```
+
+La global va en `config.yaml` (`storage.defaultQuotaBytes`, en bytes;
+`107374182400` son 100 GiB) o en la variable `NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES`.
+
+El valor de `--quota` es un tamaño (`100GB`, `1.5TB`, `500MB` o bytes a secas),
+`unlimited` o `inherit`. Los tamaños son binarios, como en el resto de la CLI:
+1 GB = 1 GiB.
+
+| Valor | Significa |
+|---|---|
+| `100GB` | Límite de 100 GiB |
+| `unlimited` | Sin límite, **aunque** el grupo o la global tengan uno |
+| `inherit` | Quita la cuota propia y vuelve a heredar del grupo o la global |
+
+Si una persona está en varios grupos con cuota, vale la más generosa (un grupo
+con `unlimited` gana a todos).
+
+**Ver el uso.**
+
+```sh
+$ nexuscloud --config config.yaml users quota
+USUARIO  USADO     CUOTA      %     ORIGEN
+admin    0 B       ilimitada  -     -
+maria    38.1 MiB  100.0 GiB  0.0%  usuario
+pablo    2.9 MiB   500.0 GiB  0.0%  grupo:Familia
+
+$ nexuscloud --config config.yaml users quota maria --detail
+USUARIO  USADO     ARCHIVOS  PAPELERA  VERSIONES  CUOTA      %     ORIGEN
+maria    38.1 MiB  38.1 MiB  0 B       0 B        100.0 GiB  0.0%  usuario
+```
+
+`ORIGEN` dice de dónde sale el límite de cada persona: `usuario`, `grupo:<nombre>`
+o `global`.
+
+**Qué pasa al llegar al límite.**
+
+- Las subidas que ya no caben se rechazan con un mensaje claro (`507
+  quota_exceeded` en la API y en WebDAV; la web lo muestra en la fila de la
+  subida). Nunca queda un archivo a medias.
+- Siguen funcionando leer, descargar, mover y borrar: solo se bloquean las
+  subidas nuevas. **Nada se borra solo.** Si bajas una cuota por debajo de lo
+  que la persona ya ocupa, queda «por encima» hasta que libere espacio:
+
+  ```sh
+  $ nexuscloud --config config.yaml users quota maria
+  USUARIO  USADO     CUOTA     %       ORIGEN
+  maria    38.1 MiB  30.0 MiB  127.2%  usuario
+  ```
+
+- `nexuscloud files upload` también respeta las cuotas. **Restaurar un backup
+  no**: una restauración tras un desastre no debe fallar porque la política
+  cambiara; si lo restaurado deja a alguien por encima, se aplica lo anterior.
+- El cliente de escritorio no cambia: muestra el mensaje del servidor como
+  cualquier otro fallo de subida de un archivo, y no reintenta sin fin.
+
+**Límites conocidos.** El grupo da una cuota **por miembro**, no un espacio
+compartido entre todos (no hay «Familia tiene 500 GB en total»). La suma de las
+cuotas no se compara con el espacio libre del disco: eso lo vigilas tú. Una
+subida por `nexuscloud files upload` a la vez que el servidor está subiendo
+para la misma persona puede pasarse del límite por un archivo. Y en WebDAV el
+Explorador de Windows y el Finder aún no muestran el espacio libre de la
+unidad. Diseño y razones: [ADR-036](../nexuscloud/docs/architecture/decisions/ADR-036-cuotas-de-almacenamiento.md).
 
 ## Doble factor (TOTP)
 
@@ -268,6 +365,32 @@ ficheros temporales con el mismo nombre. Si quieres WebDAV como unidad de red
 para trabajar con editores, `trash.enabled: false` lo evita a costa de la red
 de seguridad. Detalle completo, guía por cliente y límites conocidos en
 [`nexuscloud/docs/webdav.md`](../nexuscloud/docs/webdav.md).
+
+## Tokens de API
+
+Para scripts e integraciones que hablan con la API REST sin pasar por el
+navegador (§78, ADR-037). A diferencia del acceso WebDAV, **siempre están
+disponibles** (no hay un `enabled` que los desactive) y el token actúa
+exactamente como su propietario en cualquier endpoint: no tienen permisos
+más finos que el resto de la cuenta.
+
+Cada persona crea los suyos en la web —Cuenta → Tokens de API—, con un
+nombre y, si quiere, una expiración (nunca / 30 días / 90 días / 1 año). Se
+usan como cabecera `Authorization: Bearer <token>` contra cualquier ruta de
+`/api/v1`.
+
+Por CLI:
+
+```sh
+nexuscloud --config config.yaml users api-token create --username maria --label "script de backup" --expires-in 90d
+nexuscloud --config config.yaml users api-token list --username maria
+nexuscloud --config config.yaml users api-token revoke <id-del-token> --username maria
+```
+
+`create` imprime el token una sola vez; sin `--expires-in` no caduca nunca.
+`list` muestra la expiración y el último uso, para detectar los que ya no
+usa nadie. `revoke` lo invalida al instante y es la vía de recuperación si
+un token se filtra.
 
 ## Papelera y versiones de otro usuario
 

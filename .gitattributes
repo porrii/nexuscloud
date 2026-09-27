@@ -1,0 +1,4 @@
+# Todo el repositorio se guarda y se extrae con LF (los blobs ya lo son).
+# Evita que core.autocrlf=true en Windows marque archivos como modificados
+# sin cambios reales.
+* text=auto eol=lf

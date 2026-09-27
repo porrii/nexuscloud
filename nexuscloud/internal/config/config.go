@@ -28,6 +28,8 @@ type Config struct {
 	Trash         TrashConfig         `yaml:"trash"`
 	Versioning    VersioningConfig    `yaml:"versioning"`
 	Sharing       SharingConfig       `yaml:"sharing"`
+	Search        SearchConfig        `yaml:"search"`
+	Thumbnails    ThumbnailsConfig    `yaml:"thumbnails"`
 	Backup        BackupConfig        `yaml:"backup"`
 	ClientUpdates ClientUpdatesConfig `yaml:"clientUpdates"`
 	WebDAV        WebDAVConfig        `yaml:"webdav"`
@@ -81,6 +83,12 @@ type StorageConfig struct {
 	LogsDir       string `yaml:"logsDir,omitempty"`
 	BackupsDir    string `yaml:"backupsDir,omitempty"`
 	ConfigDir     string `yaml:"configDir,omitempty"`
+
+	// DefaultQuotaBytes es la cuota global (§24, ADR-036): el límite de
+	// almacenamiento por usuario para quien no tiene cuota propia ni de
+	// grupo. 0 = sin cuota global (el comportamiento de siempre). Es un campo
+	// nuevo opcional: no obliga a subir configVersion.
+	DefaultQuotaBytes int64 `yaml:"defaultQuotaBytes,omitempty"`
 }
 
 type SecurityConfig struct {
@@ -156,9 +164,63 @@ type VersioningConfig struct {
 // enlaces públicos, la ÚNICA superficie que Sharing expone sin sesión --
 // coherente con el precedente ya sentado por web.enabled (§3, §47), su valor
 // por defecto es false: el administrador debe activarla explícitamente.
+// AnonymousUploadEnabled (§38, ADR-039) es un modelo SEPARADO de
+// PublicLinksEnabled, no una variante suya -- ver ADR-039 para por qué --
+// pero comparte el mismo criterio de valor por defecto (false: superficie
+// pública nueva, activación explícita).
 type SharingConfig struct {
-	Enabled            bool `yaml:"enabled"`
-	PublicLinksEnabled bool `yaml:"publicLinksEnabled"`
+	Enabled                bool `yaml:"enabled"`
+	PublicLinksEnabled     bool `yaml:"publicLinksEnabled"`
+	AnonymousUploadEnabled bool `yaml:"anonymousUploadEnabled"`
+}
+
+// SearchConfig gobierna el buscador de metadatos (§33). A diferencia de
+// PublicLinksEnabled/AnonymousUploadEnabled (que empiezan en false por ser
+// superficies SIN sesión), buscar es 100% autenticado y de solo lectura
+// sobre datos que el usuario ya podía ver por GET /files -- no añade
+// superficie nueva, así que Enabled es true por defecto, mismo criterio que
+// Trash/Versioning. Con Enabled=false, las rutas de búsqueda ni se
+// registran en el router (mismo patrón que ClientUpdatesProxy).
+type SearchConfig struct {
+	Enabled bool `yaml:"enabled"`
+}
+
+// ThumbnailsConfig gobierna la generación de miniaturas (§34, ADR-041).
+// Enabled es false por defecto: es la PRIMERA vez que el servidor
+// decodifica contenido de usuario Y ejecuta binarios externos
+// (ffmpeg/poppler-utils) sobre él -- mismo criterio que Backup.Enabled
+// (activación explícita y consciente del administrador), reforzado aquí
+// por el cambio de imagen Docker que exige vídeo/PDF (Decisión 0): un
+// administrador que actualice sin leer el changelog no debe encontrarse
+// de repente con ffmpeg corriendo sobre su contenido.
+type ThumbnailsConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// MaxInputBytes/MaxVideoInputBytes/MaxPDFInputBytes acotan el tamaño de
+	// ENTRADA antes de intentar decodificar/invocar un subproceso --
+	// primera línea de defensa contra decompression bombs y agotamiento
+	// de recursos (§34 Decisión 4). Límites separados porque un vídeo/PDF
+	// legítimo suele pesar mucho más que una imagen.
+	MaxInputBytes      int64 `yaml:"maxInputBytes"`
+	MaxVideoInputBytes int64 `yaml:"maxVideoInputBytes"`
+	MaxPDFInputBytes   int64 `yaml:"maxPdfInputBytes"`
+	// MaxPixels acota ancho*alto DECLARADOS de una imagen (leídos antes de
+	// decodificar completo) -- mitigación estándar contra decompression
+	// bombs de imagen.
+	MaxPixels int64 `yaml:"maxPixels"`
+	// MaxCacheBytes topa el tamaño TOTAL de la caché de miniaturas en
+	// disco (§34 Decisión 3) -- independiente de la cuota de cualquier
+	// usuario (las miniaturas no cuentan para ninguna cuota, son un
+	// artefacto de caché regenerable). Al superarlo, se deja de generar
+	// miniaturas nuevas; las existentes se siguen sirviendo. Sin eviction
+	// LRU en esta ronda -- límite conocido, documentado en ADR-041.
+	MaxCacheBytes int64 `yaml:"maxCacheBytes"`
+	// MaxConcurrentGenerations acota cuántas miniaturas se generan a la
+	// vez, compartido por las 3 pipelines (§34 Decisión 6, hallazgo ALTO
+	// del pase de security-reviewer sobre el diseño): sin este límite,
+	// pedir la miniatura de muchos archivos nunca vistos a la vez puede
+	// agotar memoria hasta que el OOM-killer del kernel mate al proceso
+	// entero, no solo a la función de miniaturas.
+	MaxConcurrentGenerations int `yaml:"maxConcurrentGenerations"`
 }
 
 // BackupConfig gobierna el backup automático (§18 "programación"). A
@@ -236,6 +298,11 @@ type RateLimitConfig struct {
 	// dispara decenas de PROPFIND por segundo al abrir una carpeta, mucho más
 	// que la API REST, así que tiene su propio límite por IP, más holgado.
 	WebDAVPerMinute int `yaml:"webdavPerMinute"`
+	// AnonymousUploadPerMinute (§38, ADR-039): más estricto que
+	// PublicLinkPerMinute -- a diferencia de un share, aquí cualquiera con el
+	// enlace escribe sin que el creador haya podido vetar a nadie de
+	// antemano.
+	AnonymousUploadPerMinute int `yaml:"anonymousUploadPerMinute"`
 }
 
 // WebDAVConfig gobierna el módulo WebDAV (§43, ADR-034). Enabled=false por
@@ -299,18 +366,29 @@ func Defaults() *Config {
 				Parallelism: 4,
 			},
 			RateLimit: RateLimitConfig{
-				LoginPerMinute:      5,
-				APIPerMinute:        300,
-				PublicLinkPerMinute: 20,
-				WebDAVPerMinute:     1200,
+				LoginPerMinute:           5,
+				APIPerMinute:             300,
+				PublicLinkPerMinute:      20,
+				WebDAVPerMinute:          1200,
+				AnonymousUploadPerMinute: 10,
 			},
 			CORSAllowedOrigins:        []string{},
 			PublicRegistrationEnabled: false,
 			WebAuthn:                  WebAuthnConfig{Enabled: false},
 		},
-		Trash:         TrashConfig{Enabled: true, RetentionDays: 30},
-		Versioning:    VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
-		Sharing:       SharingConfig{Enabled: true, PublicLinksEnabled: false},
+		Trash:      TrashConfig{Enabled: true, RetentionDays: 30},
+		Versioning: VersioningConfig{Enabled: true, MaxVersionsPerFile: 10},
+		Sharing:    SharingConfig{Enabled: true, PublicLinksEnabled: false, AnonymousUploadEnabled: false},
+		Search:     SearchConfig{Enabled: true},
+		Thumbnails: ThumbnailsConfig{
+			Enabled:                  false,
+			MaxInputBytes:            25 * 1024 * 1024,
+			MaxVideoInputBytes:       200 * 1024 * 1024,
+			MaxPDFInputBytes:         50 * 1024 * 1024,
+			MaxPixels:                40_000_000,
+			MaxCacheBytes:            2 * 1024 * 1024 * 1024,
+			MaxConcurrentGenerations: 4,
+		},
 		Backup:        BackupConfig{Enabled: false, IntervalMinutes: 1440},
 		ClientUpdates: ClientUpdatesConfig{Enabled: false, Channel: "win"},
 		WebDAV:        WebDAVConfig{Enabled: false, Path: "/webdav"},

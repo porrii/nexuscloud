@@ -153,6 +153,27 @@ func groupsTable(driver string) string {
 	return "groups"
 }
 
+func (r *SQLRepository) UpdateGroupQuota(ctx context.Context, groupID string, quota *int64) error {
+	res, err := r.conn.ExecContext(ctx,
+		`UPDATE `+groupsTable(r.conn.Driver)+` SET quota_bytes = ? WHERE id = ?`,
+		nullInt64(quota), groupID)
+	if err != nil {
+		return fmt.Errorf("actualizando la cuota del grupo: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("comprobando filas afectadas: %w", err)
+	}
+	if n == 0 {
+		// MySQL cuenta filas CAMBIADAS, no encontradas: repetir el mismo valor
+		// da 0 sin que el grupo falte. Se distingue mirando si existe.
+		if _, err := r.GetGroupByID(ctx, groupID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *SQLRepository) CreateGroup(ctx context.Context, g *Group) error {
 	_, err := r.conn.ExecContext(ctx,
 		`INSERT INTO `+groupsTable(r.conn.Driver)+` (id, name, quota_bytes, created_at) VALUES (?, ?, ?, ?)`,

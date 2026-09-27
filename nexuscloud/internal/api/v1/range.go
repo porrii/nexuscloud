@@ -59,6 +59,29 @@ func parseResumeRange(header string, size int64) (start int64, result rangeResul
 	return n, rangeValid
 }
 
+// contentDisposition decide "inline" vs "attachment" (§35, ADR-040 Fase 2:
+// previsualización). Solo PDF/vídeo/audio lo necesitan -- el navegador ya
+// renderiza una <img> ignorando esta cabecera sea cual sea su valor, así
+// que image/* se deja fuera a propósito (tocarla no arregla nada y evita
+// pensar dos veces en SVG, ver el resto de este comentario). Todo lo demás
+// (en especial text/html y image/svg+xml, que sí pueden ejecutar script si
+// el navegador los abre como documento de nivel superior en este mismo
+// origen) se queda en "attachment": esta lista es deliberadamente estrecha,
+// nunca "todo lo que no sea peligroso a primera vista". El enlace
+// "Descargar" de la web sigue forzando el diálogo de guardar de todas
+// formas gracias al atributo HTML `download`, que manda sobre esta
+// cabecera -- este cambio no le afecta.
+func contentDisposition(mimeType string) string {
+	switch {
+	case mimeType == "application/pdf",
+		strings.HasPrefix(mimeType, "video/"),
+		strings.HasPrefix(mimeType, "audio/"):
+		return "inline"
+	default:
+		return "attachment"
+	}
+}
+
 // serveFileContent escribe las cabeceras y el cuerpo de una respuesta de
 // descarga, con soporte de reanudación vía Range (ADR-010, §41). Cierra
 // [rc] siempre antes de devolver. Comparte las cinco cabeceras que ya
@@ -89,9 +112,20 @@ func serveFileContent(
 
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Content-Type", mimeType)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", name))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", contentDisposition(mimeType), name))
 	w.Header().Set("X-Content-SHA256", sha256Hex)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// El visor de PDF de Chrome vía <embed> respeta X-Frame-Options igual
+	// que un <iframe> -- con el DENY global (security.Headers, §191) un PDF
+	// nunca se ve, queda en blanco (encontrado verificando la
+	// previsualización en un navegador real). SAMEORIGIN basta para
+	// permitirlo desde la propia web y mantiene fuera a cualquier tercero,
+	// que es la amenaza real que defiende esa cabecera. Solo PDF lo
+	// necesita: <video>/<audio> no son un contexto de "framing" para el
+	// navegador, así que no hace falta tocarles nada.
+	if mimeType == "application/pdf" {
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+	}
 
 	start, result := int64(0), rangeNone
 	seeker, seekable := rc.(io.Seeker)

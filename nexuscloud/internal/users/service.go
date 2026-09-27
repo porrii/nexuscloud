@@ -20,10 +20,16 @@ var ErrInvalidUsername = errors.New("users: nombre de usuario inválido (minúsc
 // paquete y no al revés.
 type Service struct {
 	repo Repository
+	// defaultQuotaBytes es la cuota global (0 = sin ella); ver WithDefaultQuota.
+	defaultQuotaBytes int64
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewService(repo Repository, opts ...ServiceOption) *Service {
+	s := &Service{repo: repo}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type CreateUserInput struct {
@@ -42,6 +48,9 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 	if !usernamePattern.MatchString(in.Username) {
 		return nil, ErrInvalidUsername
 	}
+	if err := ValidateQuota(in.QuotaBytes); err != nil {
+		return nil, err
+	}
 	if in.DisplayName == "" {
 		in.DisplayName = in.Username
 	}
@@ -58,7 +67,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 		Email:        in.Email,
 		PasswordHash: in.PasswordHash,
 		Status:       StatusActive,
-		QuotaBytes:   in.QuotaBytes,
+		QuotaBytes:   copyQuota(in.QuotaBytes),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}

@@ -1,6 +1,7 @@
 package apiv1
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -14,7 +15,13 @@ import (
 
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFromContext(r.Context())
-	writeJSON(w, http.StatusOK, toUserResponse(u))
+	isAdmin, err := h.UserSvc.IsAdmin(r.Context(), u.ID)
+	if err != nil {
+		h.Logger.Error("comprobando privilegios de administrador", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
+		return
+	}
+	writeJSON(w, http.StatusOK, meResponse{userResponse: toUserResponse(u), IsAdmin: isAdmin})
 }
 
 func (h *Handlers) ListUsers(w http.ResponseWriter, r *http.Request) {
@@ -37,6 +44,8 @@ type createUserRequest struct {
 	Email       string `json:"email,omitempty"`
 	Password    string `json:"password"`
 	Role        string `json:"role,omitempty"`
+	// QuotaBytes: cuota propia opcional (§24); ausente o null = hereda.
+	QuotaBytes json.RawMessage `json:"quota_bytes,omitempty"`
 }
 
 // CreateUser es la vía de alta directa por administrador (§21), alternativa
@@ -52,6 +61,11 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "username y password (mínimo 8 caracteres) son obligatorios.")
 		return
 	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
 	hash, err := h.Hasher.Hash(req.Password)
 	if err != nil {
@@ -62,7 +76,7 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 	u, err := h.UserSvc.CreateUser(r.Context(), users.CreateUserInput{
 		Username: req.Username, DisplayName: req.DisplayName, Email: req.Email,
-		PasswordHash: hash, Role: req.Role,
+		PasswordHash: hash, Role: req.Role, QuotaBytes: quota.value,
 	})
 	if err != nil {
 		writeCreateUserError(w, err)
@@ -89,6 +103,10 @@ type patchUserRequest struct {
 	DisplayName *string `json:"display_name,omitempty"`
 	Email       *string `json:"email,omitempty"`
 	Status      *string `json:"status,omitempty"` // "active" | "disabled"
+	// QuotaBytes es tri-estado (§24, ADR-036): ausente = no se toca, null =
+	// sin cuota propia (hereda del grupo o la global), 0 = ilimitada, >0 =
+	// límite en bytes. Por eso es un json.RawMessage y no un *int64.
+	QuotaBytes json.RawMessage `json:"quota_bytes,omitempty"`
 }
 
 func (h *Handlers) PatchUser(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +122,15 @@ func (h *Handlers) PatchUser(w http.ResponseWriter, r *http.Request) {
 	if err := readJSON(r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request", "Cuerpo de la petición inválido.")
 		return
+	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	quotaBefore := u.QuotaBytes
+	if quota.present {
+		u.QuotaBytes = quota.value
 	}
 	if req.DisplayName != nil {
 		u.DisplayName = *req.DisplayName
@@ -131,6 +158,10 @@ func (h *Handlers) PatchUser(w http.ResponseWriter, r *http.Request) {
 	}
 	if statusChanged && u.Status == users.StatusDisabled {
 		h.AuditLog.Record(r.Context(), audit.EventUserDisabled, actor.ID, "user", u.ID, security.ClientIP(r, h.TrustedProxies), nil)
+	}
+	if quota.present && !sameQuota(quotaBefore, quota.value) {
+		h.AuditLog.Record(r.Context(), audit.EventQuotaChanged, actor.ID, "user", u.ID, security.ClientIP(r, h.TrustedProxies),
+			map[string]any{"before": quotaValue(quotaBefore), "after": quotaValue(quota.value)})
 	}
 	writeJSON(w, http.StatusOK, toUserResponse(u))
 }

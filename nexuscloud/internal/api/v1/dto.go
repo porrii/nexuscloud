@@ -21,6 +21,10 @@ type userResponse struct {
 	HasTOTP     bool       `json:"has_totp"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastLoginAt *time.Time `json:"last_login_at,omitempty"`
+	// QuotaBytes es la cuota PROPIA del usuario (§24, ADR-036): ausente =
+	// hereda del grupo o la global, 0 = ilimitada. El límite efectivo que le
+	// afecta, y el uso, salen de GET /users/me/quota.
+	QuotaBytes *int64 `json:"quota_bytes,omitempty"`
 }
 
 func toUserResponse(u *users.User) userResponse {
@@ -33,7 +37,18 @@ func toUserResponse(u *users.User) userResponse {
 		HasTOTP:     u.HasTOTP(),
 		CreatedAt:   u.CreatedAt,
 		LastLoginAt: u.LastLoginAt,
+		QuotaBytes:  u.QuotaBytes,
 	}
+}
+
+// meResponse extiende userResponse con is_admin -- solo GET /users/me lo
+// necesita (la web lo usa para decidir si mostrar la búsqueda entre
+// usuarios, §33), así que se calcula aparte en vez de tocar userResponse/
+// toUserResponse, usados también por login/redeem/listar/crear/editar
+// usuario, donde el rol de la respuesta no aporta nada.
+type meResponse struct {
+	userResponse
+	IsAdmin bool `json:"is_admin"`
 }
 
 type sessionResponse struct {
@@ -58,6 +73,10 @@ type directoryResponse struct {
 	Name       string     `json:"name"`
 	CreatedAt  time.Time  `json:"created_at"`
 	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	// FavoriteID (§87, ADR-038): presente = favorito, y es el ID a usar
+	// para quitarlo (DELETE /favorites/{id}). Campo aditivo, solo lo anota
+	// ListFiles (árbol propio y activo) -- ausente en trash/shared/versiones.
+	FavoriteID *string `json:"favorite_id,omitempty"`
 }
 
 func toDirectoryResponse(d *storage.Directory) directoryResponse {
@@ -74,6 +93,8 @@ type fileResponse struct {
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
 	DeletedAt  *time.Time `json:"deleted_at,omitempty"`
+	// FavoriteID (§87, ADR-038): ver el mismo campo en directoryResponse.
+	FavoriteID *string `json:"favorite_id,omitempty"`
 }
 
 func toFileResponse(f *storage.FileMeta) fileResponse {
@@ -100,10 +121,13 @@ func toVersionResponse(v *storage.FileVersion) versionResponse {
 type groupResponse struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// QuotaBytes es la cuota por miembro del grupo (§24, ADR-036): ausente =
+	// el grupo no aporta cuota, 0 = ilimitada para sus miembros.
+	QuotaBytes *int64 `json:"quota_bytes,omitempty"`
 }
 
 func toGroupResponse(g *users.Group) groupResponse {
-	return groupResponse{ID: g.ID, Name: g.Name}
+	return groupResponse{ID: g.ID, Name: g.Name, QuotaBytes: g.QuotaBytes}
 }
 
 // shareResponse nunca expone PasswordHash/TokenHash (§172): HasPassword es
@@ -165,5 +189,56 @@ func toShareResponse(s *storage.Share, extra shareResponseExtra) shareResponse {
 		DownloadCount:      s.DownloadCount,
 		MaxUploadSizeBytes: s.MaxUploadSizeBytes,
 		CreatedAt:          s.CreatedAt,
+	}
+}
+
+// anonymousUploadResponse nunca expone TokenHash (§172): Token solo se
+// rellena en la respuesta de creación, una única vez -- igual que
+// shareResponse. Sin CanDownload/CanUpload (no aplican: este modelo no tiene
+// más permiso que "subir", nunca "ver") ni HasPassword (§38 no lo pidió).
+type anonymousUploadResponse struct {
+	ID                 string     `json:"id"`
+	DirectoryID        string     `json:"directory_id"`
+	DirectoryName      string     `json:"directory_name,omitempty"`
+	Label              string     `json:"label,omitempty"`
+	MaxUploadSizeBytes *int64     `json:"max_upload_size_bytes,omitempty"`
+	ExpiresAt          *time.Time `json:"expires_at,omitempty"`
+	UploadCount        int        `json:"upload_count"`
+	CreatedAt          time.Time  `json:"created_at"`
+	Token              string     `json:"token,omitempty"`
+}
+
+func toAnonymousUploadResponse(a *storage.AnonymousUpload, directoryName string) anonymousUploadResponse {
+	return anonymousUploadResponse{
+		ID:                 a.ID,
+		DirectoryID:        a.DirectoryID,
+		DirectoryName:      directoryName,
+		Label:              a.Label,
+		MaxUploadSizeBytes: a.MaxUploadSizeBytes,
+		ExpiresAt:          a.ExpiresAt,
+		UploadCount:        a.UploadCount,
+		CreatedAt:          a.CreatedAt,
+	}
+}
+
+// thumbnailJobResponse (§34, ADR-041): GET /admin/thumbnail-jobs -- solo lo
+// que un administrador necesita para decidir si algo va mal (qué archivo,
+// qué tipo, cuántos intentos lleva, cuál fue el último error), nunca el
+// SHA256 interno (sin valor para esa decisión, ver §172).
+type thumbnailJobResponse struct {
+	ID        string    `json:"id"`
+	FileID    string    `json:"file_id"`
+	Kind      string    `json:"kind"`
+	Status    string    `json:"status"`
+	Attempts  int       `json:"attempts"`
+	LastError string    `json:"last_error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func toThumbnailJobResponse(j *storage.ThumbnailJob) thumbnailJobResponse {
+	return thumbnailJobResponse{
+		ID: j.ID, FileID: j.FileID, Kind: string(j.Kind), Status: string(j.Status),
+		Attempts: j.Attempts, LastError: j.LastError, CreatedAt: j.CreatedAt, UpdatedAt: j.UpdatedAt,
 	}
 }

@@ -19,8 +19,11 @@ func extractToken(r *http.Request) string {
 	return ""
 }
 
-// RequireAuth exige un token de sesión válido (cookie o Bearer) y añade el
-// usuario/sesión al contexto de la petición.
+// RequireAuth exige un token válido -- de sesión (cookie o Bearer) o de API
+// (§78, ADR-037, siempre Bearer, reconocible por su prefijo) -- y añade el
+// usuario al contexto de la petición. Un token de API no deja `ctxSession`
+// poblado (no hay ninguna sesión real detrás): es alcance todo-o-nada, así
+// que ningún handler necesita distinguir cómo se autenticó la petición.
 func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := extractToken(r)
@@ -28,6 +31,21 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "Autenticación requerida.")
 			return
 		}
+
+		if strings.HasPrefix(token, auth.APITokenPrefix) {
+			u, _, err := h.APITokens.Authenticate(r.Context(), token)
+			if err != nil {
+				if !errors.Is(err, auth.ErrInvalidAPICredentials) {
+					h.Logger.Warn("error validando token de API", "error", err)
+				}
+				writeError(w, http.StatusUnauthorized, "unauthorized", "Token inválido, expirado o revocado.")
+				return
+			}
+			ctx := context.WithValue(r.Context(), ctxUser, u)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		u, sess, err := h.Auth.ValidateToken(r.Context(), token)
 		if err != nil {
 			if !errors.Is(err, auth.ErrSessionNotFound) && !errors.Is(err, auth.ErrUserDisabled) {

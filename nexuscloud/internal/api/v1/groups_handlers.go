@@ -1,6 +1,7 @@
 package apiv1
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -34,6 +35,9 @@ func (h *Handlers) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 type createGroupRequest struct {
 	Name string `json:"name"`
+	// QuotaBytes: cuota por miembro opcional (§24); ausente o null = el grupo
+	// no aporta cuota.
+	QuotaBytes json.RawMessage `json:"quota_bytes,omitempty"`
 }
 
 // CreateGroup cierra el hueco encontrado en la auditoría "todo por
@@ -51,8 +55,13 @@ func (h *Handlers) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "name es obligatorio.")
 		return
 	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
-	g := &users.Group{ID: idgen.New(), Name: req.Name, CreatedAt: time.Now().UTC()}
+	g := &users.Group{ID: idgen.New(), Name: req.Name, QuotaBytes: quota.value, CreatedAt: time.Now().UTC()}
 	if err := h.UserRepo.CreateGroup(r.Context(), g); err != nil {
 		if errors.Is(err, users.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "already_exists", "Ya existe un grupo con ese nombre.")
@@ -66,6 +75,63 @@ func (h *Handlers) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	h.AuditLog.Record(r.Context(), audit.EventGroupCreated, actor.ID, "group", g.ID,
 		security.ClientIP(r, h.TrustedProxies), map[string]any{"name": g.Name})
 	writeJSON(w, http.StatusCreated, toGroupResponse(g))
+}
+
+type patchGroupRequest struct {
+	// QuotaBytes es obligatorio y tri-estado: null = el grupo deja de aportar
+	// cuota, 0 = ilimitada para sus miembros, >0 = límite por miembro.
+	QuotaBytes json.RawMessage `json:"quota_bytes"`
+}
+
+// PatchGroup fija la cuota por miembro de un grupo (§24, ADR-036). De momento
+// es lo único que se puede cambiar de un grupo, así que el campo es
+// obligatorio: un PATCH sin él no haría nada. Admin-only.
+func (h *Handlers) PatchGroup(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	group, err := h.UserRepo.GetGroupByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Grupo no encontrado.")
+			return
+		}
+		h.Logger.Error("buscando grupo", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo actualizar el grupo.")
+		return
+	}
+
+	var req patchGroupRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Cuerpo de la petición inválido.")
+		return
+	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if !quota.present {
+		writeError(w, http.StatusBadRequest, "invalid_request", "quota_bytes es obligatorio (null = sin cuota, 0 = ilimitada).")
+		return
+	}
+
+	if err := h.UserSvc.SetGroupQuota(r.Context(), id, quota.value); err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Grupo no encontrado.")
+			return
+		}
+		h.Logger.Error("actualizando la cuota del grupo", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo actualizar el grupo.")
+		return
+	}
+
+	if !sameQuota(group.QuotaBytes, quota.value) {
+		h.AuditLog.Record(r.Context(), audit.EventQuotaChanged, actor.ID, "group", group.ID, security.ClientIP(r, h.TrustedProxies),
+			map[string]any{"name": group.Name, "before": quotaValue(group.QuotaBytes), "after": quotaValue(quota.value)})
+	}
+	group.QuotaBytes = quota.value
+	writeJSON(w, http.StatusOK, toGroupResponse(group))
 }
 
 type addGroupMemberRequest struct {

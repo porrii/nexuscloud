@@ -73,6 +73,188 @@ paths:
         "204": { description: Sesión revocada }
         "404": { $ref: "#/components/responses/Error" }
 
+  /auth/api-tokens:
+    get:
+      summary: Listar los tokens de API del usuario autenticado (§78, ADR-037)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ApiToken" }
+    post:
+      summary: Crear un token de API (alcance todo-o-nada; se muestra una única vez)
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label: { type: string }
+                expires_at: { type: string, format: date-time, nullable: true }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/ApiToken"
+                  - type: object
+                    properties:
+                      token: { type: string, description: "Solo aparece aquí; nunca se vuelve a mostrar" }
+        "400": { $ref: "#/components/responses/Error" }
+
+  /auth/api-tokens/{id}:
+    delete:
+      summary: Revocar un token de API propio
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Token revocado }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /favorites:
+    get:
+      summary: Listar los favoritos del usuario autenticado (§87, ADR-038)
+      description: Misma forma que GET /files, con favorite_id ya poblado; solo recursos activos.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+    post:
+      summary: Marcar un archivo o carpeta propios como favorito
+      description: Idempotente -- favoritar dos veces el mismo recurso devuelve el existente, no un error.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resource_type, resource_id]
+              properties:
+                resource_type: { type: string, enum: [file, directory] }
+                resource_id: { type: string, format: uuid }
+      responses:
+        "201":
+          description: Creado (o ya existente)
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Favorite" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /favorites/{id}:
+    delete:
+      summary: Quitar un favorito propio
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Favorito quitado }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /activity:
+    get:
+      summary: Actividad reciente del usuario autenticado (§88, ADR-038)
+      description: Widget de dashboard ("Recientes") -- subidas/descargas/borrados/movimientos/comparticiones, más reciente primero.
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, default: 20, maximum: 100 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ActivityEvent" }
+
+  /search:
+    get:
+      summary: Búsqueda de metadatos sobre el árbol propio (§33, ADR-040)
+      description: >
+        Filtra por nombre/ruta (q, case-insensitive), tipo MIME (type, como
+        prefijo, p.ej. "image/"), extensión exacta sin punto (ext), fecha de
+        creación (date_from/date_to) y tamaño en bytes (size_min/size_max).
+        Solo metadatos, nunca contenido. Misma forma de respuesta que
+        GET /files, con favorite_id ya anotado. 404 si search.enabled=false.
+      parameters:
+        - $ref: "#/components/parameters/searchQ"
+        - $ref: "#/components/parameters/searchType"
+        - $ref: "#/components/parameters/searchExt"
+        - $ref: "#/components/parameters/searchDateFrom"
+        - $ref: "#/components/parameters/searchDateTo"
+        - $ref: "#/components/parameters/searchSizeMin"
+        - $ref: "#/components/parameters/searchSizeMax"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /admin/search:
+    get:
+      summary: Búsqueda de metadatos cruzando todos los usuarios (§33, ADR-040)
+      description: >
+        Igual que GET /search pero sin acotar a un propietario; owner
+        (username) opcional restringe a uno concreto, ausente = todos.
+      parameters:
+        - $ref: "#/components/parameters/searchQ"
+        - $ref: "#/components/parameters/searchType"
+        - $ref: "#/components/parameters/searchExt"
+        - $ref: "#/components/parameters/searchDateFrom"
+        - $ref: "#/components/parameters/searchDateTo"
+        - $ref: "#/components/parameters/searchSizeMin"
+        - $ref: "#/components/parameters/searchSizeMax"
+        - name: owner
+          in: query
+          schema: { type: string }
+          description: "Username del propietario a filtrar; ausente = todos los usuarios"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  directories:
+                    type: array
+                    items: { $ref: "#/components/schemas/Directory" }
+                  files:
+                    type: array
+                    items: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+
   /auth/totp/enroll:
     post:
       summary: Generar un secreto TOTP para activar 2FA
@@ -114,6 +296,22 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
 
+  /users/me/quota:
+    get:
+      summary: Uso y límite de almacenamiento de quien pregunta (§24, ADR-036)
+      description: >
+        El uso es la huella real en disco: archivos activos + papelera +
+        versiones anteriores. Se calcula en el momento, así que es más caro que
+        /users/me; por eso es un endpoint aparte. limit_bytes se omite si no hay
+        límite; source dice de dónde sale el límite efectivo (user, group,
+        global o none).
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Quota" }
+
   /users:
     get:
       summary: Listar usuarios (admin)
@@ -141,12 +339,19 @@ paths:
                 display_name: { type: string }
                 email: { type: string }
                 role: { type: string, enum: [super_admin, administrator, user, read_only] }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "Cuota propia (§24). Ausente o null = hereda del grupo o la global; 0 = ilimitada."
       responses:
         "201":
           description: Creado
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
         "409": { $ref: "#/components/responses/Error" }
 
   /users/{id}:
@@ -163,12 +368,24 @@ paths:
                 display_name: { type: string }
                 email: { type: string }
                 status: { type: string, enum: [active, disabled] }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: >
+                    Cuota propia (§24, ADR-036), tri-estado: ausente = no se
+                    toca; null = sin cuota propia (hereda del grupo o la
+                    global); 0 = ilimitada; un número > 0 = límite en bytes.
+                    400 si es negativo, decimal o no es un número. Cambiarla
+                    se audita como quota_changed.
       responses:
         "200":
           description: OK
           content:
             application/json:
               schema: { $ref: "#/components/schemas/User" }
+        "400": { $ref: "#/components/responses/Error" }
     delete:
       summary: Eliminar un usuario (admin, no a sí mismo)
       parameters:
@@ -286,6 +503,15 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/File" }
         "400": { $ref: "#/components/responses/Error" }
+        "507":
+          description: >
+            quota_exceeded: no cabe en la cuota del usuario (§24, ADR-036). Con
+            Content-Length conocido se rechaza sin leer el cuerpo. Cuenta la
+            huella real: archivos + papelera + versiones. 413 sigue siendo el
+            límite de tamaño por archivo.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /files/{id}:
     get:
@@ -400,6 +626,37 @@ paths:
         "403": { $ref: "#/components/responses/Error" }
         "404": { $ref: "#/components/responses/Error" }
 
+  /files/{id}/thumbnail:
+    get:
+      summary: Obtener la miniatura de un archivo (§34, ADR-041)
+      description: >
+        Solo imagen/vídeo/PDF tienen miniatura posible. Genera bajo demanda
+        si todavía no está en caché (síncrono); siempre JPEG, máx. 320px en
+        su lado mayor preservando proporción, sea cual sea el formato de
+        entrada.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "200":
+          description: Miniatura JPEG
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        "403": { $ref: "#/components/responses/Error" }
+        "404":
+          description: >
+            Archivo no encontrado, thumbnails.enabled=false, o el tipo de
+            archivo no tiene miniatura posible (mismo código de error
+            "not_found" en los tres casos).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503":
+          description: Contención transitoria (caché llena o demasiadas generándose a la vez) -- reintenta más tarde
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /directories:
     post:
       summary: Crear una carpeta (idempotente)
@@ -511,6 +768,12 @@ paths:
               required: [name]
               properties:
                 name: { type: string }
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "Cuota por miembro (§24). Ausente o null = el grupo no aporta cuota; 0 = ilimitada."
       responses:
         "201":
           description: Creado
@@ -520,6 +783,40 @@ paths:
         "400": { $ref: "#/components/responses/Error" }
         "403": { $ref: "#/components/responses/Error" }
         "409": { description: "Ya existe un grupo con ese nombre" }
+
+  /groups/{id}:
+    patch:
+      summary: Fijar la cuota por miembro de un grupo (admin, §24, ADR-036)
+      description: >
+        De momento es lo único que se puede cambiar de un grupo, así que
+        quota_bytes es obligatorio. Es un límite POR MIEMBRO, no un espacio
+        compartido: cada miembro puede usar hasta esa cantidad salvo cuota
+        propia; con varios grupos con cuota gana la más generosa.
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quota_bytes]
+              properties:
+                quota_bytes:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                  nullable: true
+                  description: "null = el grupo deja de aportar cuota; 0 = ilimitada para sus miembros; > 0 = límite en bytes."
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Group" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
 
   /groups/{id}/members:
     post:
@@ -643,6 +940,49 @@ paths:
         "404": { description: "Carpeta inexistente o en la papelera" }
         "409": { description: "destination_occupied: ya hay un archivo con ese nombre (o algo suyo en la papelera del propietario, sin distinguirlo)" }
         "413": { description: "upload_too_large: el archivo supera el límite de tamaño del permiso" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del PROPIETARIO de la carpeta (los archivos son suyos, ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
+
+  /anonymous-uploads:
+    post:
+      summary: Crear un enlace de subida anónima sobre una carpeta propia (§38, ADR-039)
+      description: >
+        Modelo SEPARADO de /shares, no una variante suya: sin contraseña, sin
+        permiso de descarga, y sin ningún endpoint de navegación -- la
+        garantía de "sin acceso al resto" es estructural. La respuesta
+        incluye token en claro una única vez.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateAnonymousUploadRequest" }
+      responses:
+        "201":
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnonymousUploadLink" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "anonymous_upload_disabled (desactivada en esta instancia) o forbidden (la carpeta no es tuya)" }
+        "404": { description: "La carpeta no existe" }
+    get:
+      summary: Listar los enlaces de subida anónima propios
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AnonymousUploadLink" }
+
+  /anonymous-uploads/{id}:
+    delete:
+      summary: Revocar un enlace de subida anónima propio (soft, propietario únicamente)
+      parameters:
+        - $ref: "#/components/parameters/idParam"
+      responses:
+        "204": { description: Revocado }
+        "404": { description: "No existe o no es tuyo (§198, IDOR-safe: mismo 404 en ambos casos)" }
 
   /public/shares/{token}:
     get:
@@ -745,6 +1085,62 @@ paths:
         "409": { description: "destination_occupied: ya hay un archivo con ese nombre en la carpeta (o algo suyo en la papelera del propietario, sin distinguirlo); no se sobrescribe" }
         "410": { description: "Enlace revocado, expirado o agotado" }
         "413": { description: "El archivo supera el límite de tamaño del enlace" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del propietario del enlace (ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
+
+  /public/anonymous-uploads/{token}:
+    get:
+      summary: Probe público de un enlace de subida anónima (§38, ADR-039)
+      description: >
+        Sin sesión, sin contraseña. Revela SOLO label y
+        max_upload_size_bytes si el enlace es válido -- nunca el
+        propietario, la carpeta ni su contenido. Un único 404 genérico
+        para inexistente/revocado/caducado, a propósito: quien solo tiene
+        el token no necesita distinguir el motivo, y no distinguirlo
+        reduce la superficie de enumeración (a diferencia de
+        GetPublicShare, que sí expone revoked/expired/exhausted por
+        separado).
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AnonymousUploadInfo" }
+        "403": { description: "anonymous_upload_disabled: la subida anónima está desactivada en esta instancia" }
+        "404": { description: "not_found: inexistente, revocado o caducado (sin distinguir cuál)" }
+
+  /public/anonymous-uploads/{token}/upload:
+    post:
+      summary: Subir un archivo a la raíz de la carpeta de un enlace de subida anónima (§38, ADR-039)
+      description: >
+        Sin sesión, sin contraseña. Sin sub-ruta: el destino es siempre la
+        raíz de la carpeta del enlace, no hay concepto de navegar dentro.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/tokenParam"
+        - name: name
+          in: query
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        "201":
+          description: Subido
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/File" }
+        "400": { $ref: "#/components/responses/Error" }
+        "403": { description: "anonymous_upload_disabled" }
+        "404": { description: "not_found: inexistente, revocado o caducado (sin distinguir cuál)" }
+        "409": { description: "destination_occupied: ya hay un archivo con ese nombre (o algo suyo en la papelera del propietario, sin distinguirlo); no se sobrescribe" }
+        "413": { description: "upload_too_large: el archivo supera el límite de tamaño del enlace" }
+        "507": { description: "quota_exceeded: no cabe en la cuota del propietario de la carpeta (ADR-036); el mensaje es genérico y no revela su uso ni su límite" }
 
   /public/client-updates/releases.json:
     get:
@@ -807,6 +1203,33 @@ paths:
                 type: array
                 items: { $ref: "#/components/schemas/AuditEvent" }
 
+  /admin/thumbnail-jobs:
+    get:
+      summary: Listar la cola persistente de miniaturas (admin, §34, ADR-041)
+      description: >
+        Visibilidad administrativa sobre qué está pendiente o se dio por
+        fallido tras agotar reintentos -- la razón por la que la cola es
+        una tabla persistente en vez de una cola en memoria.
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, failed], default: pending }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 100, maximum: 500 }
+        - name: offset
+          in: query
+          schema: { type: integer, default: 0 }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ThumbnailJob" }
+        "400": { $ref: "#/components/responses/Error" }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -828,6 +1251,39 @@ components:
       required: true
       schema: { type: string }
       description: Token en claro del enlace público (256 bits, base64url)
+    searchQ:
+      name: q
+      in: query
+      schema: { type: string }
+      description: "Substring de nombre/ruta, case-insensitive"
+    searchType:
+      name: type
+      in: query
+      schema: { type: string }
+      description: "Prefijo de MIME, p.ej. \"image/\""
+    searchExt:
+      name: ext
+      in: query
+      schema: { type: string }
+      description: "Extensión exacta sin punto, p.ej. \"pdf\""
+    searchDateFrom:
+      name: date_from
+      in: query
+      schema: { type: string, format: date-time }
+    searchDateTo:
+      name: date_to
+      in: query
+      schema: { type: string, format: date-time }
+    searchSizeMin:
+      name: size_min
+      in: query
+      schema: { type: integer, format: int64 }
+      description: "En bytes"
+    searchSizeMax:
+      name: size_max
+      in: query
+      schema: { type: integer, format: int64 }
+      description: "En bytes"
     sharePasswordHeader:
       name: X-Share-Password
       in: header
@@ -863,8 +1319,25 @@ components:
         email: { type: string }
         status: { type: string, enum: [active, disabled] }
         has_totp: { type: boolean }
+        is_admin: { type: boolean, description: "Solo en GET /users/me (§33, ADR-040) -- decide si la web ofrece la búsqueda entre usuarios" }
         created_at: { type: string, format: date-time }
         last_login_at: { type: string, format: date-time, nullable: true }
+        quota_bytes:
+          type: integer
+          format: int64
+          description: "Cuota PROPIA del usuario (§24, ADR-036). Ausente = hereda del grupo o la global; 0 = ilimitada. El límite efectivo y el uso salen de GET /users/me/quota."
+
+    Quota:
+      type: object
+      description: Uso y límite de almacenamiento de un usuario (§24, ADR-036).
+      properties:
+        used_bytes: { type: integer, format: int64, description: "Huella total: files_bytes + trash_bytes + versions_bytes" }
+        files_bytes: { type: integer, format: int64 }
+        trash_bytes: { type: integer, format: int64 }
+        versions_bytes: { type: integer, format: int64 }
+        limit_bytes: { type: integer, format: int64, description: "Ausente si no tiene límite" }
+        source: { type: string, enum: [user, group, global, none], description: "De dónde sale el límite efectivo" }
+        group_name: { type: string, description: "El grupo que da el límite, si source=group" }
 
     Session:
       type: object
@@ -875,6 +1348,15 @@ components:
         created_at: { type: string, format: date-time }
         last_seen_at: { type: string, format: date-time }
         expires_at: { type: string, format: date-time }
+
+    ApiToken:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        label: { type: string }
+        created_at: { type: string, format: date-time }
+        expires_at: { type: string, format: date-time, nullable: true }
+        last_used_at: { type: string, format: date-time, nullable: true }
 
     Invitation:
       type: object
@@ -905,6 +1387,7 @@ components:
         name: { type: string }
         created_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
+        favorite_id: { type: string, format: uuid, nullable: true, description: "Presente si está en favoritos (§87, ADR-038); solo en GET /files" }
 
     File:
       type: object
@@ -918,12 +1401,35 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         deleted_at: { type: string, format: date-time, nullable: true, description: "Presente solo si está en la papelera (§16)" }
+        favorite_id: { type: string, format: uuid, nullable: true, description: "Presente si está en favoritos (§87, ADR-038); solo en GET /files" }
+
+    Favorite:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        resource_type: { type: string, enum: [file, directory] }
+        resource_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+
+    ActivityEvent:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        occurred_at: { type: string, format: date-time }
+        event_type: { type: string }
+        target_type: { type: string }
+        target_id: { type: string }
+        metadata: { type: object, additionalProperties: true }
 
     Group:
       type: object
       properties:
         id: { type: string, format: uuid }
         name: { type: string }
+        quota_bytes:
+          type: integer
+          format: int64
+          description: "Cuota por miembro del grupo (§24, ADR-036). Ausente = el grupo no aporta cuota; 0 = ilimitada para sus miembros."
 
     CreateShareRequest:
       type: object
@@ -980,6 +1486,36 @@ components:
         can_upload: { type: boolean }
         label: { type: string }
 
+    CreateAnonymousUploadRequest:
+      type: object
+      required: [directory_id]
+      properties:
+        directory_id: { type: string, format: uuid, description: "Debe ser una carpeta propia de quien crea el enlace" }
+        label: { type: string, description: "Nombre personalizado del enlace, cosmético" }
+        max_upload_size_bytes: { type: integer, format: int64, minimum: 1 }
+        expires_at: { type: string, format: date-time }
+
+    AnonymousUploadLink:
+      type: object
+      description: Modelo SEPARADO de Share (§38, ADR-039) -- sin can_download/can_upload (el único permiso posible es subir) ni has_password (no se pidió).
+      properties:
+        id: { type: string, format: uuid }
+        directory_id: { type: string, format: uuid }
+        directory_name: { type: string }
+        label: { type: string }
+        max_upload_size_bytes: { type: integer, format: int64, nullable: true }
+        expires_at: { type: string, format: date-time, nullable: true }
+        upload_count: { type: integer, description: "Informativo para el propietario; no aplica ningún límite en esta versión" }
+        created_at: { type: string, format: date-time }
+        token: { type: string, description: "Solo presente en la respuesta de creación, una única vez" }
+
+    AnonymousUploadInfo:
+      type: object
+      description: Respuesta del probe público -- SOLO label y el límite de tamaño, nunca el propietario, la carpeta ni su contenido.
+      properties:
+        label: { type: string }
+        max_upload_size_bytes: { type: integer, format: int64 }
+
     AuditEvent:
       type: object
       properties:
@@ -991,3 +1527,16 @@ components:
         target_id: { type: string }
         ip: { type: string }
         metadata: { type: object, additionalProperties: true }
+
+    ThumbnailJob:
+      type: object
+      description: Un job pendiente o fallido de generación de miniatura (§34, ADR-041). Un job resuelto con éxito se borra -- solo aparecen aquí los que necesitan atención.
+      properties:
+        id: { type: string, format: uuid }
+        file_id: { type: string, format: uuid }
+        kind: { type: string, enum: [image, video, pdf] }
+        status: { type: string, enum: [pending, failed] }
+        attempts: { type: integer }
+        last_error: { type: string, description: "Ausente si nunca falló todavía" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }

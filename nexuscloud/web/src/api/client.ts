@@ -13,6 +13,24 @@ export interface User {
   has_totp: boolean
   created_at: string
   last_login_at?: string
+  // is_admin (§33): solo lo rellena GET /users/me -- la web lo usa para
+  // decidir si mostrar la búsqueda entre usuarios.
+  is_admin?: boolean
+}
+
+export type QuotaSource = 'user' | 'group' | 'global' | 'none'
+
+// Quota refleja GET /users/me/quota (§24, ADR-036): lo que ocupa quien pregunta
+// (archivos + papelera + versiones anteriores) y su límite efectivo. limit_bytes
+// se omite si no tiene límite; source dice de dónde sale.
+export interface Quota {
+  used_bytes: number
+  files_bytes: number
+  trash_bytes: number
+  versions_bytes: number
+  limit_bytes?: number
+  source: QuotaSource
+  group_name?: string
 }
 
 export interface Session {
@@ -50,12 +68,32 @@ export interface CreatedWebDAVToken extends WebDAVToken {
   webdav_path: string
 }
 
+// ApiToken refleja apiTokenResponse (internal/api/v1/api_token_handlers.go):
+// nunca expone el hash (§172). CreatedApiToken añade el token en claro, que
+// solo viene en la respuesta de creación, una única vez (§78, ADR-037). A
+// diferencia del token WebDAV, autentica contra la API REST completa (no
+// solo WebDAV) y admite una expiración opcional (expires_at).
+export interface ApiToken {
+  id: string
+  label: string
+  created_at: string
+  expires_at?: string
+  last_used_at?: string
+}
+
+export interface CreatedApiToken extends ApiToken {
+  token: string
+}
+
 export interface DirectoryEntry {
   id: string
   parent_path: string
   name: string
   created_at: string
   deleted_at?: string
+  // favorite_id (§87, ADR-038): presente = favorito, y es el ID a pasar a
+  // api.removeFavorite. Solo lo anota GET /files (árbol propio y activo).
+  favorite_id?: string
 }
 
 export interface FileEntry {
@@ -68,11 +106,57 @@ export interface FileEntry {
   created_at: string
   updated_at: string
   deleted_at?: string
+  favorite_id?: string
 }
 
 export interface ListResult {
   directories: DirectoryEntry[]
   files: FileEntry[]
+}
+
+// SearchFilters refleja los query params que aceptan GET /search y
+// GET /admin/search (§33). Todos opcionales; ausente = sin ese filtro.
+export interface SearchFilters {
+  q?: string
+  type?: string
+  ext?: string
+  date_from?: string
+  date_to?: string
+  size_min?: number
+  size_max?: number
+}
+
+function searchQueryString(f: SearchFilters, owner?: string): string {
+  const params = new URLSearchParams()
+  if (f.q) params.set('q', f.q)
+  if (f.type) params.set('type', f.type)
+  if (f.ext) params.set('ext', f.ext)
+  if (f.date_from) params.set('date_from', f.date_from)
+  if (f.date_to) params.set('date_to', f.date_to)
+  if (f.size_min !== undefined) params.set('size_min', String(f.size_min))
+  if (f.size_max !== undefined) params.set('size_max', String(f.size_max))
+  if (owner) params.set('owner', owner)
+  return params.toString()
+}
+
+// Favorite refleja favoriteResponse (internal/api/v1/favorite_handlers.go).
+export interface Favorite {
+  id: string
+  resource_type: 'file' | 'directory'
+  resource_id: string
+  created_at: string
+}
+
+// ActivityEvent refleja activityEventResponse (§88, ADR-038): el texto
+// humano ("Fulano subió X, hace 5 minutos") se construye en el cliente a
+// partir de event_type + metadata, ver describeActivity en FavoritesPage.
+export interface ActivityEvent {
+  id: string
+  occurred_at: string
+  event_type: string
+  target_type?: string
+  target_id?: string
+  metadata?: Record<string, unknown>
 }
 
 // SharedDirectoryListing refleja sharedListingResponse (internal/api/v1/
@@ -151,6 +235,38 @@ export interface PublicShareInfo {
   can_download?: boolean
   can_upload?: boolean
   label?: string
+}
+
+// AnonymousUploadLink refleja anonymousUploadResponse (internal/api/v1/
+// dto.go): un modelo SEPARADO de Share (§38, ADR-039) -- sin
+// can_download/can_upload (no aplican: aquí el único permiso posible es
+// subir) ni has_password (no se pidió). token solo viene relleno en la
+// respuesta de creación, una única vez, igual que Share.
+export interface AnonymousUploadLink {
+  id: string
+  directory_id: string
+  directory_name?: string
+  label?: string
+  max_upload_size_bytes?: number
+  expires_at?: string
+  upload_count: number
+  created_at: string
+  token?: string
+}
+
+export interface CreateAnonymousUploadLinkInput {
+  directory_id: string
+  label?: string
+  max_upload_size_bytes?: number
+  expires_at?: string
+}
+
+// AnonymousUploadInfo refleja anonymousUploadInfoResponse: el probe público
+// SOLO revela label y el límite de tamaño, nunca el propietario, la carpeta
+// ni su contenido -- no hay ningún endpoint de navegación para este modelo.
+export interface AnonymousUploadInfo {
+  label?: string
+  max_upload_size_bytes?: number
 }
 
 export class ApiClientError extends Error {
@@ -250,6 +366,24 @@ function uploadToSharedDirectory(
   return postWithProgress(`/api/v1/shared-directories/${directoryId}/files?name=${encodeURIComponent(name)}`, content, onProgress)
 }
 
+// fetchPreviewText (§35, ADR-040 Fase 2): igual que GET /files/{id}, pero
+// leyendo el cuerpo como texto -- request() descartaría el cuerpo porque no
+// es JSON. Solo la llama PreviewDialog, y solo por debajo de su propio
+// límite de tamaño (comprobado con size_bytes antes de llamar, sin esperar
+// a que llegue el cuerpo).
+async function fetchPreviewText(id: string): Promise<string> {
+  const res = await fetch(`/api/v1/files/${id}`, { credentials: 'include' })
+  if (!res.ok) {
+    const contentType = res.headers.get('content-type') ?? ''
+    if (contentType.includes('application/json')) {
+      const body = (await res.json()) as { error?: { code: string; message: string } }
+      throw new ApiClientError(res.status, body.error?.code ?? 'unknown', body.error?.message ?? 'Error desconocido')
+    }
+    throw new ApiClientError(res.status, 'unknown', `Error ${res.status}`)
+  }
+  return res.text()
+}
+
 export const api = {
   login: (username: string, password: string, totp_code?: string) =>
     request<{ token: string; user: User; session: Session }>('/api/v1/auth/login', {
@@ -258,6 +392,7 @@ export const api = {
     }),
   logout: () => request<void>('/api/v1/auth/logout', { method: 'POST' }),
   me: () => request<User>('/api/v1/users/me'),
+  quota: () => request<Quota>('/api/v1/users/me/quota'),
 
   sessions: () => request<Session[]>('/api/v1/auth/sessions'),
   revokeSession: (id: string) => request<void>(`/api/v1/auth/sessions/${id}`, { method: 'DELETE' }),
@@ -328,9 +463,45 @@ export const api = {
     request<CreatedWebDAVToken>('/api/v1/auth/webdav/tokens', { method: 'POST', body: JSON.stringify({ label }) }),
   revokeWebDAVToken: (id: string) => request<void>(`/api/v1/auth/webdav/tokens/${id}`, { method: 'DELETE' }),
 
+  // Tokens de API (§78, ADR-037): acceso todo-o-nada a la API REST completa
+  // -- el token actúa exactamente como el usuario. A diferencia de WebDAV,
+  // siempre están disponibles (sin opción de config que los desactive).
+  apiTokens: () => request<ApiToken[]>('/api/v1/auth/api-tokens'),
+  createApiToken: (label: string, expiresAt?: string) =>
+    request<CreatedApiToken>('/api/v1/auth/api-tokens', {
+      method: 'POST',
+      body: JSON.stringify({ label, expires_at: expiresAt }),
+    }),
+  revokeApiToken: (id: string) => request<void>(`/api/v1/auth/api-tokens/${id}`, { method: 'DELETE' }),
+
   list: (path: string) => request<ListResult>(`/api/v1/files?path=${encodeURIComponent(path)}`),
+
+  // Búsqueda (§33): recursiva sobre todo el árbol propio (search) o
+  // cruzando usuarios (searchAsAdmin, admin-only; owner es un username).
+  search: (f: SearchFilters) => request<ListResult>(`/api/v1/search?${searchQueryString(f)}`),
+  searchAsAdmin: (f: SearchFilters, owner?: string) => request<ListResult>(`/api/v1/admin/search?${searchQueryString(f, owner)}`),
+
+  // Favoritos (§87, ADR-038): solo sobre el árbol propio del usuario.
+  favorites: () => request<ListResult>('/api/v1/favorites'),
+  addFavorite: (resourceType: 'file' | 'directory', resourceId: string) =>
+    request<Favorite>('/api/v1/favorites', {
+      method: 'POST',
+      body: JSON.stringify({ resource_type: resourceType, resource_id: resourceId }),
+    }),
+  removeFavorite: (id: string) => request<void>(`/api/v1/favorites/${id}`, { method: 'DELETE' }),
+
+  // Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
+  activity: (limit?: number) => request<ActivityEvent[]>(`/api/v1/activity${limit ? `?limit=${limit}` : ''}`),
   upload: uploadWithProgress,
   downloadUrl: (id: string) => `/api/v1/files/${id}`,
+  // Miniatura bajo demanda (§34, ADR-041): mismas cookies de sesión que el
+  // resto de <img>/<a href> de este cliente (ver la nota de arriba), así que
+  // un <img src> plano basta -- sin fetch+Blob, igual que downloadUrl. Puede
+  // 404/503 (desactivado, sin miniatura posible, o contención transitoria);
+  // quien la use debe manejar onError con un icono de repuesto, nunca asumir
+  // que siempre carga.
+  thumbnailUrl: (id: string) => `/api/v1/files/${id}/thumbnail`,
+  fetchPreviewText,
   // Por defecto mueve a la papelera (§16); permanent=true la salta.
   deleteFile: (id: string) => request<void>(`/api/v1/files/${id}`, { method: 'DELETE' }),
   deleteFileForever: (id: string) => request<void>(`/api/v1/files/${id}?permanent=true`, { method: 'DELETE' }),
@@ -391,6 +562,29 @@ export const api = {
   uploadToPublicShare: async (token: string, path: string, name: string, content: Blob, password?: string): Promise<FileEntry> => {
     const url = `/api/v1/public/shares/${token}/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(name)}`
     const res = await fetch(url, { method: 'POST', headers: password ? { 'X-Share-Password': password } : undefined, body: content })
+    if (!res.ok) {
+      const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
+      throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al subir el archivo')
+    }
+    return (await res.json()) as FileEntry
+  },
+
+  // Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea, lista
+  // y revoca sus propios enlaces, siempre sobre una carpeta suya.
+  createAnonymousUploadLink: (input: CreateAnonymousUploadLinkInput) =>
+    request<AnonymousUploadLink>('/api/v1/anonymous-uploads', { method: 'POST', body: JSON.stringify(input) }),
+  listAnonymousUploadLinks: () => request<AnonymousUploadLink[]>('/api/v1/anonymous-uploads'),
+  revokeAnonymousUploadLink: (id: string) => request<void>(`/api/v1/anonymous-uploads/${id}`, { method: 'DELETE' }),
+
+  // Las dos siguientes son la superficie pública (§38): sin contraseña -- el
+  // token de la URL es la única autorización posible. getAnonymousUpload usa
+  // request() igual que publicShareInfo (JSON, da igual si el navegador
+  // manda cookies de sesión); uploadToAnonymousUpload usa fetch en crudo
+  // igual que uploadToPublicShare (envía el Blob tal cual, sin credentials).
+  getAnonymousUpload: (token: string) => request<AnonymousUploadInfo>(`/api/v1/public/anonymous-uploads/${token}`),
+  uploadToAnonymousUpload: async (token: string, name: string, content: Blob): Promise<FileEntry> => {
+    const url = `/api/v1/public/anonymous-uploads/${token}/upload?name=${encodeURIComponent(name)}`
+    const res = await fetch(url, { method: 'POST', body: content })
     if (!res.ok) {
       const body = (await res.json().catch(() => null)) as { error?: { code: string; message: string } } | null
       throw new ApiClientError(res.status, body?.error?.code ?? 'unknown', body?.error?.message ?? 'Error al subir el archivo')
