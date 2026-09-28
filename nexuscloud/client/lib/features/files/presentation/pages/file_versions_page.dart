@@ -2,7 +2,11 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
+import '../../../../core/format/formatters.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/theme/app_palette.dart';
+import '../../../../core/widgets/file_type_icon.dart';
+import '../../../../core/widgets/view_states.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/entities/file_version.dart';
 import '../../domain/repositories/files_repository.dart';
@@ -20,7 +24,8 @@ class _VersionDownload {
 
 /// Historial de versiones de un archivo (ADR-007) -- calcado de
 /// `web/src/components/VersionHistoryDialog.tsx` (misma UX, mismo backend),
-/// adaptado a página empujada con `Navigator.push` en vez de a un modal.
+/// como página completa que el explorador abre en un panel (diálogo
+/// grande, `showPanelDialog`), con su botón de cerrar.
 /// Restaurar NUNCA pide confirmación (criterio ya establecido en
 /// `confirm_dialog.dart`: es no-destructivo, el contenido activo se
 /// empuja a su vez al historial antes de traer de vuelta el antiguo).
@@ -136,46 +141,50 @@ class _FileVersionsPageState extends State<FileVersionsPage> {
     return '$base (v$versionNum)$ext';
   }
 
-  String _formatDate(DateTime dateTime) {
-    final local = dateTime.toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${local.year}-${two(local.month)}-${two(local.day)} '
-        '${two(local.hour)}:${two(local.minute)}';
-  }
-
-  String _formatSize(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var size = bytes.toDouble();
-    var unitIndex = 0;
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    final decimals = (unitIndex == 0 || size >= 10) ? 0 : 1;
-    return '${size.toStringAsFixed(decimals)} ${units[unitIndex]}';
-  }
-
   @override
   Widget build(BuildContext context) {
+    final canPop = Navigator.of(context).canPop();
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+        automaticallyImplyLeading: false,
+        toolbarHeight: 64,
+        titleSpacing: 20,
+        title: Row(
           children: [
-            const Text('Historial de versiones', style: TextStyle(fontSize: 16)),
-            Text(
-              _currentFile.name,
-              style: Theme.of(context).textTheme.bodySmall,
+            FileTypeIcon.forName(_currentFile.name, mimeType: _currentFile.mimeType, size: 20, boxed: true),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text(
+                    'Historial de versiones',
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  Text(
+                    _currentFile.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
             ),
           ],
         ),
         actions: [
           IconButton(
             tooltip: 'Actualizar',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             onPressed: _load,
           ),
+          if (canPop)
+            IconButton(
+              tooltip: 'Cerrar',
+              icon: const Icon(Icons.close_rounded),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+          const SizedBox(width: 8),
         ],
       ),
       body: _buildBody(),
@@ -185,54 +194,75 @@ class _FileVersionsPageState extends State<FileVersionsPage> {
   Widget _buildBody() {
     switch (_state) {
       case _LoadState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const LoadingState();
       case _LoadState.error:
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage ?? 'No se pudo completar la operación.'),
-                const SizedBox(height: 12),
-                OutlinedButton(onPressed: _load, child: const Text('Reintentar')),
-              ],
-            ),
-          ),
+        return ErrorState(
+          message: _errorMessage ?? 'No se pudo completar la operación.',
+          onRetry: _load,
         );
       case _LoadState.loaded:
         final versions = _versions!;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        final p = context.palette;
+        final text = Theme.of(context).textTheme;
+        return ListView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
           children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: p.accentSoft,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: p.accent.withValues(alpha: 0.25)),
+              ),
+              child: Row(
                 children: [
-                  Text('Versión actual', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 4),
-                  Text(
-                    '${_formatSize(_currentFile.sizeBytes)} · '
-                    '${_formatDate(_currentFile.updatedAt)}',
+                  Icon(Icons.verified_outlined, color: p.accent),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Versión actual', style: text.titleSmall?.copyWith(color: p.accentOnSoft)),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${formatBytes(_currentFile.sizeBytes)} · '
+                          '${formatDateTime(_currentFile.updatedAt)}',
+                          style: text.bodyMedium?.copyWith(color: p.textSecondary),
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
             ),
-            const Divider(height: 1),
-            Expanded(
-              child: versions.isEmpty
-                  ? const Center(
-                      child: Text(
-                        'Todavía no hay versiones anteriores de este archivo.',
-                      ),
-                    )
-                  : ListView(
-                      children: [
-                        for (final version in versions)
-                          _buildVersionTile(version),
-                      ],
-                    ),
+            const SizedBox(height: 20),
+            Text('VERSIONES ANTERIORES', style: text.labelSmall),
+            const SizedBox(height: 8),
+            if (versions.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  'Todavía no hay versiones anteriores de este archivo.',
+                  textAlign: TextAlign.center,
+                  style: text.bodyMedium?.copyWith(color: p.textMuted),
+                ),
+              )
+            else
+              Card(
+                clipBehavior: Clip.antiAlias,
+                child: Column(
+                  children: [
+                    for (var i = 0; i < versions.length; i++) ...[
+                      if (i > 0) const Divider(height: 1),
+                      _buildVersionTile(versions[i]),
+                    ],
+                  ],
+                ),
+              ),
+            const SizedBox(height: 12),
+            Text(
+              'Restaurar una versión no borra nada: la actual pasa a su vez al historial.',
+              style: text.bodySmall,
             ),
           ],
         );
@@ -241,24 +271,42 @@ class _FileVersionsPageState extends State<FileVersionsPage> {
 
   Widget _buildVersionTile(FileVersion version) {
     final download = _downloads[version.versionNum];
-    return ListTile(
-      leading: const Icon(Icons.history),
-      title: Text('Versión ${version.versionNum}'),
-      subtitle: download?.error != null
-          ? Text(
-              download!.error!,
-              style: TextStyle(color: Theme.of(context).colorScheme.error),
-            )
-          : Text(
-              '${_formatSize(version.sizeBytes)} · '
-              '${_formatDate(version.createdAt)}',
-            ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
+    final p = context.palette;
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
         children: [
+          Container(
+            width: 36,
+            height: 36,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(color: p.surfaceMuted, borderRadius: BorderRadius.circular(8)),
+            child: Text(
+              'v${version.versionNum}',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: p.textSecondary),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Versión ${version.versionNum}', style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                const SizedBox(height: 2),
+                if (download?.error != null)
+                  Text(download!.error!, style: text.bodySmall?.copyWith(color: p.danger))
+                else
+                  Text(
+                    '${formatBytes(version.sizeBytes)} · ${formatDateTime(version.createdAt)}',
+                    style: text.bodySmall,
+                  ),
+              ],
+            ),
+          ),
           if (download != null && download.error == null)
             SizedBox(
-              width: 32,
+              width: 40,
               child: LinearProgressIndicator(
                 value: download.progress == 0 ? null : download.progress,
               ),
@@ -266,20 +314,23 @@ class _FileVersionsPageState extends State<FileVersionsPage> {
           else if (download?.error != null)
             IconButton(
               tooltip: 'Descartar',
-              icon: const Icon(Icons.close),
-              onPressed: () =>
-                  setState(() => _downloads.remove(version.versionNum)),
+              icon: const Icon(Icons.close_rounded),
+              onPressed: () => setState(() => _downloads.remove(version.versionNum)),
             )
           else
             IconButton(
               tooltip: 'Descargar',
-              icon: const Icon(Icons.download),
+              icon: const Icon(Icons.download_rounded),
               onPressed: () => _downloadVersion(version),
             ),
-          IconButton(
-            tooltip: 'Restaurar',
-            icon: const Icon(Icons.restore),
-            onPressed: _restoring ? null : () => _restoreVersion(version),
+          const SizedBox(width: 4),
+          Tooltip(
+            message: 'Restaurar',
+            child: OutlinedButton.icon(
+              onPressed: _restoring ? null : () => _restoreVersion(version),
+              icon: const Icon(Icons.restore_rounded, size: 17),
+              label: const Text('Restaurar'),
+            ),
           ),
         ],
       ),

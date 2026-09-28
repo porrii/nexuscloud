@@ -3,21 +3,26 @@ import 'package:flutter/services.dart';
 
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/theme/app_palette.dart';
+import '../../../../core/theme/app_theme.dart';
 import '../../../../core/widgets/confirm_dialog.dart';
+import '../../../../core/widgets/file_type_icon.dart';
+import '../../../../core/widgets/page_scaffold.dart';
+import '../../../../core/widgets/view_states.dart';
 import '../../domain/entities/group.dart';
 import '../../domain/entities/share.dart';
 import '../../domain/repositories/sharing_repository.dart';
 import '../share_formatting.dart';
+import 'my_shares_page.dart' show ShareRow;
 
 enum _LoadState { loading, loaded, error }
 
 /// Gestión de comparticiones de UN recurso -- calcado de
-/// `web/src/components/ShareDialog.tsx` (misma UX, mismo backend), pero
-/// como página empujada con `Navigator.push` en vez de un modal: es el
-/// único precedente Flutter de este cliente para "una pantalla ligada a
-/// un recurso, empujada desde un icono de fila" (`FileVersionsPage`), y
-/// `showConfirmDialog` es del tamaño de un sí/no, no de un formulario
-/// completo.
+/// `web/src/components/ShareDialog.tsx` (misma UX, mismo backend), como
+/// página completa (con su `Scaffold`) que el explorador abre en un panel
+/// sobre la carpeta actual (`showPanelDialog`), igual que
+/// `FileVersionsPage`: `showConfirmDialog` es del tamaño de un sí/no, no de
+/// un formulario completo.
 ///
 /// A diferencia de "Restaurar" (nunca pide confirmación en este cliente),
 /// "Revocar" SÍ la pide -- desviación deliberada de la web, que revoca
@@ -216,22 +221,50 @@ class _SharePageState extends State<SharePage> {
 
   @override
   Widget build(BuildContext context) {
+    final canPop = Navigator.of(context).canPop();
     return Scaffold(
       appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
+        automaticallyImplyLeading: false,
+        toolbarHeight: 64,
+        titleSpacing: 20,
+        title: Row(
           children: [
-            const Text('Compartir', style: TextStyle(fontSize: 16)),
-            Text(widget.resourceName, style: Theme.of(context).textTheme.bodySmall),
+            FileTypeIcon.forName(
+              widget.resourceName,
+              isDirectory: widget.resourceType == ShareResourceType.directory,
+              size: 20,
+              boxed: true,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Text('Compartir', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  Text(
+                    widget.resourceName,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
         actions: [
           IconButton(
             tooltip: 'Actualizar',
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             onPressed: _load,
           ),
+          if (canPop)
+            IconButton(
+              tooltip: 'Cerrar',
+              icon: const Icon(Icons.close_rounded),
+              onPressed: () => Navigator.of(context).maybePop(),
+            ),
+          const SizedBox(width: 8),
         ],
       ),
       body: _buildBody(),
@@ -241,53 +274,67 @@ class _SharePageState extends State<SharePage> {
   Widget _buildBody() {
     switch (_state) {
       case _LoadState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const LoadingState();
       case _LoadState.error:
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage ?? 'No se pudo completar la operación.'),
-                const SizedBox(height: 12),
-                OutlinedButton(onPressed: _load, child: const Text('Reintentar')),
-              ],
-            ),
-          ),
+        return ErrorState(
+          message: _errorMessage ?? 'No se pudo completar la operación.',
+          onRetry: _load,
         );
       case _LoadState.loaded:
+        final text = Theme.of(context).textTheme;
         return ListView(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
           children: [
-            Text('Comparticiones activas',
-                style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 8),
-            if (_activeShares.isEmpty)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Text('Nadie tiene acceso todavía.'),
-              )
-            else
-              for (final share in _activeShares) _buildShareTile(share),
-            const SizedBox(height: 24),
-            const Divider(),
+            SectionCard(
+              title: 'Añadir acceso',
+              icon: Icons.person_add_alt_outlined,
+              description: widget.resourceType == ShareResourceType.directory
+                  ? 'Comparte esta carpeta con alguien, con un grupo o mediante un enlace.'
+                  : 'Comparte este archivo con alguien, con un grupo o mediante un enlace.',
+              child: _buildCreateForm(),
+            ),
             const SizedBox(height: 16),
-            Text('Compartir', style: Theme.of(context).textTheme.titleSmall),
-            const SizedBox(height: 12),
-            _buildCreateForm(),
+            Card(
+              clipBehavior: Clip.antiAlias,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+                    child: Row(
+                      children: [
+                        Text('Quién tiene acceso', style: text.titleMedium),
+                        const SizedBox(width: 8),
+                        StatusPill(label: '${_activeShares.length}'),
+                      ],
+                    ),
+                  ),
+                  if (_activeShares.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                      child: Text(
+                        'Nadie tiene acceso todavía.',
+                        style: text.bodyMedium?.copyWith(color: context.palette.textMuted),
+                      ),
+                    )
+                  else ...[
+                    for (final share in _activeShares) _buildShareTile(share),
+                    const SizedBox(height: 8),
+                  ],
+                ],
+              ),
+            ),
           ],
         );
     }
   }
 
   Widget _buildShareTile(Share share) {
-    return ListTile(
-      contentPadding: EdgeInsets.zero,
-      title: Text(shareTargetLabel(share)),
-      subtitle: Text(shareMetadataLine(share)),
+    return ShareRow(
+      share: share,
       trailing: TextButton(
         onPressed: () => _revoke(share),
+        style: TextButton.styleFrom(foregroundColor: context.palette.danger),
         child: const Text('Revocar'),
       ),
     );
@@ -298,10 +345,23 @@ class _SharePageState extends State<SharePage> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         SegmentedButton<ShareType>(
+          showSelectedIcon: false,
           segments: const [
-            ButtonSegment(value: ShareType.user, label: Text('Usuario')),
-            ButtonSegment(value: ShareType.group, label: Text('Grupo')),
-            ButtonSegment(value: ShareType.link, label: Text('Enlace')),
+            ButtonSegment(
+              value: ShareType.user,
+              icon: Icon(Icons.person_outline_rounded, size: 18),
+              label: Text('Usuario'),
+            ),
+            ButtonSegment(
+              value: ShareType.group,
+              icon: Icon(Icons.groups_outlined, size: 18),
+              label: Text('Grupo'),
+            ),
+            ButtonSegment(
+              value: ShareType.link,
+              icon: Icon(Icons.link_rounded, size: 18),
+              label: Text('Enlace'),
+            ),
           ],
           selected: {_selectedType},
           onSelectionChanged: (selection) {
@@ -319,12 +379,18 @@ class _SharePageState extends State<SharePage> {
         switch (_selectedType) {
           ShareType.user => TextFormField(
               controller: _usernameController,
-              decoration: const InputDecoration(labelText: 'Nombre de usuario'),
+              decoration: const InputDecoration(
+                labelText: 'Nombre de usuario',
+                prefixIcon: Icon(Icons.alternate_email_rounded, size: 18),
+              ),
+              onFieldSubmitted: (_) => _submitCreate(),
             ),
           ShareType.group => DropdownButtonFormField<Group>(
               initialValue: _selectedGroup,
-              decoration:
-                  const InputDecoration(labelText: 'Selecciona un grupo…'),
+              decoration: const InputDecoration(
+                labelText: 'Selecciona un grupo…',
+                prefixIcon: Icon(Icons.groups_outlined, size: 18),
+              ),
               items: [
                 for (final group in _groups)
                   DropdownMenuItem(value: group, child: Text(group.name)),
@@ -335,10 +401,7 @@ class _SharePageState extends State<SharePage> {
         },
         if (_createErrorMessage != null) ...[
           const SizedBox(height: 12),
-          Text(
-            _createErrorMessage!,
-            style: TextStyle(color: Theme.of(context).colorScheme.error),
-          ),
+          InlineAlert(message: _createErrorMessage!, tone: AlertTone.danger),
         ],
         const SizedBox(height: 16),
         FilledButton(
@@ -347,7 +410,7 @@ class _SharePageState extends State<SharePage> {
               ? const SizedBox(
                   width: 20,
                   height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                 )
               : Text(_selectedType == ShareType.link ? 'Crear enlace' : 'Compartir'),
         ),
@@ -363,42 +426,54 @@ class _SharePageState extends State<SharePage> {
       children: [
         TextFormField(
           controller: _labelController,
-          decoration:
-              const InputDecoration(labelText: 'Nombre del enlace (opcional)'),
+          decoration: const InputDecoration(
+            labelText: 'Nombre del enlace (opcional)',
+            prefixIcon: Icon(Icons.label_outline_rounded, size: 18),
+          ),
         ),
         const SizedBox(height: 12),
         TextFormField(
           controller: _passwordController,
           obscureText: true,
-          decoration:
-              const InputDecoration(labelText: 'Contraseña (opcional)'),
+          decoration: const InputDecoration(
+            labelText: 'Contraseña (opcional)',
+            prefixIcon: Icon(Icons.lock_outline_rounded, size: 18),
+          ),
         ),
         const SizedBox(height: 12),
-        OutlinedButton(
-          onPressed: _pickExpiration,
-          child: Text(
-            _expiresAt == null
-                ? 'Fecha de expiración (opcional)'
-                : 'Expira: ${formatShareDate(_expiresAt!)}',
-          ),
-        ),
-        if (_expiresAt != null)
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton(
-              onPressed: () => setState(() => _expiresAt = null),
-              child: const Text('Quitar fecha'),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _pickExpiration,
+                icon: const Icon(Icons.event_outlined, size: 18),
+                label: Text(
+                  _expiresAt == null
+                      ? 'Fecha de expiración (opcional)'
+                      : 'Expira: ${formatShareDate(_expiresAt!)}',
+                ),
+              ),
             ),
-          ),
+            if (_expiresAt != null) ...[
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: () => setState(() => _expiresAt = null),
+                child: const Text('Quitar fecha'),
+              ),
+            ],
+          ],
+        ),
         const SizedBox(height: 12),
         TextFormField(
           controller: _maxDownloadsController,
           keyboardType: TextInputType.number,
-          decoration:
-              const InputDecoration(labelText: 'Límite de descargas (opcional)'),
+          decoration: const InputDecoration(
+            labelText: 'Límite de descargas (opcional)',
+            prefixIcon: Icon(Icons.download_outlined, size: 18),
+          ),
         ),
         if (widget.resourceType == ShareResourceType.directory) ...[
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
           CheckboxListTile(
             contentPadding: EdgeInsets.zero,
             controlAffinity: ListTileControlAffinity.leading,
@@ -412,32 +487,62 @@ class _SharePageState extends State<SharePage> {
   }
 
   Widget _buildLinkCreatedBanner(String? url) {
+    final p = context.palette;
     return Padding(
       padding: const EdgeInsets.only(top: 16),
       child: Container(
-        padding: const EdgeInsets.all(12),
+        padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: Colors.green.withValues(alpha: 0.1),
-          border: Border.all(color: Colors.green),
-          borderRadius: BorderRadius.circular(8),
+          color: p.successSoft,
+          border: Border.all(color: p.success.withValues(alpha: 0.4)),
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
-              'Enlace creado — guárdalo ahora, no se volverá a mostrar:',
+            Row(
+              children: [
+                Icon(Icons.check_circle_rounded, size: 18, color: p.success),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Enlace creado — guárdalo ahora, no se volverá a mostrar:',
+                    style: TextStyle(color: p.success, fontWeight: FontWeight.w600),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 8),
-            SelectableText(
-              url ?? '',
-              style: const TextStyle(fontFamily: 'monospace'),
-            ),
-            const SizedBox(height: 8),
-            Align(
-              alignment: Alignment.centerRight,
-              child: TextButton(
-                onPressed: url == null ? null : () => _copyLink(url),
-                child: const Text('Copiar'),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              decoration: BoxDecoration(
+                color: p.surface,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: p.border),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: SelectableText(
+                      url ?? '',
+                      style: monoTextStyle.copyWith(fontSize: 13),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: url == null
+                        ? null
+                        : () async {
+                            await _copyLink(url);
+                            if (!mounted) return;
+                            ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+                              const SnackBar(content: Text('Enlace copiado al portapapeles.')),
+                            );
+                          },
+                    icon: const Icon(Icons.copy_rounded, size: 16),
+                    label: const Text('Copiar'),
+                  ),
+                ],
               ),
             ),
           ],

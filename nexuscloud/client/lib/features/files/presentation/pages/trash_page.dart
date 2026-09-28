@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
+import '../../../../core/format/formatters.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/theme/app_palette.dart';
 import '../../../../core/widgets/confirm_dialog.dart';
-import '../../domain/entities/directory_entry.dart';
+import '../../../../core/widgets/file_type_icon.dart';
+import '../../../../core/widgets/page_scaffold.dart';
+import '../../../../core/widgets/view_states.dart';
 import '../../domain/entities/directory_listing.dart';
-import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
 
 enum _LoadState { loading, loaded, error }
@@ -53,13 +56,15 @@ class _TrashPageState extends State<TrashPage> {
     }
   }
 
-  Future<void> _restoreDirectory(DirectoryEntry directory) async {
-    await _filesRepository.restoreDirectory(directory.id);
-    if (mounted) await _load();
-  }
-
-  Future<void> _restoreFile(FileEntry file) async {
-    await _filesRepository.restoreFile(file.id);
+  Future<void> _run(Future<void> Function() action) async {
+    try {
+      await action();
+    } on ApiException catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.maybeOf(context)
+            ?.showSnackBar(SnackBar(content: Text(e.message)));
+      }
+    }
     if (mounted) await _load();
   }
 
@@ -77,121 +82,233 @@ class _TrashPageState extends State<TrashPage> {
       danger: true,
     );
     if (!confirmed) return;
-    await action();
-    if (mounted) await _load();
-  }
-
-  String _formatDate(DateTime dateTime) {
-    final local = dateTime.toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${local.year}-${two(local.month)}-${two(local.day)} '
-        '${two(local.hour)}:${two(local.minute)}';
+    await _run(action);
   }
 
   @override
   Widget build(BuildContext context) {
+    final listing = _listing;
+    final count = listing == null
+        ? 0
+        : listing.directories.length + listing.files.length;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Papelera'),
-        actions: [
-          IconButton(
-            tooltip: 'Actualizar',
-            icon: const Icon(Icons.refresh),
-            onPressed: _load,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SubToolbar(
+            leading: Text(
+              _state == _LoadState.loaded
+                  ? '${pluralize(count, 'elemento')} en la papelera del servidor'
+                  : 'Papelera del servidor',
+              style: Theme.of(context).textTheme.bodyMedium
+                  ?.copyWith(color: context.palette.textSecondary),
+            ),
+            actions: [
+              IconButton(
+                tooltip: 'Actualizar',
+                icon: const Icon(Icons.refresh_rounded),
+                onPressed: _load,
+              ),
+            ],
           ),
+          Expanded(child: _buildBody()),
         ],
       ),
-      body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
     switch (_state) {
       case _LoadState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const LoadingState();
       case _LoadState.error:
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage ?? 'No se pudo completar la operación.'),
-                const SizedBox(height: 12),
-                OutlinedButton(onPressed: _load, child: const Text('Reintentar')),
-              ],
-            ),
-          ),
+        return ErrorState(
+          message: _errorMessage ?? 'No se pudo completar la operación.',
+          onRetry: _load,
         );
       case _LoadState.loaded:
         final listing = _listing!;
         if (listing.isEmpty) {
-          return const Center(child: Text('La papelera está vacía'));
+          return const EmptyState(
+            icon: Icons.delete_outline_rounded,
+            title: 'La papelera está vacía',
+            message:
+                'Lo que borres de «Mis archivos» aparecerá aquí hasta que '
+                'se purgue automáticamente.',
+          );
         }
         return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
           children: [
             for (final directory in listing.directories)
-              ListTile(
-                leading: const Icon(Icons.folder),
-                title: Text(directory.name),
-                subtitle: Text(
-                  'Ubicación original: ${directory.parentPath}\n'
-                  'Eliminado: ${_formatDate(directory.deletedAt!)}',
-                ),
-                isThreeLine: true,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: 'Restaurar',
-                      icon: const Icon(Icons.restore),
-                      onPressed: () => _restoreDirectory(directory),
-                    ),
-                    IconButton(
-                      tooltip: 'Eliminar para siempre',
-                      icon: const Icon(Icons.delete_forever),
-                      onPressed: () => _deleteForever(
-                        name: directory.name,
-                        action: () => _filesRepository.deleteDirectory(
-                          directory.id,
-                          permanent: true,
-                        ),
-                      ),
-                    ),
-                  ],
+              TrashRow(
+                name: directory.name,
+                isDirectory: true,
+                subtitle:
+                    'Ubicación original: ${directory.parentPath} · '
+                    'Eliminado: ${formatDateTime(directory.deletedAt!)}',
+                onRestore: () =>
+                    _run(() => _filesRepository.restoreDirectory(directory.id)),
+                onDeleteForever: () => _deleteForever(
+                  name: directory.name,
+                  action: () => _filesRepository.deleteDirectory(
+                    directory.id,
+                    permanent: true,
+                  ),
                 ),
               ),
             for (final file in listing.files)
-              ListTile(
-                leading: const Icon(Icons.insert_drive_file),
-                title: Text(file.name),
-                subtitle: Text(
-                  'Ubicación original: ${file.parentPath}\n'
-                  'Eliminado: ${_formatDate(file.deletedAt!)}',
-                ),
-                isThreeLine: true,
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    IconButton(
-                      tooltip: 'Restaurar',
-                      icon: const Icon(Icons.restore),
-                      onPressed: () => _restoreFile(file),
-                    ),
-                    IconButton(
-                      tooltip: 'Eliminar para siempre',
-                      icon: const Icon(Icons.delete_forever),
-                      onPressed: () => _deleteForever(
-                        name: file.name,
-                        action: () =>
-                            _filesRepository.deleteFile(file.id, permanent: true),
-                      ),
-                    ),
-                  ],
+              TrashRow(
+                name: file.name,
+                mimeType: file.mimeType,
+                subtitle:
+                    'Ubicación original: ${file.parentPath} · '
+                    'Eliminado: ${formatDateTime(file.deletedAt!)}',
+                trailingInfo: formatBytes(file.sizeBytes),
+                onRestore: () =>
+                    _run(() => _filesRepository.restoreFile(file.id)),
+                onDeleteForever: () => _deleteForever(
+                  name: file.name,
+                  action: () =>
+                      _filesRepository.deleteFile(file.id, permanent: true),
                 ),
               ),
           ],
         );
     }
+  }
+}
+
+/// Fila de papelera (servidor o local): icono, nombre, procedencia y las
+/// dos acciones. Compartida por `TrashPage` y `LocalTrashPage`.
+class TrashRow extends StatelessWidget {
+  const TrashRow({
+    super.key,
+    required this.name,
+    required this.subtitle,
+    required this.onRestore,
+    required this.onDeleteForever,
+    this.isDirectory = false,
+    this.mimeType,
+    this.trailingInfo,
+    this.extraLine,
+    this.errorMessage,
+    this.restoreTooltip = 'Restaurar',
+    this.busy = false,
+  });
+
+  final String name;
+  final String subtitle;
+  final String? extraLine;
+  final bool isDirectory;
+  final String? mimeType;
+  final String? trailingInfo;
+  final String? errorMessage;
+  final String restoreTooltip;
+  final bool busy;
+
+  /// `null` deshabilita el botón (p.ej. papelera local sin carpeta).
+  final VoidCallback? onRestore;
+  final VoidCallback? onDeleteForever;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.palette;
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          border: Border(
+            bottom: BorderSide(color: p.border.withValues(alpha: 0.6)),
+          ),
+        ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          child: Row(
+            children: [
+              Opacity(
+                opacity: 0.75,
+                child: FileTypeIcon.forName(
+                  name,
+                  mimeType: mimeType,
+                  isDirectory: isDirectory,
+                  size: 20,
+                  boxed: true,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      overflow: TextOverflow.ellipsis,
+                      style: text.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      subtitle,
+                      style: text.bodySmall,
+                      overflow: TextOverflow.ellipsis,
+                      maxLines: 2,
+                    ),
+                    if (extraLine != null)
+                      Text(
+                        extraLine!,
+                        style: text.bodySmall,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    if (errorMessage != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(
+                          errorMessage!,
+                          style: text.bodySmall?.copyWith(color: p.danger),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+              if (trailingInfo != null) ...[
+                const SizedBox(width: 12),
+                Text(trailingInfo!, style: text.bodySmall),
+              ],
+              const SizedBox(width: 12),
+              if (busy)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 14),
+                  child: SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else ...[
+                Tooltip(
+                  message: restoreTooltip,
+                  child: TextButton.icon(
+                    onPressed: onRestore,
+                    icon: const Icon(Icons.restore_rounded, size: 18),
+                    label: const Text('Restaurar'),
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Eliminar para siempre',
+                  icon: Icon(
+                    Icons.delete_forever_outlined,
+                    color: onDeleteForever == null ? null : p.danger,
+                  ),
+                  onPressed: onDeleteForever,
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }

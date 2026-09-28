@@ -2,7 +2,13 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
+import '../../../../core/format/formatters.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/theme/app_palette.dart';
+import '../../../../core/transfers/transfer_queue.dart';
+import '../../../../core/widgets/file_type_icon.dart';
+import '../../../../core/widgets/page_scaffold.dart';
+import '../../../../core/widgets/view_states.dart';
 import '../../../files/domain/entities/directory_listing.dart';
 import '../../../files/domain/entities/file_entry.dart';
 import '../../../files/domain/repositories/files_repository.dart';
@@ -24,18 +30,6 @@ class _SharedDownload {
   String? error;
 }
 
-/// Estado efímero de una subida en curso a una carpeta compartida (§37,
-/// ADR-035). A diferencia de las descargas (que sí tienen un `FileEntry`
-/// conocido de antemano para servir de clave, `_browseDownloads`), un
-/// archivo nuevo no tiene ningún id todavía -- así que se sigue en una
-/// lista simple por nombre, igual que `FileBrowserPage._Transfer`.
-class _SharedUpload {
-  _SharedUpload({required this.name});
-  final String name;
-  double progress = 0;
-  String? error;
-}
-
 /// "Compartido conmigo" -- calcado de la pestaña homónima de
 /// `web/src/pages/SharedPage.tsx`, pero como página propia (no una pestaña
 /// de un componente compartido con "Mis comparticiones"), siguiendo el
@@ -47,7 +41,11 @@ class _SharedUpload {
 /// página nueva por subcarpeta), nunca por ruta: cada nivel se reautoriza
 /// contra el ID real de la (sub)carpeta (ADR-008 §4).
 class SharedWithMePage extends StatefulWidget {
-  const SharedWithMePage({super.key});
+  const SharedWithMePage({super.key, this.transferQueue});
+
+  /// Cola donde se informan las subidas (§37, ADR-035): por defecto la
+  /// registrada en el localizador, o una propia si no hay (pruebas).
+  final TransferQueue? transferQueue;
 
   @override
   State<SharedWithMePage> createState() => _SharedWithMePageState();
@@ -73,11 +71,11 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
   final Map<String, _SharedDownload> _flatDownloads = {};
   final Map<String, _SharedDownload> _browseDownloads = {};
 
-  // Subidas en curso a la carpeta que se está navegando -- lista simple
-  // (no un mapa por id, ninguno existe todavía), igual criterio que
-  // `FileBrowserPage._transfers`: sin vaciarla al navegar a otra carpeta,
-  // una subida sigue corriendo aunque se cambie de vista mientras tanto.
-  final List<_SharedUpload> _uploads = [];
+  // Subidas a la carpeta que se está navegando: van a la cola compartida
+  // de transferencias (panel inferior del shell), así que siguen su curso
+  // y se ven aunque se cambie de vista mientras tanto.
+  late final TransferQueue _transfers;
+  TransferQueue? _ownedTransfers;
 
   // Guarda contra respuestas obsoletas: a diferencia de un `_currentPath`
   // escalar (donde como mucho se pisa el contenido un instante),
@@ -95,7 +93,17 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
   @override
   void initState() {
     super.initState();
+    _transfers = widget.transferQueue ??
+        (sl.isRegistered<TransferQueue>()
+            ? sl<TransferQueue>()
+            : (_ownedTransfers = TransferQueue()));
     _load();
+  }
+
+  @override
+  void dispose() {
+    _ownedTransfers?.dispose();
+    super.dispose();
   }
 
   Future<void> _load() async {
@@ -219,23 +227,24 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
     if (picked.isEmpty || !mounted) return;
     final directoryId = _browseStack.last.id;
 
-    for (final xfile in picked) {
-      final upload = _SharedUpload(name: xfile.name);
-      setState(() => _uploads.add(upload));
+    final folderName = _browseStack.last.name;
 
+    for (final xfile in picked) {
+      final upload = _transfers.start(
+        TransferKind.upload,
+        xfile.name,
+        detail: folderName,
+      );
       try {
         await _sharingRepository.uploadToSharedDirectory(
           directoryId: directoryId,
           localFilePath: xfile.path,
           fileName: xfile.name,
-          onProgress: (done, total) {
-            if (!mounted || total <= 0) return;
-            setState(() => upload.progress = done / total);
-          },
+          onProgress: (done, total) => _transfers.progress(upload, done, total),
         );
-        if (mounted) setState(() => _uploads.remove(upload));
+        _transfers.succeed(upload);
       } on ApiException catch (e) {
-        if (mounted) setState(() => upload.error = e.message);
+        _transfers.fail(upload, e.message);
       }
     }
 
@@ -265,105 +274,87 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
     }
   }
 
-  String _formatSize(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var size = bytes.toDouble();
-    var unitIndex = 0;
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    final decimals = (unitIndex == 0 || size >= 10) ? 0 : 1;
-    return '${size.toStringAsFixed(decimals)} ${units[unitIndex]}';
-  }
-
   @override
   Widget build(BuildContext context) {
+    final canUpload = _isBrowsing && (_browseListing?.canUpload ?? false);
     return Scaffold(
-      appBar: AppBar(
-        title: _isBrowsing ? _buildBreadcrumb() : const Text('Compartido conmigo'),
-        actions: [
-          if (_isBrowsing && (_browseListing?.canUpload ?? false))
-            IconButton(
-              tooltip: 'Subir archivo',
-              icon: const Icon(Icons.upload_file),
-              onPressed: _uploadFiles,
-            ),
-          IconButton(
-            tooltip: 'Actualizar',
-            icon: const Icon(Icons.refresh),
-            onPressed: _refresh,
-          ),
-        ],
-      ),
       body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (_uploads.isNotEmpty) _buildUploadsPanel(),
+          SubToolbar(
+            leading: _buildBreadcrumb(),
+            actions: [
+              if (canUpload) ...[
+                Tooltip(
+                  message: 'Subir archivo',
+                  child: FilledButton.icon(
+                    onPressed: _uploadFiles,
+                    icon: const Icon(Icons.upload_rounded, size: 18),
+                    label: const Text('Subir aquí'),
+                  ),
+                ),
+                const SizedBox(width: 4),
+              ],
+              IconButton(
+                tooltip: 'Actualizar',
+                icon: const Icon(Icons.refresh_rounded),
+                onPressed: _refresh,
+              ),
+            ],
+          ),
           Expanded(child: _buildBody()),
         ],
       ),
     );
   }
 
-  /// Mismo widget exacto que `FileBrowserPage._buildTransfersPanel`, pero
-  /// solo para subidas (aquí nunca hay descargas en este panel -- las
-  /// descargas de esta página se muestran inline, por fila, con
-  /// [_buildDownloadTrailing]).
-  Widget _buildUploadsPanel() {
-    return ConstrainedBox(
-      constraints: const BoxConstraints(maxHeight: 160),
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          border: Border(bottom: BorderSide(color: Theme.of(context).dividerColor)),
-        ),
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            for (final upload in _uploads)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.upload),
-                title: Text(upload.name),
-                subtitle: upload.error != null
-                    ? Text(
-                        upload.error!,
-                        style: TextStyle(color: Theme.of(context).colorScheme.error),
-                      )
-                    : LinearProgressIndicator(
-                        value: upload.progress == 0 ? null : upload.progress,
-                      ),
-                trailing: upload.error != null
-                    ? IconButton(
-                        tooltip: 'Descartar',
-                        icon: const Icon(Icons.close),
-                        onPressed: () => setState(() => _uploads.remove(upload)),
-                      )
-                    : null,
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
   Widget _buildBreadcrumb() {
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextButton(
-            onPressed: () => _navigateToBreadcrumb(-1),
-            child: const Text('Compartido conmigo'),
-          ),
-          for (var i = 0; i < _browseStack.length; i++) ...[
-            const Text('/'),
-            TextButton(
-              onPressed: () => _navigateToBreadcrumb(i),
-              child: Text(_browseStack[i].name),
+    final p = context.palette;
+    final text = Theme.of(context).textTheme;
+    Widget crumb(String label, {required bool current, VoidCallback? onTap}) {
+      final style = text.bodyMedium?.copyWith(
+        fontWeight: current ? FontWeight.w600 : FontWeight.w500,
+        color: current ? p.textPrimary : p.textMuted,
+      );
+      if (current || onTap == null) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Text(label, style: style),
+        );
+      }
+      return InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+          child: Text(label, style: style),
+        ),
+      );
+    }
+
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        reverse: true,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            crumb(
+              'Compartido conmigo',
+              current: !_isBrowsing,
+              onTap: () => _navigateToBreadcrumb(-1),
             ),
+            for (var i = 0; i < _browseStack.length; i++) ...[
+              Icon(Icons.chevron_right_rounded, size: 18, color: p.textMuted),
+              crumb(
+                _browseStack[i].name,
+                current: i == _browseStack.length - 1,
+                onTap: () => _navigateToBreadcrumb(i),
+              ),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -371,20 +362,11 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
   Widget _buildBody() {
     switch (_state) {
       case _LoadState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const LoadingState();
       case _LoadState.error:
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage ?? 'No se pudo completar la operación.'),
-                const SizedBox(height: 12),
-                OutlinedButton(onPressed: _refresh, child: const Text('Reintentar')),
-              ],
-            ),
-          ),
+        return ErrorState(
+          message: _errorMessage ?? 'No se pudo completar la operación.',
+          onRetry: _refresh,
         );
       case _LoadState.loaded:
         return _isBrowsing ? _buildBrowseList() : _buildFlatList();
@@ -393,23 +375,23 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
 
   Widget _buildFlatList() {
     if (_shares.isEmpty) {
-      return const Center(child: Text('Nadie ha compartido nada contigo todavía'));
+      return const EmptyState(
+        icon: Icons.inbox_outlined,
+        title: 'Nadie ha compartido nada contigo todavía',
+        message: 'Cuando alguien te dé acceso a una carpeta o un archivo, '
+            'aparecerá aquí.',
+      );
     }
     return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
       children: [
         for (final share in _shares)
-          ListTile(
-            leading: Icon(
-              share.resourceType == ShareResourceType.directory
-                  ? Icons.folder
-                  : Icons.insert_drive_file,
-            ),
-            title: Text(share.resourceName ?? share.resourceId),
-            subtitle: Text(
-              share.resourceType == ShareResourceType.directory
-                  ? 'Carpeta compartida'
-                  : 'Archivo compartido',
-            ),
+          _SharedRow(
+            name: share.resourceName ?? share.resourceId,
+            isDirectory: share.resourceType == ShareResourceType.directory,
+            subtitle: share.resourceType == ShareResourceType.directory
+                ? 'Carpeta compartida'
+                : 'Archivo compartido',
             onTap: share.resourceType == ShareResourceType.directory
                 ? () => _openDirectory(
                       share.resourceId,
@@ -422,7 +404,7 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
                     key: share.resourceId,
                     onDownload: () => _downloadFlatShare(share),
                   )
-                : null,
+                : const Icon(Icons.chevron_right_rounded),
           ),
       ],
     );
@@ -431,21 +413,27 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
   Widget _buildBrowseList() {
     final listing = _browseListing!;
     if (listing.isEmpty) {
-      return const Center(child: Text('Esta carpeta está vacía.'));
+      return EmptyState(
+        icon: Icons.folder_open_outlined,
+        title: 'Esta carpeta está vacía.',
+        message: listing.canUpload ? 'Tienes permiso para subir archivos aquí.' : null,
+      );
     }
     return ListView(
+      padding: const EdgeInsets.symmetric(vertical: 8),
       children: [
         for (final directory in listing.directories)
-          ListTile(
-            leading: const Icon(Icons.folder),
-            title: Text(directory.name),
+          _SharedRow(
+            name: directory.name,
+            isDirectory: true,
             onTap: () => _openDirectory(directory.id, directory.name),
+            trailing: const Icon(Icons.chevron_right_rounded),
           ),
         for (final file in listing.files)
-          ListTile(
-            leading: const Icon(Icons.insert_drive_file),
-            title: Text(file.name),
-            subtitle: Text(_formatSize(file.sizeBytes)),
+          _SharedRow(
+            name: file.name,
+            mimeType: file.mimeType,
+            subtitle: formatBytes(file.sizeBytes),
             trailing: _buildDownloadTrailing(
               downloads: _browseDownloads,
               key: file.id,
@@ -465,21 +453,74 @@ class _SharedWithMePageState extends State<SharedWithMePage> {
     if (download == null) {
       return IconButton(
         tooltip: 'Descargar',
-        icon: const Icon(Icons.download),
+        icon: const Icon(Icons.download_rounded),
         onPressed: onDownload,
       );
     }
     if (download.error != null) {
       return IconButton(
         tooltip: download.error!,
-        icon: Icon(Icons.error_outline, color: Theme.of(context).colorScheme.error),
+        icon: Icon(Icons.error_outline_rounded, color: context.palette.danger),
         onPressed: () => setState(() => downloads.remove(key)),
       );
     }
     return SizedBox(
-      width: 32,
+      width: 40,
       child: LinearProgressIndicator(
         value: download.progress == 0 ? null : download.progress,
+      ),
+    );
+  }
+}
+
+class _SharedRow extends StatelessWidget {
+  const _SharedRow({
+    required this.name,
+    required this.trailing,
+    this.subtitle,
+    this.isDirectory = false,
+    this.mimeType,
+    this.onTap,
+  });
+
+  final String name;
+  final String? subtitle;
+  final bool isDirectory;
+  final String? mimeType;
+  final VoidCallback? onTap;
+  final Widget trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Row(
+            children: [
+              FileTypeIcon.forName(name, mimeType: mimeType, isDirectory: isDirectory, size: 20, boxed: true),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(name, overflow: TextOverflow.ellipsis, style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                    if (subtitle != null) ...[
+                      const SizedBox(height: 2),
+                      Text(subtitle!, style: text.bodySmall),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              trailing,
+            ],
+          ),
+        ),
       ),
     );
   }

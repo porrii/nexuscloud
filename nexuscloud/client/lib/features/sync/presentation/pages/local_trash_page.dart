@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../../../core/di/service_locator.dart';
+import '../../../../core/format/formatters.dart';
+import '../../../../core/theme/app_palette.dart';
 import '../../../../core/widgets/confirm_dialog.dart';
+import '../../../../core/widgets/page_scaffold.dart';
+import '../../../../core/widgets/view_states.dart';
+import '../../../files/presentation/pages/trash_page.dart' show TrashRow;
 import '../../domain/entities/local_trash_entry.dart';
 import '../../domain/entities/sync_pair_config.dart';
 import '../../domain/repositories/local_trash_store.dart';
@@ -122,155 +127,81 @@ class _LocalTrashPageState extends State<LocalTrashPage> {
     }
   }
 
-  String _formatDate(DateTime dateTime) {
-    final local = dateTime.toLocal();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${local.year}-${two(local.month)}-${two(local.day)} '
-        '${two(local.hour)}:${two(local.minute)}';
-  }
-
-  String _formatSize(int bytes) {
-    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var size = bytes.toDouble();
-    var unitIndex = 0;
-    while (size >= 1024 && unitIndex < units.length - 1) {
-      size /= 1024;
-      unitIndex++;
-    }
-    final decimals = (unitIndex == 0 || size >= 10) ? 0 : 1;
-    return '${size.toStringAsFixed(decimals)} ${units[unitIndex]}';
-  }
-
   @override
   Widget build(BuildContext context) {
+    final entries = _entries;
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Papelera local'),
-        actions: [
-          IconButton(
-            tooltip: 'Actualizar',
-            icon: const Icon(Icons.refresh),
-            onPressed: _load,
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SubToolbar(
+            leading: Text(
+              _state == _LoadState.loaded && entries != null
+                  ? '${pluralize(entries.length, 'archivo')} apartados por la sincronización'
+                  : 'Papelera local',
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: context.palette.textSecondary),
+            ),
+            actions: [
+              IconButton(
+                tooltip: 'Actualizar',
+                icon: const Icon(Icons.refresh_rounded),
+                onPressed: _load,
+              ),
+            ],
           ),
+          Expanded(child: _buildBody()),
         ],
       ),
-      body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
     switch (_state) {
       case _LoadState.loading:
-        return const Center(child: CircularProgressIndicator());
+        return const LoadingState();
       case _LoadState.error:
-        return Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(_errorMessage ?? 'No se pudo completar la operación.'),
-                const SizedBox(height: 12),
-                OutlinedButton(onPressed: _load, child: const Text('Reintentar')),
-              ],
-            ),
-          ),
+        return ErrorState(
+          message: _errorMessage ?? 'No se pudo completar la operación.',
+          onRetry: _load,
         );
       case _LoadState.loaded:
         final entries = _entries!;
         if (entries.isEmpty) {
-          return const Center(child: Text('La papelera local está vacía'));
+          return const EmptyState(
+            icon: Icons.restore_from_trash_outlined,
+            title: 'La papelera local está vacía',
+            message: 'Cuando la sincronización borra un archivo de tu equipo, '
+                'lo aparta aquí en vez de eliminarlo.',
+          );
         }
         return ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
           children: [
-            for (final entry in entries)
-              _LocalTrashEntryRow(
-                entry: entry,
-                config: _pairsByKey[entry.pairKey],
-                busy: _busyPaths.contains(entry.absolutePath),
-                errorMessage: _rowErrors[entry.absolutePath],
-                formatDate: _formatDate,
-                formatSize: _formatSize,
-                onRestore: () => _restore(entry),
-                onDeleteForever: () => _deleteForever(entry),
-              ),
+            for (final entry in entries) _buildRow(entry),
           ],
         );
     }
   }
-}
 
-class _LocalTrashEntryRow extends StatelessWidget {
-  const _LocalTrashEntryRow({
-    required this.entry,
-    required this.config,
-    required this.busy,
-    required this.errorMessage,
-    required this.formatDate,
-    required this.formatSize,
-    required this.onRestore,
-    required this.onDeleteForever,
-  });
-
-  final LocalTrashEntry entry;
-  final SyncPairConfig? config;
-  final bool busy;
-  final String? errorMessage;
-  final String Function(DateTime) formatDate;
-  final String Function(int) formatSize;
-  final VoidCallback onRestore;
-  final VoidCallback onDeleteForever;
-
-  @override
-  Widget build(BuildContext context) {
+  Widget _buildRow(LocalTrashEntry entry) {
+    final config = _pairsByKey[entry.pairKey];
+    final busy = _busyPaths.contains(entry.absolutePath);
     final folderLine = config != null
-        ? 'Carpeta: ${config!.pair.remotePath} → ${config!.pair.localPath}'
+        ? 'Carpeta: ${config.pair.remotePath} → ${config.pair.localPath}'
         : 'La carpeta configurada para este archivo ya no existe en la '
             'lista de Sincronización.';
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.only(top: 4),
-            child: Icon(Icons.insert_drive_file),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(entry.relativeSegments.last, overflow: TextOverflow.ellipsis),
-                Text(folderLine, style: Theme.of(context).textTheme.bodySmall),
-                Text('Ruta: ${entry.displayPath}', style: Theme.of(context).textTheme.bodySmall),
-                Text(
-                  'Eliminado: ${formatDate(entry.deletedAt)} · ${formatSize(entry.sizeBytes)}',
-                  style: Theme.of(context).textTheme.bodySmall,
-                ),
-                if (errorMessage != null)
-                  Text(
-                    errorMessage!,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
-                  ),
-              ],
-            ),
-          ),
-          IconButton(
-            tooltip: config != null
-                ? 'Restaurar'
-                : 'No se puede restaurar: la carpeta ya no está configurada',
-            icon: const Icon(Icons.restore),
-            onPressed: (config != null && !busy) ? onRestore : null,
-          ),
-          IconButton(
-            tooltip: 'Eliminar para siempre',
-            icon: const Icon(Icons.delete_forever),
-            onPressed: busy ? null : onDeleteForever,
-          ),
-        ],
-      ),
+    return TrashRow(
+      name: entry.relativeSegments.last,
+      subtitle: 'Ruta: ${entry.displayPath} · Eliminado: ${formatDateTime(entry.deletedAt)}',
+      extraLine: folderLine,
+      trailingInfo: formatBytes(entry.sizeBytes),
+      errorMessage: _rowErrors[entry.absolutePath],
+      busy: busy,
+      restoreTooltip: config != null
+          ? 'Restaurar'
+          : 'No se puede restaurar: la carpeta ya no está configurada',
+      onRestore: config != null ? () => _restore(entry) : null,
+      onDeleteForever: () => _deleteForever(entry),
     );
   }
 }

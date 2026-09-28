@@ -11,6 +11,7 @@ import 'features/sync/domain/repositories/sync_config_repository.dart';
 import 'features/sync/domain/services/auto_sync_scheduler.dart';
 import 'features/sync/domain/services/local_change_watcher_service.dart';
 import 'features/sync/domain/services/sync_engine.dart';
+import 'features/sync/presentation/sync_activity.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -20,6 +21,10 @@ Future<void> main() async {
   // llamar aunque el auto-login todavía no haya terminado -- cada tick
   // comprueba la sesión antes de hacer nada (ver `AutoSyncScheduler`).
   await sl<AutoSyncScheduler>().start();
+  // Estado de sincronización de toda la app (indicador de la barra
+  // lateral): se engancha ya a los streams del reloj y del motor para no
+  // perder el resultado de un tick que llegue antes de abrir la ventana.
+  await sl<SyncActivity>().init();
   // Umbral de la guarda anti-"borrado masivo" (#23): aplica el valor
   // persistido a la instancia de `SyncEngine` ya construida -- mismo
   // criterio que el auto-sync de arriba, sin bandeja ni segundo plano de
@@ -34,6 +39,9 @@ Future<void> main() async {
   // Bandeja del sistema (slice 9): icono + comportamiento de cierre, antes
   // de que la ventana pueda recibir ningún evento (ver `AppTrayService`).
   await sl<AppTrayService>().init();
+  // Por debajo de esto la barra lateral y las columnas del explorador ya
+  // no caben con dignidad.
+  await windowManager.setMinimumSize(const Size(960, 600));
   // Arrancar con Windows (slice 10): `setup()` es síncrono y sin I/O real,
   // seguro de llamar en cada arranque (ver `LaunchAtStartupService`).
   await sl<LaunchAtStartupService>().init();

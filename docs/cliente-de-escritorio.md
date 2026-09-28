@@ -19,15 +19,15 @@ por la web cada vez.
 ## Actualizar (Windows)
 
 El propio cliente comprueba si hay una versión nueva al abrirse (sin
-descargar nada solo) y avisa con un puntito en el icono de
-"Actualizaciones" de la barra superior. Desde ahí, "Descargar" y luego
+descargar nada solo) y avisa con la etiqueta **Nueva** junto a "Ajustes"
+en la barra lateral. En Ajustes → Actualizaciones, "Descargar" y luego
 "Reiniciar y actualizar" — la app se cierra, se actualiza y se vuelve a
 abrir sola, sin instalador aparte.
 
 Esto requiere que tu servidor tenga activada la comprobación de
 actualizaciones (`clientUpdates.enabled: true` en `config.yaml`, ver
-[`administracion.md`](administracion.md)) — si no, el icono no muestra
-nunca ningún aviso, sin que sea un error.
+[`administracion.md`](administracion.md)) — si no, nunca aparece ningún
+aviso, sin que sea un error.
 
 ## Primer login
 
@@ -36,13 +36,46 @@ Al abrir la app por primera vez, pide la URL de tu servidor (p.ej.
 LAN), tu usuario y contraseña — las mismas credenciales que usarías por
 CLI o por la web. Si tu usuario tiene doble factor activado (ver
 [`administracion.md`](administracion.md#doble-factor-totp)), pedirá
-también el código de tu app autenticadora.
+también el código de tu app autenticadora. La próxima vez recordará la
+URL del servidor.
+
+## La ventana
+
+A la izquierda, una barra lateral fija con el buscador y las secciones:
+**Mis archivos**, **Compartido**, **Sincronización**, **Papelera** y
+**Ajustes**. Abajo, siempre visibles, el estado de la sincronización
+("Todo sincronizado", "Sincronizando…", "Requiere tu revisión"), el
+espacio usado frente a tu cuota y tu usuario con "Cerrar sesión". Las
+subidas y descargas en curso se ven en un panel en la parte inferior,
+estés en la sección que estés.
+
+En **Mis archivos**:
+
+- Arrastra archivos o carpetas enteras desde el Explorador de Windows
+  para subirlos a la carpeta actual, o usa "Subir".
+- "Nueva carpeta", y en cada elemento (al pasar el ratón, con clic
+  derecho o con "Más acciones"): descargar, compartir, renombrar, mover a
+  otra carpeta, historial de versiones y mover a la papelera.
+- Selección múltiple con Ctrl+clic y Mayús+clic, para descargar, mover o
+  borrar varios a la vez.
+- Vista de lista o de cuadrícula, orden por nombre, tamaño o fecha
+  (clic en la cabecera de la columna) y un filtro rápido de la carpeta
+  actual. Para buscar en **todas** tus carpetas, usa el buscador de la
+  barra lateral (Ctrl+K).
+
+Atajos de teclado: Ctrl+K buscar · Ctrl+1…5 cambiar de sección · Ctrl+U
+subir · Ctrl+N nueva carpeta · Ctrl+F filtrar · F2 renombrar · Supr
+papelera · Ctrl+A seleccionar todo · Retroceso o Alt+↑ subir un nivel ·
+F5 actualizar · Mayús+F10 menú contextual. La lista completa está en
+Ajustes.
 
 ## Configurar la sincronización
 
-Desde la pantalla de sincronización, cada **par** que configures liga una
-carpeta remota (dentro de tu NexusCloud) con una carpeta local de tu
-equipo, con su propio sentido:
+En la sección **Sincronización**, "Vincular carpeta" crea un **par** que
+liga una carpeta remota (dentro de tu NexusCloud) con una carpeta local de
+tu equipo, con su propio sentido. Cada par aparece como una tarjeta con su
+último resultado (descargados, subidos, conflictos, errores) y sus
+acciones:
 
 - **Descargar**: servidor → local. Nunca sube ni borra nada en el
   servidor — el modo más seguro si solo quieres tener una copia local de
@@ -62,6 +95,8 @@ automática de cada par por separado sin tener que quitarlo de la lista.
 
 ## Sincronización automática y en segundo plano
 
+Todo esto se configura en **Ajustes**:
+
 - Con la sincronización automática activada, la app revisa cambios al
   intervalo que configures, sin que tengas que darle a "Sincronizar"
   cada vez.
@@ -79,7 +114,9 @@ automática de cada par por separado sin tener que quitarlo de la lista.
 
 - Un archivo borrado localmente durante una sincronización en modo
   "Ambos"/"Descargar" pasa a una **papelera local** (distinta de la
-  papelera del servidor) — recuperable desde la propia app.
+  papelera del servidor) — recuperable desde la propia app, en Papelera
+  → pestaña "En este equipo" (la del servidor está en la pestaña "En el
+  servidor").
 - Compartir archivos/carpetas (crear, gestionar, revocar) y ver lo que
   otros han compartido contigo se hace también desde el cliente, con
   paridad completa frente a la interfaz web.

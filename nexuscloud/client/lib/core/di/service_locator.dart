@@ -1,6 +1,9 @@
 import 'package:get_it/get_it.dart';
 
+import '../../features/account/data/quota_service.dart';
 import '../../features/auth/di/auth_dependencies.dart';
+import '../../features/search/data/search_service.dart';
+import '../transfers/transfer_queue.dart';
 import '../../features/files/di/files_dependencies.dart';
 import '../../features/sharing/di/sharing_dependencies.dart';
 import '../../features/sync/di/sync_dependencies.dart';
@@ -36,7 +39,10 @@ Future<void> setupServiceLocator() async {
     ..registerLazySingleton(
       () => AppTrayService(preferencesStore: sl<WindowPreferencesStore>()),
     )
-    ..registerLazySingleton(LaunchAtStartupService.new);
+    ..registerLazySingleton(LaunchAtStartupService.new)
+    ..registerLazySingleton(TransferQueue.new)
+    ..registerLazySingleton(() => QuotaService(apiClient: sl<ApiClient>()))
+    ..registerLazySingleton(() => SearchService(apiClient: sl<ApiClient>()));
 
   configureAuthDependencies(sl);
   configureFilesDependencies(sl);
