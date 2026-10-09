@@ -224,6 +224,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "WebDAV está en modo solo lectura en esta instancia.", http.StatusForbidden)
 		return
 	}
+	// Rol read_only (ADR-044 Decisión 3): misma lista de métodos que el modo
+	// global, por usuario. Solo se consulta el rol si el método escribe, y
+	// en cada petición (§168); sin poder consultarlo, no se escribe nada.
+	if !isReadMethod(r.Method) {
+		readOnly, err := h.tokens.IsReadOnly(r.Context(), u.ID)
+		if err != nil {
+			h.logger.Error("comprobando el rol de solo lectura en WebDAV", "error", err)
+			http.Error(w, "Error interno.", http.StatusInternalServerError)
+			return
+		}
+		if readOnly {
+			http.Error(w, "Tu cuenta es de solo lectura.", http.StatusForbidden)
+			return
+		}
+	}
 	limit := h.opts.MaxUploadSizeBytes
 	if limit > 0 && r.ContentLength > limit {
 		http.Error(w, "El contenido supera el tamaño máximo de subida de esta instancia.", http.StatusRequestEntityTooLarge)

@@ -33,8 +33,14 @@ nexuscloud --config config.yaml users disable maria
 nexuscloud --config config.yaml users enable maria
 ```
 
-`disable` bloquea el login inmediatamente; sus archivos y configuración
-no se tocan, y `enable` lo devuelve exactamente al estado anterior.
+`disable` bloquea el login inmediatamente: cierra sus sesiones y deja de
+aceptar sus tokens de API y WebDAV. Sus **enlaces públicos y de subida
+anónima** dejan de funcionar (responden «no encontrado», como si nunca
+hubieran existido). Lo que compartió con **usuarios y grupos** sigue
+accesible para ellos. Sus archivos y configuración no se tocan, y `enable`
+lo devuelve exactamente al estado anterior, enlaces incluidos (sin
+revocar nada; la caducidad de cada enlace sigue corriendo mientras tanto).
+Si quieres cortar un enlace para siempre, revócalo aparte.
 
 ### Editar nombre visible, email o cuota
 

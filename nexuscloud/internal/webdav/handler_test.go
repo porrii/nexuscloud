@@ -710,3 +710,36 @@ func TestHandlerMoveOverwriteNearTheQuotaDependsOnTheTrash(t *testing.T) {
 		})
 	}
 }
+
+// TestHandlerReadOnlyRoleOnlyAllowsReadingMethods (ADR-044 Decisión 3): el
+// rol read_only por usuario aplica la misma lista de métodos que el modo
+// global, sin afectar a los demás usuarios de la instancia.
+func TestHandlerReadOnlyRoleOnlyAllowsReadingMethods(t *testing.T) {
+	d := newDavEnv(t, true, Options{})
+	lectora := d.account(t, "lectora")
+	if err := d.users.AssignRole(context.Background(), lectora.u.ID, users.RoleReadOnly); err != nil {
+		t.Fatalf("AssignRole: %v", err)
+	}
+	putFile(t, d.fs(lectora.u), context.Background(), "/existe.txt", "contenido")
+
+	for method, req := range map[string]struct{ path, body string }{
+		"PUT":    {"/webdav/nuevo.txt", "x"},
+		"MKCOL":  {"/webdav/carpeta", ""},
+		"DELETE": {"/webdav/existe.txt", ""},
+		"MOVE":   {"/webdav/existe.txt", ""},
+		"COPY":   {"/webdav/existe.txt", ""},
+	} {
+		resp := d.do(t, lectora, method, req.path, req.body, map[string]string{"Destination": d.srv.URL + "/webdav/otro.txt"})
+		expectStatus(t, resp, http.StatusForbidden, method+" con rol read_only")
+	}
+	for method, want := range map[string]int{"GET": 200, "HEAD": 200, "OPTIONS": 200, "PROPFIND": 207} {
+		expectStatus(t, d.do(t, lectora, method, "/webdav/existe.txt", "", map[string]string{"Depth": "0"}), want, method+" con rol read_only")
+	}
+	if _, err := d.fs(lectora.u).Stat(context.Background(), "/existe.txt"); err != nil {
+		t.Errorf("el DELETE bloqueado no debería haber borrado nada: %v", err)
+	}
+
+	// Otro usuario normal de la misma instancia sigue pudiendo escribir.
+	normal := d.account(t, "normal")
+	expectStatus(t, d.do(t, normal, "PUT", "/webdav/nuevo.txt", "x", nil), http.StatusCreated, "PUT de un usuario normal")
+}

@@ -94,6 +94,8 @@ func writeCreateUserError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, "invalid_username", err.Error())
 	case errors.Is(err, users.ErrAlreadyExists):
 		writeError(w, http.StatusConflict, "already_exists", "Ya existe un usuario con ese nombre.")
+	case errors.Is(err, users.ErrInvalidRole):
+		writeError(w, http.StatusBadRequest, "invalid_role", err.Error())
 	default:
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo crear el usuario.")
 	}
@@ -141,7 +143,16 @@ func (h *Handlers) PatchUser(w http.ResponseWriter, r *http.Request) {
 	statusChanged := false
 	if req.Status != nil {
 		switch users.Status(*req.Status) {
-		case users.StatusActive, users.StatusDisabled:
+		case users.StatusDisabled:
+			// Mismo criterio que DeleteUser: desactivarse a uno mismo puede
+			// dejar la instancia sin ningún administrador capaz de deshacerlo.
+			if id == actor.ID {
+				writeError(w, http.StatusBadRequest, "invalid_request", "No puedes desactivar tu propia cuenta.")
+				return
+			}
+			statusChanged = u.Status != users.StatusDisabled
+			u.Status = users.StatusDisabled
+		case users.StatusActive:
 			statusChanged = u.Status != users.Status(*req.Status)
 			u.Status = users.Status(*req.Status)
 		default:

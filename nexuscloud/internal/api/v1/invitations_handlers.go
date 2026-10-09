@@ -10,6 +10,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/security"
+	"github.com/porrii/nexuscloud/internal/users"
 )
 
 type invitationResponse struct {
@@ -57,6 +58,10 @@ func (h *Handlers) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 	inv, token, err := h.Invitations.Create(r.Context(), auth.CreateInvitationInput{
 		CreatedBy: actor.ID, RoleID: req.Role, MaxUses: req.MaxUses, TTL: ttl,
 	})
+	if errors.Is(err, users.ErrInvalidRole) {
+		writeError(w, http.StatusBadRequest, "invalid_role", err.Error())
+		return
+	}
 	if err != nil {
 		h.Logger.Error("creando invitación", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo crear la invitación.")

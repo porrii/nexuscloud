@@ -84,11 +84,13 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 	favorites := NewSQLFavoriteRepository(conn)
 	anonymousUploads := NewSQLAnonymousUploadRepository(conn)
 	userRepo := users.NewSQLRepository(conn)
+	userSvc := users.NewService(userRepo)
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
 			trashEnabled, versioningEnabled, maxVersionsPerFile, maxVersionAgeDays, maxVersionsTotalSizeBytes,
-			sharingEnabled, publicLinksEnabled, WithFavorites(favorites), WithAnonymousUploads(anonymousUploads, true)),
+			sharingEnabled, publicLinksEnabled, WithFavorites(favorites), WithAnonymousUploads(anonymousUploads, true),
+			WithOwnerStatus(userSvc)),
 		files:            files,
 		directories:      directories,
 		versions:         versions,
@@ -98,7 +100,7 @@ func newTestEnvFull(t *testing.T, trashEnabled, versioningEnabled bool, maxVersi
 		pools:            pools,
 		poolDir:          poolDir,
 		provider:         provider,
-		userSvc:          users.NewService(userRepo),
+		userSvc:          userSvc,
 		userRepo:         userRepo,
 		conn:             conn,
 	}

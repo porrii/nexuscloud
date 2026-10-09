@@ -60,6 +60,50 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// isSafeMethod: los métodos que no cambian nada (RFC 9110 §9.2.1).
+func isSafeMethod(m string) bool {
+	switch m {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
+
+// RequireWritable (ADR-044) debe montarse después de RequireAuth. Deniega
+// por MÉTODO, no por ruta: cualquier petición que no sea GET, HEAD u OPTIONS
+// de un usuario read_only recibe 403, así que una ruta nueva que escriba
+// queda bloqueada sin tener que acordarse de nada. Las pocas escrituras de
+// autoservicio que read_only sí puede hacer se registran fuera de este
+// grupo (ver NewRouter). Las lecturas no hacen ninguna consulta extra; el
+// rol se comprueba en cada petición contra la BD, nunca cacheado (§168).
+// Los tokens de API quedan cubiertos igual: RequireAuth deja en el contexto
+// al usuario dueño del token.
+func (h *Handlers) RequireWritable(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isSafeMethod(r.Method) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		u, ok := UserFromContext(r.Context())
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "Autenticación requerida.")
+			return
+		}
+		readOnly, err := h.UserSvc.IsReadOnly(r.Context(), u.ID)
+		if err != nil {
+			// Fallar cerrado: sin saber el rol, no se escribe nada.
+			h.Logger.Error("comprobando el rol de solo lectura", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
+			return
+		}
+		if readOnly {
+			writeError(w, http.StatusForbidden, "read_only_account", "Tu cuenta es de solo lectura.")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequireAdmin debe montarse después de RequireAuth. Comprueba el rol en
 // cada petición (nunca confía en un claim cacheado del cliente, §168).
 func (h *Handlers) RequireAdmin(next http.Handler) http.Handler {

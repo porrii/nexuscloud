@@ -2,6 +2,7 @@ package users
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -121,5 +122,86 @@ func TestGetUserByUsernameNotFound(t *testing.T) {
 	_, err := repo.GetUserByUsername(context.Background(), "no-existe")
 	if err != ErrNotFound {
 		t.Errorf("err = %v, esperado ErrNotFound", err)
+	}
+}
+
+// TestIsActive cubre el comprobador que usan los enlaces públicos y de
+// subida anónima (ADR-043): activo, desactivado e inexistente.
+func TestIsActive(t *testing.T) {
+	ctx := context.Background()
+	svc := NewService(newTestRepo(t))
+
+	u, err := svc.CreateUser(ctx, CreateUserInput{Username: "ivan", PasswordHash: "hash"})
+	if err != nil {
+		t.Fatalf("CreateUser falló: %v", err)
+	}
+	if active, err := svc.IsActive(ctx, u.ID); err != nil || !active {
+		t.Errorf("IsActive(recién creado) = %v, %v; esperado true, nil", active, err)
+	}
+	if err := svc.Disable(ctx, u.ID); err != nil {
+		t.Fatalf("Disable falló: %v", err)
+	}
+	if active, err := svc.IsActive(ctx, u.ID); err != nil || active {
+		t.Errorf("IsActive(desactivado) = %v, %v; esperado false, nil", active, err)
+	}
+	if active, err := svc.IsActive(ctx, "no-existe"); err != nil || active {
+		t.Errorf("IsActive(inexistente) = %v, %v; esperado false, nil", active, err)
+	}
+}
+
+// TestCreateUserRejectsUnknownRoleWithoutCreatingAnything (ADR-044
+// Decisión 6): antes, el usuario se insertaba y la FK de user_roles
+// rechazaba el rol después, dejando una cuenta sin ningún rol.
+func TestCreateUserRejectsUnknownRoleWithoutCreatingAnything(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	svc := NewService(repo)
+
+	if _, err := svc.CreateUser(ctx, CreateUserInput{Username: "intruso", PasswordHash: "hash", Role: "root"}); !errors.Is(err, ErrInvalidRole) {
+		t.Fatalf("CreateUser con rol desconocido = %v, esperado ErrInvalidRole", err)
+	}
+	if _, err := repo.GetUserByUsername(ctx, "intruso"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetUserByUsername tras el rechazo = %v, esperado ErrNotFound (no debe quedar ningún usuario)", err)
+	}
+}
+
+func TestValidateRole(t *testing.T) {
+	for _, role := range []string{"", RoleSuperAdmin, RoleAdministrator, RoleUser, RoleReadOnly} {
+		if err := ValidateRole(role); err != nil {
+			t.Errorf("ValidateRole(%q) = %v, esperado nil", role, err)
+		}
+	}
+	for _, role := range []string{"root", "admin", "READ_ONLY", " user"} {
+		if err := ValidateRole(role); !errors.Is(err, ErrInvalidRole) {
+			t.Errorf("ValidateRole(%q) = %v, esperado ErrInvalidRole", role, err)
+		}
+	}
+}
+
+func TestIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	repo := newTestRepo(t)
+	svc := NewService(repo)
+
+	normal, err := svc.CreateUser(ctx, CreateUserInput{Username: "normal", PasswordHash: "hash"})
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	lector, err := svc.CreateUser(ctx, CreateUserInput{Username: "lector", PasswordHash: "hash", Role: RoleReadOnly})
+	if err != nil {
+		t.Fatalf("CreateUser read_only: %v", err)
+	}
+	if ro, err := svc.IsReadOnly(ctx, normal.ID); err != nil || ro {
+		t.Errorf("IsReadOnly(user) = %v, %v; esperado false, nil", ro, err)
+	}
+	if ro, err := svc.IsReadOnly(ctx, lector.ID); err != nil || !ro {
+		t.Errorf("IsReadOnly(read_only) = %v, %v; esperado true, nil", ro, err)
+	}
+	// La restricción prevalece si se combina con otro rol.
+	if err := repo.AssignRole(ctx, lector.ID, RoleAdministrator); err != nil {
+		t.Fatalf("AssignRole: %v", err)
+	}
+	if ro, err := svc.IsReadOnly(ctx, lector.ID); err != nil || !ro {
+		t.Errorf("IsReadOnly(read_only + administrator) = %v, %v; esperado true, nil", ro, err)
 	}
 }

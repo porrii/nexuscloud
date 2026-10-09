@@ -5,6 +5,8 @@ import '../../../core/di/service_locator.dart';
 import '../../../core/transfers/transfer_panel.dart';
 import '../../../core/transfers/transfer_queue.dart';
 import '../../account/data/quota_service.dart';
+import '../../admin/data/admin_service.dart';
+import '../../admin/presentation/pages/admin_page.dart';
 import '../../auth/domain/repositories/auth_repository.dart';
 import '../../files/presentation/file_browser_controller.dart';
 import '../../files/presentation/pages/file_browser_page.dart';
@@ -16,6 +18,7 @@ import '../../sync/presentation/pages/sync_settings_page.dart';
 import '../../sync/presentation/sync_activity.dart';
 import '../../update/data/update_check_service.dart';
 import '../../update/domain/entities/update_check_result.dart';
+import 'widgets/global_shortcuts.dart';
 import 'widgets/sidebar.dart';
 
 /// Estructura principal tras iniciar sesión: barra lateral fija con las
@@ -41,12 +44,28 @@ class _AppShellState extends State<AppShell> {
   final _searchController = TextEditingController();
   final _searchFocus = FocusNode(debugLabel: 'global-search');
 
+  /// Todo el shell, para saber si el foco sigue dentro de él.
+  final _shellFocus = FocusNode(debugLabel: 'shell', skipTraversal: true);
+
+  /// Área de contenido: recibe el foco al cambiar a una sección que no se
+  /// lo da a sí misma, para que Tab y sus atajos funcionen sin hacer clic.
+  final _contentFocus = FocusNode(
+    debugLabel: 'shell-content',
+    skipTraversal: true,
+  );
+
   ShellSection _section = ShellSection.files;
   final Set<ShellSection> _visited = {ShellSection.files};
   String _searchQuery = '';
   int _searchGeneration = 0;
   StorageQuota? _quota;
   bool _updateAvailable = false;
+  bool _isAdmin = false;
+
+  /// El servidor ya respondió (sí o no). Mientras sea `false`, se reintenta
+  /// en cada cambio de sección: un fallo de red al arrancar no debe ocultar
+  /// «Administración» hasta el siguiente inicio de sesión.
+  bool _adminChecked = false;
   int _lastActiveTransfers = 0;
 
   @override
@@ -56,6 +75,15 @@ class _AppShellState extends State<AppShell> {
     _transfers.addListener(_onTransfersChanged);
     _refreshQuota();
     _checkForUpdatesSilently();
+    _checkAdmin();
+  }
+
+  Future<void> _checkAdmin() async {
+    if (_adminChecked || !sl.isRegistered<AdminService>()) return;
+    final isAdmin = await sl<AdminService>().isAdmin();
+    if (!mounted || isAdmin == null) return;
+    _adminChecked = true;
+    if (isAdmin) setState(() => _isAdmin = true);
   }
 
   @override
@@ -63,6 +91,8 @@ class _AppShellState extends State<AppShell> {
     _transfers.removeListener(_onTransfersChanged);
     _searchController.dispose();
     _searchFocus.dispose();
+    _shellFocus.dispose();
+    _contentFocus.dispose();
     super.dispose();
   }
 
@@ -97,6 +127,20 @@ class _AppShellState extends State<AppShell> {
     if (section == ShellSection.settings || section == ShellSection.trash) {
       _refreshQuota();
     }
+    _keepFocusInside();
+    _checkAdmin();
+  }
+
+  /// La sección que se oculta pierde el foco (ExcludeFocus) y este sube al
+  /// FocusScope de la ruta, fuera del shell. Se comprueba en un evento
+  /// posterior -- cuando ya se han aplicado ese cambio y el que pida la
+  /// propia sección nueva (el explorador enfoca su lista) -- y, si el foco
+  /// quedó fuera, se trae al área de contenido.
+  void _keepFocusInside() {
+    Future<void>(() {
+      if (!mounted || _shellFocus.hasFocus) return;
+      _contentFocus.requestFocus();
+    });
   }
 
   void _search(String query) {
@@ -108,6 +152,7 @@ class _AppShellState extends State<AppShell> {
       _section = ShellSection.search;
       _visited.add(ShellSection.search);
     });
+    _keepFocusInside();
   }
 
   void _openLocation(String path, String? selectName) {
@@ -129,6 +174,9 @@ class _AppShellState extends State<AppShell> {
         onUpdateStateChanged: (available) =>
             setState(() => _updateAvailable = available),
       ),
+      ShellSection.admin => AdminPage(
+        currentUserId: _authRepository.currentUser?.id,
+      ),
       ShellSection.search => SearchPage(
         key: ValueKey('search-$_searchGeneration'),
         initialQuery: _searchQuery,
@@ -140,7 +188,7 @@ class _AppShellState extends State<AppShell> {
   @override
   Widget build(BuildContext context) {
     final sections = ShellSection.values;
-    return CallbackShortcuts(
+    return GlobalShortcuts(
       bindings: {
         const SingleActivator(LogicalKeyboardKey.digit1, control: true): () =>
             _select(ShellSection.files),
@@ -152,6 +200,9 @@ class _AppShellState extends State<AppShell> {
             _select(ShellSection.trash),
         const SingleActivator(LogicalKeyboardKey.digit5, control: true): () =>
             _select(ShellSection.settings),
+        const SingleActivator(LogicalKeyboardKey.digit6, control: true): () {
+          if (_isAdmin) _select(ShellSection.admin);
+        },
         const SingleActivator(LogicalKeyboardKey.keyK, control: true): () {
           _searchFocus.requestFocus();
           _searchController.selection = TextSelection(
@@ -160,51 +211,58 @@ class _AppShellState extends State<AppShell> {
           );
         },
       },
-      child: Scaffold(
-        body: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Sidebar(
-              current: _section,
-              onSelect: _select,
-              onSearch: _search,
-              searchController: _searchController,
-              searchFocus: _searchFocus,
-              syncActivity: _syncActivity,
-              quota: _quota,
-              onRefreshQuota: _refreshQuota,
-              user: _authRepository.currentUser,
-              updateAvailable: _updateAvailable,
-              onLogout: () => _authRepository.logout(),
-            ),
-            Expanded(
-              child: Column(
-                children: [
-                  Expanded(
-                    child: IndexedStack(
-                      index: sections.indexOf(_section),
-                      children: [
-                        for (final section in sections)
-                          if (_visited.contains(section))
-                            // Una sección oculta no debe recibir teclas ni
-                            // archivos soltados (ver FileBrowserPage).
-                            TickerMode(
-                              enabled: section == _section,
-                              child: ExcludeFocus(
-                                excluding: section != _section,
-                                child: _buildSection(section),
-                              ),
-                            )
-                          else
-                            const SizedBox.shrink(),
-                      ],
-                    ),
-                  ),
-                  TransferPanel(queue: _transfers),
-                ],
+      child: Focus(
+        focusNode: _shellFocus,
+        child: Scaffold(
+          body: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Sidebar(
+                current: _section,
+                onSelect: _select,
+                onSearch: _search,
+                searchController: _searchController,
+                searchFocus: _searchFocus,
+                syncActivity: _syncActivity,
+                quota: _quota,
+                onRefreshQuota: _refreshQuota,
+                user: _authRepository.currentUser,
+                updateAvailable: _updateAvailable,
+                onLogout: () => _authRepository.logout(),
+                isAdmin: _isAdmin,
               ),
-            ),
-          ],
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: Focus(
+                        focusNode: _contentFocus,
+                        child: IndexedStack(
+                          index: sections.indexOf(_section),
+                          children: [
+                            for (final section in sections)
+                              if (_visited.contains(section))
+                                // Una sección oculta no debe recibir teclas ni
+                                // archivos soltados (ver FileBrowserPage).
+                                TickerMode(
+                                  enabled: section == _section,
+                                  child: ExcludeFocus(
+                                    excluding: section != _section,
+                                    child: _buildSection(section),
+                                  ),
+                                )
+                              else
+                                const SizedBox.shrink(),
+                          ],
+                        ),
+                      ),
+                    ),
+                    TransferPanel(queue: _transfers),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

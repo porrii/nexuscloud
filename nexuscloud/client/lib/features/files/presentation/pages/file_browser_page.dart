@@ -9,6 +9,7 @@ import 'package:path/path.dart' as p;
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/format/formatters.dart';
 import '../../../../core/network/api_exception.dart';
+import '../../../../core/paths/local_file_name.dart';
 import '../../../../core/paths/remote_path.dart';
 import '../../../../core/theme/app_palette.dart';
 import '../../../../core/transfers/transfer_queue.dart';
@@ -16,6 +17,7 @@ import '../../../../core/widgets/confirm_dialog.dart';
 import '../../../../core/widgets/view_states.dart';
 import '../../../sharing/domain/entities/share.dart';
 import '../../../sharing/presentation/pages/share_page.dart';
+import '../../data/browser_preferences.dart';
 import '../../domain/entities/directory_listing.dart';
 import '../../domain/entities/file_entry.dart';
 import '../../domain/repositories/files_repository.dart';
@@ -24,6 +26,7 @@ import '../file_browser_controller.dart';
 import '../widgets/breadcrumb_bar.dart';
 import '../widgets/browser_chrome.dart';
 import '../widgets/file_entry_views.dart';
+import '../preview/file_preview_dialog.dart';
 import '../widgets/folder_picker_dialog.dart';
 import 'file_versions_page.dart';
 
@@ -86,6 +89,17 @@ class _FileBrowserPageState extends State<FileBrowserPage>
   int _gridColumns = 1;
   bool _dragging = false;
 
+  /// Si la sección era la visible en el último `didChangeDependencies`
+  /// (el shell mete las ocultas en un `TickerMode` apagado).
+  bool _wasActive = true;
+
+  /// `true` en cuanto el usuario cambia de vista: la preferencia guardada,
+  /// si llega tarde, ya no la pisa.
+  bool _viewModeTouched = false;
+
+  BrowserPreferences? get _preferences =>
+      sl.isRegistered<BrowserPreferences>() ? sl<BrowserPreferences>() : null;
+
   /// Lista visible (ordenada y filtrada) del último `build` -- la usan los
   /// atajos de teclado y los gestos, que trabajan con índices.
   @override
@@ -101,6 +115,40 @@ class _FileBrowserPageState extends State<FileBrowserPage>
             : (_ownedTransfers = TransferQueue()));
     final pending = widget.controller?.attach(_openFromController);
     _load(pending?.path ?? RemotePath.root, selectName: pending?.selectName);
+    _restoreViewMode();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Al volver a «Mis archivos» desde otra sección, el foco vuelve a la
+    // lista para que las flechas, Intro o Supr funcionen sin hacer clic
+    // (mientras estuvo oculta, su ExcludeFocus se lo quitó).
+    final active = TickerMode.valuesOf(context).enabled;
+    if (active && !_wasActive) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _listFocus.context == null) return;
+        if (!TickerMode.valuesOf(context).enabled) return;
+        _listFocus.requestFocus();
+      });
+    }
+    _wasActive = active;
+  }
+
+  Future<void> _restoreViewMode() async {
+    final preferences = _preferences;
+    if (preferences == null) return;
+    final grid = await preferences.readGridView();
+    if (!mounted || _viewModeTouched) return;
+    setState(
+      () => _viewMode = grid ? BrowserViewMode.grid : BrowserViewMode.list,
+    );
+  }
+
+  void _setViewMode(BrowserViewMode mode) {
+    _viewModeTouched = true;
+    setState(() => _viewMode = mode);
+    _preferences?.saveGridView(mode == BrowserViewMode.grid);
   }
 
   @override
@@ -159,6 +207,14 @@ class _FileBrowserPageState extends State<FileBrowserPage>
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         _errorMessage = e.message;
+        _state = _LoadState.error;
+      });
+    } catch (_) {
+      // Respuesta inesperada (p. ej. un servidor de otra versión): sin
+      // esto el indicador de carga se quedaba girando para siempre.
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() {
+        _errorMessage = 'La respuesta del servidor no es la esperada.';
         _state = _LoadState.error;
       });
     }
@@ -305,7 +361,7 @@ class _FileBrowserPageState extends State<FileBrowserPage>
     if (item.isDirectory) {
       _load(RemotePath.join(_currentPath, item.name));
     } else {
-      _download([item]);
+      _preview(item);
     }
   }
 
@@ -395,10 +451,7 @@ class _FileBrowserPageState extends State<FileBrowserPage>
           const SizedBox(width: 16),
           SizedBox(width: 240, child: _buildFilterField(context)),
           const SizedBox(width: 8),
-          ViewModeToggle(
-            mode: _viewMode,
-            onChanged: (mode) => setState(() => _viewMode = mode),
-          ),
+          ViewModeToggle(mode: _viewMode, onChanged: _setViewMode),
           const SizedBox(width: 4),
           IconButton(
             tooltip: 'Actualizar (F5)',

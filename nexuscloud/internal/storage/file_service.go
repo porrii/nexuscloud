@@ -62,6 +62,11 @@ type FileService struct {
 	usage         UsageRepository
 	owners        ownerLocks
 
+	// Estado del propietario de los enlaces públicos y de subida anónima
+	// (ADR-043): nil = esas superficies rechazan toda resolución, ver
+	// WithOwnerStatus.
+	ownerStatus OwnerStatusChecker
+
 	// Favoritos (§87, ADR-038): nil = sin favoritos activados, ver WithFavorites.
 	favorites FavoriteRepository
 

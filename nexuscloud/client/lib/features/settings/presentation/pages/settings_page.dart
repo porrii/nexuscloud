@@ -586,6 +586,9 @@ class _ShortcutsCard extends StatelessWidget {
   static const _shortcuts = [
     ('Ctrl+K', 'Buscar en todas tus carpetas'),
     ('Ctrl+1 … 5', 'Ir a cada sección de la barra lateral'),
+    ('Ctrl+6', 'Administración (solo administradores)'),
+    ('Intro · doble clic', 'Vista previa del archivo'),
+    ('← → · RePág AvPág', 'Archivo anterior o siguiente en la vista previa'),
     ('Ctrl+U', 'Subir archivos a la carpeta actual'),
     ('Ctrl+N', 'Nueva carpeta'),
     ('Ctrl+F', 'Filtrar la carpeta actual'),

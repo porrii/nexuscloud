@@ -3,6 +3,8 @@ import 'package:flutter/material.dart';
 import '../../../../core/di/service_locator.dart';
 import '../../../../core/storage/server_config_store.dart';
 import '../../../../core/theme/app_palette.dart';
+import '../../../../core/transfers/transfer_queue.dart';
+import '../../../files/data/thumbnail_service.dart';
 import '../../../shell/presentation/app_shell.dart';
 import '../../../shell/presentation/widgets/sidebar.dart' show BrandMark;
 import '../../domain/entities/app_user.dart';
@@ -63,6 +65,16 @@ class _AuthGatePageState extends State<AuthGatePage> {
   }
 
   void _onUserChanged(AppUser? user) {
+    // Las miniaturas en memoria son derivados de archivos privados: no
+    // deben sobrevivir a la sesión que las pidió.
+    if (user == null && sl.isRegistered<ThumbnailService>()) {
+      sl<ThumbnailService>().clear();
+    }
+    // Lo mismo para la lista de transferencias terminadas: con nombres de
+    // archivos de la cuenta anterior, no debe verla quien entre después.
+    if (user == null && sl.isRegistered<TransferQueue>()) {
+      sl<TransferQueue>().clearFinished();
+    }
     if (!mounted) return;
     setState(() => _screen = user == null ? _Screen.login : _Screen.shell);
   }

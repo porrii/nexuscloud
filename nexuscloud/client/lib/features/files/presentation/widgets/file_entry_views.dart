@@ -4,6 +4,7 @@ import '../../../../core/format/formatters.dart';
 import '../../../../core/theme/app_palette.dart';
 import '../../../../core/widgets/file_type_icon.dart';
 import '../browser_item.dart';
+import 'file_thumbnail.dart';
 
 /// Lo que una fila o tarjeta puede pedir al explorador. La lógica (qué
 /// significa seleccionar con Ctrl, cómo se borra...) vive en la página;
@@ -288,78 +289,110 @@ class _EntryRowState extends State<_EntryRow> with _ClickTracker {
         ? p.surfaceMuted.withValues(alpha: 0.7)
         : Colors.transparent;
 
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onSecondaryTapUp: (d) =>
-            widget.callbacks.onContextMenu(widget.index, d.globalPosition),
-        onTap: _handleTap,
-        child: Container(
-          margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
-          padding: const EdgeInsets.symmetric(horizontal: 6),
-          decoration: BoxDecoration(
-            color: background,
-            borderRadius: BorderRadius.circular(8),
-            border: widget.hasCursor && !selected
-                ? Border.all(color: p.accent.withValues(alpha: 0.5))
-                : null,
-          ),
-          child: Row(
-            children: [
-              SizedBox(
-                width: 40,
-                child: Center(
-                  child: FileTypeIcon.forName(
-                    item.name,
-                    mimeType: item.mimeType,
-                    isDirectory: item.isDirectory,
-                    size: 22,
-                  ),
-                ),
-              ),
-              Expanded(
-                child: _EntryName(
-                  item: item,
-                  selected: selected,
-                  onOpen: () => widget.callbacks.onOpen(item),
-                ),
-              ),
-              if (widget.showSize)
+    return _EntrySemantics(
+      item: item,
+      selected: selected,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapUp: (d) =>
+              widget.callbacks.onContextMenu(widget.index, d.globalPosition),
+          onTap: _handleTap,
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            decoration: BoxDecoration(
+              color: background,
+              borderRadius: BorderRadius.circular(8),
+              border: widget.hasCursor && !selected
+                  ? Border.all(color: p.accent.withValues(alpha: 0.5))
+                  : null,
+            ),
+            child: Row(
+              children: [
                 SizedBox(
-                  width: 100,
-                  child: Text(
-                    item.sizeBytes == null ? '—' : formatBytes(item.sizeBytes!),
-                    textAlign: TextAlign.right,
-                    style: text.bodySmall?.copyWith(color: p.textSecondary),
-                  ),
-                ),
-              if (widget.showModified)
-                SizedBox(
-                  width: 150,
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 30),
-                    child: Text(
-                      formatRelativeDate(item.modifiedAt),
-                      overflow: TextOverflow.ellipsis,
-                      style: text.bodySmall?.copyWith(color: p.textSecondary),
+                  width: 40,
+                  child: Center(
+                    child: FileTypeIcon.forName(
+                      item.name,
+                      mimeType: item.mimeType,
+                      isDirectory: item.isDirectory,
+                      size: 22,
                     ),
                   ),
                 ),
-              SizedBox(
-                width: _kActionsWidth,
-                child: _RowActions(
-                  item: item,
-                  index: widget.index,
-                  visible: _hovered || selected,
-                  callbacks: widget.callbacks,
+                Expanded(
+                  child: _EntryName(
+                    item: item,
+                    selected: selected,
+                    onOpen: () => widget.callbacks.onOpen(item),
+                  ),
                 ),
-              ),
-            ],
+                if (widget.showSize)
+                  SizedBox(
+                    width: 100,
+                    child: Text(
+                      item.sizeBytes == null
+                          ? '—'
+                          : formatBytes(item.sizeBytes!),
+                      textAlign: TextAlign.right,
+                      style: text.bodySmall?.copyWith(color: p.textSecondary),
+                    ),
+                  ),
+                if (widget.showModified)
+                  SizedBox(
+                    width: 150,
+                    child: Padding(
+                      padding: const EdgeInsets.only(left: 30),
+                      child: Text(
+                        formatRelativeDate(item.modifiedAt),
+                        overflow: TextOverflow.ellipsis,
+                        style: text.bodySmall?.copyWith(color: p.textSecondary),
+                      ),
+                    ),
+                  ),
+                SizedBox(
+                  width: _kActionsWidth,
+                  child: _RowActions(
+                    item: item,
+                    index: widget.index,
+                    visible: _hovered || selected,
+                    callbacks: widget.callbacks,
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Lo que un lector de pantalla anuncia de una fila o tarjeta: tipo,
+/// nombre y si está seleccionada (el color de fondo no le llega).
+class _EntrySemantics extends StatelessWidget {
+  const _EntrySemantics({
+    required this.item,
+    required this.selected,
+    required this.child,
+  });
+
+  final BrowserItem item;
+  final bool selected;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      container: true,
+      selected: selected,
+      label: item.isDirectory
+          ? 'Carpeta ${item.name}'
+          : 'Archivo ${item.name}, ${formatBytes(item.sizeBytes ?? 0)}',
+      child: child,
     );
   }
 }
@@ -505,7 +538,10 @@ class _SmallAction extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 const double kGridTileWidth = 156;
-const double kGridTileHeight = 148;
+const double kGridTileHeight = 172;
+
+/// Alto de la zona de vista previa de cada tarjeta (miniatura o icono).
+const double kGridPreviewHeight = 84;
 
 class FileGridView extends StatelessWidget {
   const FileGridView({
@@ -598,96 +634,128 @@ class _GridTileState extends State<_GridTile> with _ClickTracker {
         ? 'Carpeta'
         : '${formatBytes(item.sizeBytes ?? 0)} · ${formatRelativeDate(item.modifiedAt)}';
 
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onSecondaryTapUp: (d) =>
-            widget.callbacks.onContextMenu(widget.index, d.globalPosition),
-        onTap: () {
-          if (registerTapIsDouble()) {
-            widget.callbacks.onOpen(item);
-          } else {
-            widget.callbacks.onSelect(widget.index);
-          }
-        },
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 120),
-          decoration: BoxDecoration(
-            color: selected
-                ? p.accentSoft
-                : (_hovered
-                      ? p.surfaceMuted.withValues(alpha: 0.6)
-                      : p.surface),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: selected || widget.hasCursor
-                  ? p.accent.withValues(alpha: 0.6)
-                  : p.border,
-            ),
-          ),
-          child: Stack(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 18, 12, 10),
-                child: Column(
-                  children: [
-                    FileTypeIcon.forName(
-                      item.name,
-                      mimeType: item.mimeType,
-                      isDirectory: item.isDirectory,
-                      size: 30,
-                      boxed: true,
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      item.name,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: text.bodyMedium?.copyWith(
-                        fontWeight: FontWeight.w500,
-                        fontSize: 13,
-                        height: 1.25,
-                        color: selected ? p.accentOnSoft : p.textPrimary,
-                      ),
-                    ),
-                    const Spacer(),
-                    Text(
-                      meta,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: text.bodySmall?.copyWith(fontSize: 11.5),
-                    ),
-                  ],
-                ),
+    return _EntrySemantics(
+      item: item,
+      selected: selected,
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapUp: (d) =>
+              widget.callbacks.onContextMenu(widget.index, d.globalPosition),
+          onTap: () {
+            if (registerTapIsDouble()) {
+              widget.callbacks.onOpen(item);
+            } else {
+              widget.callbacks.onSelect(widget.index);
+            }
+          },
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 120),
+            decoration: BoxDecoration(
+              color: selected
+                  ? p.accentSoft
+                  : (_hovered
+                        ? p.surfaceMuted.withValues(alpha: 0.6)
+                        : p.surface),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: selected || widget.hasCursor
+                    ? p.accent.withValues(alpha: 0.6)
+                    : p.border,
               ),
-              Positioned(
-                top: 4,
-                right: 4,
-                child: AnimatedOpacity(
-                  opacity: _hovered || selected ? 1 : 0,
-                  duration: const Duration(milliseconds: 120),
-                  child: Builder(
-                    builder: (context) => _SmallAction(
-                      tooltip: 'Más acciones',
-                      icon: Icons.more_horiz_rounded,
-                      onPressed: () {
-                        final box = context.findRenderObject() as RenderBox;
-                        widget.callbacks.onContextMenu(
-                          widget.index,
-                          box.localToGlobal(Offset(0, box.size.height)),
-                        );
-                      },
+            ),
+            child: Stack(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: kGridPreviewHeight,
+                        width: double.infinity,
+                        child: _GridPreview(item: item),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        item.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: text.bodyMedium?.copyWith(
+                          fontWeight: FontWeight.w500,
+                          fontSize: 13,
+                          height: 1.25,
+                          color: selected ? p.accentOnSoft : p.textPrimary,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text(
+                        meta,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: text.bodySmall?.copyWith(fontSize: 11.5),
+                      ),
+                    ],
+                  ),
+                ),
+                Positioned(
+                  top: 4,
+                  right: 4,
+                  child: AnimatedOpacity(
+                    opacity: _hovered || selected ? 1 : 0,
+                    duration: const Duration(milliseconds: 120),
+                    child: Builder(
+                      builder: (context) => _SmallAction(
+                        tooltip: 'Más acciones',
+                        icon: Icons.more_horiz_rounded,
+                        onPressed: () {
+                          final box = context.findRenderObject() as RenderBox;
+                          widget.callbacks.onContextMenu(
+                            widget.index,
+                            box.localToGlobal(Offset(0, box.size.height)),
+                          );
+                        },
+                      ),
                     ),
                   ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Vista previa de una tarjeta: la miniatura del servidor si el archivo la
+/// tiene (imagen, vídeo, PDF), si no -- o mientras llega -- el icono del tipo.
+class _GridPreview extends StatelessWidget {
+  const _GridPreview({required this.item});
+
+  final BrowserItem item;
+
+  @override
+  Widget build(BuildContext context) {
+    final icon = Center(
+      child: FileTypeIcon.forName(
+        item.name,
+        mimeType: item.mimeType,
+        isDirectory: item.isDirectory,
+        size: 30,
+        boxed: true,
+      ),
+    );
+    final file = item.file;
+    if (file == null) return icon;
+    final radius = BorderRadius.circular(8);
+    return FileThumbnail(
+      file: file,
+      placeholder: icon,
+      borderRadius: radius,
+      frameColor: context.palette.border,
     );
   }
 }

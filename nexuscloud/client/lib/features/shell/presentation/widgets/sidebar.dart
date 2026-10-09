@@ -7,7 +7,7 @@ import '../../../account/data/quota_service.dart';
 import '../../../auth/domain/entities/app_user.dart';
 import '../../../sync/presentation/sync_activity.dart';
 
-enum ShellSection { files, shared, sync, trash, settings, search }
+enum ShellSection { files, shared, sync, trash, settings, admin, search }
 
 /// Barra lateral fija: marca, buscador global, navegación, estado de
 /// sincronización, espacio usado y usuario. Mismo esquema que el
@@ -26,6 +26,7 @@ class Sidebar extends StatelessWidget {
     required this.user,
     required this.updateAvailable,
     required this.onLogout,
+    this.isAdmin = false,
   });
 
   final ShellSection current;
@@ -39,6 +40,10 @@ class Sidebar extends StatelessWidget {
   final AppUser? user;
   final bool updateAvailable;
   final VoidCallback onLogout;
+
+  /// Muestra «Administración» (solo lo decide la interfaz: el servidor
+  /// vuelve a comprobar el rol en cada petición).
+  final bool isAdmin;
 
   @override
   Widget build(BuildContext context) {
@@ -130,6 +135,15 @@ class Sidebar extends StatelessWidget {
                   )
                 : null,
           ),
+          if (isAdmin)
+            _NavItem(
+              icon: Icons.admin_panel_settings_outlined,
+              activeIcon: Icons.admin_panel_settings_rounded,
+              label: 'Administración',
+              shortcut: 'Ctrl+6',
+              selected: current == ShellSection.admin,
+              onTap: () => onSelect(ShellSection.admin),
+            ),
           const Spacer(),
           if (syncActivity != null)
             Padding(

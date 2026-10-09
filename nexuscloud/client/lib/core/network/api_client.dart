@@ -1,3 +1,5 @@
+import 'dart:convert';
+
 import 'package:dio/dio.dart';
 
 import '../storage/token_store.dart';
@@ -66,6 +68,20 @@ class ApiClient {
         ? baseUrl.substring(0, baseUrl.length - 1)
         : baseUrl;
     _dio.options.baseUrl = '$trimmed/api/v1';
+  }
+
+  /// URL absoluta y cabeceras de sesión de un recurso de la API para quien
+  /// no puede pasar por dio: el reproductor de vídeo/audio hace sus propias
+  /// peticiones (con `Range`) desde código nativo. El token viaja SIEMPRE
+  /// en la cabecera, nunca en la URL (acabaría en logs y en el historial).
+  Future<({Uri uri, Map<String, String> headers})> authorizedResource(
+    String path,
+  ) async {
+    final token = await _tokenStore.read();
+    return (
+      uri: Uri.parse('${_dio.options.baseUrl}$path'),
+      headers: {if (token != null) 'Authorization': 'Bearer $token'},
+    );
   }
 
   /// Punto de entrada único para los data sources — garantiza que
@@ -148,7 +164,17 @@ class ApiClient {
   }
 
   ApiException _toApiException(Response<dynamic> response) {
-    final data = response.data;
+    var data = response.data;
+    // Peticiones con `ResponseType.bytes` (vista previa, miniaturas): el
+    // cuerpo de error llega como bytes sin parsear; sin esto, un 404 o un
+    // 403 se mostraba como el genérico "No se pudo completar la operación."
+    if (data is List<int>) {
+      try {
+        data = jsonDecode(utf8.decode(data));
+      } on FormatException {
+        // No era JSON: se queda en el genérico de abajo.
+      }
+    }
     if (data is Map && data['error'] is Map) {
       final error = data['error'] as Map;
       return ApiException(

@@ -96,6 +96,11 @@ func (s *FileService) ResolveAnonymousUploadForAccess(ctx context.Context, token
 	if err != nil {
 		return nil, err
 	}
+	// ADR-043: el enlace de una cuenta desactivada da el mismo 404 genérico
+	// que uno inexistente, y nadie sigue llenando su cuota.
+	if err := s.requireActiveOwner(ctx, a.OwnerID, ErrAnonymousUploadNotFound); err != nil {
+		return nil, err
+	}
 	if err := a.checkLifecycle(time.Now().UTC()); err != nil {
 		return nil, err
 	}

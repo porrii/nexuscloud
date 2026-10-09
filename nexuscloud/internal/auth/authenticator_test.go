@@ -294,3 +294,20 @@ func TestInvitationRevokedCannotBeRedeemed(t *testing.T) {
 		t.Errorf("err = %v, esperado ErrInvitationRevoked", err)
 	}
 }
+
+// TestInvitationCreateRejectsUnknownRole (ADR-044 Decisión 6): el rol se
+// valida antes de insertar, con users.ErrInvalidRole y no con un error de
+// FK de la base de datos.
+func TestInvitationCreateRejectsUnknownRole(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	admin := env.createUser(t, ctx, "admin", "contraseña-admin")
+	invSvc := NewInvitationService(env.invitations, users.NewService(env.users), env.hasher)
+
+	if _, _, err := invSvc.Create(ctx, CreateInvitationInput{CreatedBy: admin.ID, RoleID: "root"}); !errors.Is(err, users.ErrInvalidRole) {
+		t.Errorf("Create con rol desconocido = %v, esperado users.ErrInvalidRole", err)
+	}
+	if _, _, err := invSvc.Create(ctx, CreateInvitationInput{CreatedBy: admin.ID, RoleID: users.RoleReadOnly}); err != nil {
+		t.Errorf("Create con rol read_only = %v, esperado éxito", err)
+	}
+}

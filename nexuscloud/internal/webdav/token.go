@@ -115,6 +115,13 @@ func (s *TokenService) Revoke(ctx context.Context, id, userID string) error {
 	return s.repo.RevokeToken(ctx, id, userID)
 }
 
+// IsReadOnly indica si el usuario tiene el rol read_only (ADR-044): mismo
+// criterio que users.Service.IsReadOnly (basta con tener el rol), sobre el
+// repositorio que este servicio ya usa para autenticar.
+func (s *TokenService) IsReadOnly(ctx context.Context, userID string) (bool, error) {
+	return s.users.HasRole(ctx, userID, users.RoleReadOnly)
+}
+
 // Authenticate valida las credenciales HTTP Basic de un cliente WebDAV:
 // username debe ser el del dueño del token y el token debe existir y no
 // estar revocado; el usuario, además, tiene que seguir activo. Cualquier

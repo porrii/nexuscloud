@@ -1,6 +1,10 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nexuscloud_client/core/di/service_locator.dart';
 import 'package:nexuscloud_client/core/network/api_client.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
@@ -10,12 +14,17 @@ import 'package:nexuscloud_client/features/auth/domain/entities/app_user.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/auto_login_outcome.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/login_result.dart';
 import 'package:nexuscloud_client/features/auth/domain/repositories/auth_repository.dart';
+import 'package:nexuscloud_client/features/files/data/browser_preferences.dart';
+import 'package:nexuscloud_client/features/files/data/file_content_service.dart';
+import 'package:nexuscloud_client/features/files/data/thumbnail_service.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/files/presentation/pages/file_browser_page.dart';
+import 'package:nexuscloud_client/features/files/presentation/preview/file_preview_dialog.dart';
+import 'package:nexuscloud_client/features/files/presentation/widgets/file_entry_views.dart';
 import 'package:nexuscloud_client/features/update/data/update_check_service.dart';
 
 class _FakeTokenStore implements TokenStore {
@@ -628,5 +637,157 @@ void main() {
       await tester.pumpAndSettle();
       expect(repo.requestedPaths, contains('/Fotos'));
     });
+
+    testWidgets('doble clic en un archivo abre la vista previa, no la descarga', (tester) async {
+      sl.registerSingleton<FileContentService>(_TextContentService());
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('notas.txt'));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(find.text('notas.txt'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FilePreviewDialog), findsOneWidget);
+      expect(find.text('contenido de f1'), findsOneWidget);
+      // Se puede recorrer el resto de archivos de la carpeta (las carpetas no).
+      expect(find.text('3 de 3'), findsOneWidget);
+    });
+
+    testWidgets('recuerda la vista de cuadrícula al volver a abrir el explorador', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      sl.registerSingleton(BrowserPreferences());
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileListView), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Vista de cuadrícula'));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileGridView), findsOneWidget);
+      expect(await sl<BrowserPreferences>().readGridView(), isTrue);
+
+      // Un explorador nuevo (p. ej. tras reiniciar la app) sale en cuadrícula.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileGridView), findsOneWidget);
+      expect(find.byType(FileListView), findsNothing);
+    });
+
+    testWidgets('al volver a la sección el foco vuelve a la lista', (tester) async {
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+      var active = true;
+      late StateSetter setActive;
+      // Mismo envoltorio que el shell pone a cada sección.
+      await tester.pumpWidget(MaterialApp(
+        home: StatefulBuilder(builder: (context, setState) {
+          setActive = setState;
+          return TickerMode(
+            enabled: active,
+            child: ExcludeFocus(excluding: !active, child: const FileBrowserPage()),
+          );
+        }),
+      ));
+      await tester.pumpAndSettle();
+      String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+      expect(focused(), 'browser-list');
+
+      setActive(() => active = false);
+      await tester.pumpAndSettle();
+      expect(focused(), isNot('browser-list'));
+
+      setActive(() => active = true);
+      await tester.pumpAndSettle();
+      expect(focused(), 'browser-list');
+    });
+
+    testWidgets('la cuadrícula pinta la miniatura de una imagen y el icono del resto', (tester) async {
+      sl.registerSingleton(ThumbnailService(apiClient: _thumbnailApiClient()));
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      repo.listingsByPath['/'] = DirectoryListing(
+        directories: const [],
+        files: [
+          FileEntry(
+            id: 'img',
+            parentPath: '/',
+            name: 'playa.png',
+            sizeBytes: 10,
+            sha256: 'sha-img',
+            mimeType: 'image/png',
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+          ),
+          file('f1', 'notas.txt', 10, DateTime.utc(2026, 1, 1)),
+        ],
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Vista de cuadrícula'));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pumpAndSettle();
+
+      Finder imageIn(String key) => find.descendant(
+            of: find.byKey(ValueKey(key)),
+            matching: find.byType(Image),
+          );
+      expect(imageIn('entry-f:img'), findsOneWidget);
+      // Un .txt nunca tiene miniatura: ni se pide.
+      expect(imageIn('entry-f:f1'), findsNothing);
+      expect(_thumbnailRequests, ['/files/img/thumbnail']);
+    });
   });
+}
+
+/// Sirve `contenido de <id>` para cualquier archivo.
+class _TextContentService implements FileContentService {
+  @override
+  Future<Uint8List> fetchBytes(String fileId, {int? maxBytes}) async =>
+      Uint8List.fromList(utf8.encode('contenido de $fileId'));
+
+  @override
+  Future<Uint8List> fetchPrefix(String fileId, {int length = 1024}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<({Uri uri, Map<String, String> headers})> streamSource(String fileId) =>
+      throw UnimplementedError();
+}
+
+/// PNG de 1×1 px, suficiente para `Image.memory`.
+final _onePixelPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+);
+
+final List<String> _thumbnailRequests = [];
+
+/// ApiClient cuyo adaptador HTTP sirve siempre [_onePixelPng], sin red.
+ApiClient _thumbnailApiClient() {
+  _thumbnailRequests.clear();
+  final dio = Dio()..httpClientAdapter = _PngAdapter();
+  return ApiClient(
+    tokenStore: _FakeTokenStore(),
+    sessionExpiryNotifier: SessionExpiryNotifier(),
+    dio: dio,
+  )..configureBaseUrl('http://test.local');
+}
+
+class _PngAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    _thumbnailRequests.add(options.path);
+    return ResponseBody.fromBytes(_onePixelPng, 200, headers: {
+      Headers.contentTypeHeader: ['image/jpeg'],
+    });
+  }
+
+  @override
+  void close({bool force = false}) {}
 }

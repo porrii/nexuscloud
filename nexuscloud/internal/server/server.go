@@ -154,6 +154,9 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		cfg.Versioning.MaxVersionAgeDays, cfg.Versioning.MaxVersionsTotalSizeBytes,
 		cfg.Sharing.Enabled, cfg.Sharing.PublicLinksEnabled,
 		storage.WithQuotas(userSvc, storage.NewSQLUsageRepository(conn)),
+		// Enlaces públicos y de subida anónima de cuentas desactivadas
+		// (ADR-043): sin esta opción, esas superficies no resuelven nada.
+		storage.WithOwnerStatus(userSvc),
 		// Favoritos (§87, ADR-038): siempre disponibles, sin opción de config.
 		storage.WithFavorites(storage.NewSQLFavoriteRepository(conn)),
 		// Subida anónima (§38, ADR-039): el repositorio se conecta siempre;

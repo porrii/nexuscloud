@@ -125,84 +125,100 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 		r.Post("/favorites", h.CreateFavorite)
 		r.Get("/favorites", h.ListFavorites)
 		r.Delete("/favorites/{id}", h.DeleteFavorite)
-		// Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
-		r.Get("/activity", h.ListActivity)
 
-		// Búsqueda (§33): recursiva sobre TODO el árbol propio, a diferencia
-		// de GET /files (una carpeta concreta). Con search.enabled=false,
-		// esta ruta ni se registra -- mismo criterio que ClientUpdatesProxy.
-		if h.SearchEnabled {
-			r.Get("/search", h.Search)
-		}
-
-		r.Get("/files", h.ListFiles)
-		r.Post("/files", h.UploadFile)
-		r.Get("/files/{id}", h.DownloadFile)
-		r.Delete("/files/{id}", h.DeleteFile)
-		r.Patch("/files/{id}", h.MoveFile)
-		r.Post("/files/{id}/restore", h.RestoreFile)
-		// Miniaturas (§34, ADR-041): sin flag propio de activación de ruta
-		// (a diferencia de /search) -- thumbnails.enabled se comprueba
-		// dentro de FileService, mismo criterio que
-		// sharing.anonymousUploadEnabled; con la función desactivada,
-		// responde 404 en vez de dejar de existir la ruta.
-		r.Get("/files/{id}/thumbnail", h.GetFileThumbnail)
-		r.Get("/files/{id}/versions", h.ListFileVersions)
-		r.Get("/files/{id}/versions/{versionNum}", h.DownloadFileVersion)
-		r.Post("/files/{id}/versions/{versionNum}/restore", h.RestoreFileVersion)
-		r.Post("/directories", h.Mkdir)
-		r.Delete("/directories/{id}", h.DeleteDirectory)
-		r.Patch("/directories/{id}", h.MoveDirectory)
-		r.Post("/directories/{id}/restore", h.RestoreDirectory)
-
-		r.Get("/trash", h.ListTrash)
-
-		r.Get("/groups", h.ListGroups)
-
-		r.Post("/shares", h.CreateShare)
-		r.Get("/shares", h.ListShares)
+		// Revocar lo publicado (ADR-044 Decisión 1): reducir lo expuesto
+		// nunca es una escritura peligrosa, así que también read_only puede.
 		r.Delete("/shares/{id}", h.RevokeShare)
-		r.Get("/shared-directories/{id}", h.ListSharedDirectory)
-		r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
-
-		// Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea,
-		// lista y revoca sus propios enlaces, siempre sobre una carpeta suya.
-		r.Post("/anonymous-uploads", h.CreateAnonymousUploadLink)
-		r.Get("/anonymous-uploads", h.ListAnonymousUploadLinks)
 		r.Delete("/anonymous-uploads/{id}", h.RevokeAnonymousUploadLink)
 
+		// Rol read_only (ADR-044): TODO lo que se registre a partir de aquí
+		// pasa por RequireWritable, que deniega cualquier método que no sea
+		// GET/HEAD/OPTIONS a un usuario read_only. Encima de este punto solo
+		// va el autoservicio de la propia cuenta (sesiones, 2FA, passkeys,
+		// tokens, favoritos y revocar lo propio): una ruta nueva va aquí
+		// debajo salvo decisión expresa, y el test de integración
+		// TestReadOnlyAccountCannotWriteThroughAnyRoute lo vigila.
 		r.Group(func(r chi.Router) {
-			r.Use(h.RequireAdmin)
+			r.Use(h.RequireWritable)
 
-			r.Get("/users", h.ListUsers)
-			r.Post("/users", h.CreateUser)
-			r.Patch("/users/{id}", h.PatchUser)
-			r.Delete("/users/{id}", h.DeleteUser)
+			// Actividad reciente (§88, ADR-038): feed de "Recientes" del dashboard.
+			r.Get("/activity", h.ListActivity)
 
-			r.Get("/invitations", h.ListInvitations)
-			r.Post("/invitations", h.CreateInvitation)
-			r.Delete("/invitations/{id}", h.RevokeInvitation)
-
-			r.Post("/groups", h.CreateGroup)
-			r.Patch("/groups/{id}", h.PatchGroup)
-			r.Post("/groups/{id}/members", h.AddGroupMember)
-
-			r.Get("/audit", h.ListAuditEvents)
-
-			r.Get("/storage/disks", h.ListDisks)
-
-			// Miniaturas (§34, ADR-041 Decisión 1): visibilidad
-			// administrativa sobre la cola persistente -- qué está pendiente
-			// o qué se dio por fallido tras agotar reintentos. Sin flag de
-			// activación propio, igual que la ruta bajo demanda de arriba.
-			r.Get("/admin/thumbnail-jobs", h.ListThumbnailJobs)
-
-			// Búsqueda cruzando usuarios (§33 "Usuario" como criterio):
-			// mismo interruptor que la búsqueda personal.
+			// Búsqueda (§33): recursiva sobre TODO el árbol propio, a diferencia
+			// de GET /files (una carpeta concreta). Con search.enabled=false,
+			// esta ruta ni se registra -- mismo criterio que ClientUpdatesProxy.
 			if h.SearchEnabled {
-				r.Get("/admin/search", h.AdminSearch)
+				r.Get("/search", h.Search)
 			}
-		})
+
+			r.Get("/files", h.ListFiles)
+			r.Post("/files", h.UploadFile)
+			r.Get("/files/{id}", h.DownloadFile)
+			r.Delete("/files/{id}", h.DeleteFile)
+			r.Patch("/files/{id}", h.MoveFile)
+			r.Post("/files/{id}/restore", h.RestoreFile)
+			// Miniaturas (§34, ADR-041): sin flag propio de activación de ruta
+			// (a diferencia de /search) -- thumbnails.enabled se comprueba
+			// dentro de FileService, mismo criterio que
+			// sharing.anonymousUploadEnabled; con la función desactivada,
+			// responde 404 en vez de dejar de existir la ruta.
+			r.Get("/files/{id}/thumbnail", h.GetFileThumbnail)
+			r.Get("/files/{id}/versions", h.ListFileVersions)
+			r.Get("/files/{id}/versions/{versionNum}", h.DownloadFileVersion)
+			r.Post("/files/{id}/versions/{versionNum}/restore", h.RestoreFileVersion)
+			r.Post("/directories", h.Mkdir)
+			r.Delete("/directories/{id}", h.DeleteDirectory)
+			r.Patch("/directories/{id}", h.MoveDirectory)
+			r.Post("/directories/{id}/restore", h.RestoreDirectory)
+
+			r.Get("/trash", h.ListTrash)
+
+			r.Get("/groups", h.ListGroups)
+
+			r.Post("/shares", h.CreateShare)
+			r.Get("/shares", h.ListShares)
+			r.Get("/shared-directories/{id}", h.ListSharedDirectory)
+			r.Post("/shared-directories/{id}/files", h.UploadToSharedDirectory)
+
+			// Subida anónima (§38, ADR-039): autoservicio -- cada usuario crea,
+			// lista y revoca sus propios enlaces, siempre sobre una carpeta suya
+			// (revocar está registrado arriba, fuera de RequireWritable).
+			r.Post("/anonymous-uploads", h.CreateAnonymousUploadLink)
+			r.Get("/anonymous-uploads", h.ListAnonymousUploadLinks)
+
+			r.Group(func(r chi.Router) {
+				r.Use(h.RequireAdmin)
+
+				r.Get("/users", h.ListUsers)
+				r.Post("/users", h.CreateUser)
+				r.Patch("/users/{id}", h.PatchUser)
+				r.Delete("/users/{id}", h.DeleteUser)
+
+				r.Get("/invitations", h.ListInvitations)
+				r.Post("/invitations", h.CreateInvitation)
+				r.Delete("/invitations/{id}", h.RevokeInvitation)
+
+				r.Post("/groups", h.CreateGroup)
+				r.Patch("/groups/{id}", h.PatchGroup)
+				r.Post("/groups/{id}/members", h.AddGroupMember)
+
+				r.Get("/audit", h.ListAuditEvents)
+
+				r.Get("/storage/disks", h.ListDisks)
+
+				// Miniaturas (§34, ADR-041 Decisión 1): visibilidad
+				// administrativa sobre la cola persistente -- qué está pendiente
+				// o qué se dio por fallido tras agotar reintentos. Sin flag de
+				// activación propio, igual que la ruta bajo demanda de arriba.
+				r.Get("/admin/thumbnail-jobs", h.ListThumbnailJobs)
+
+				// Búsqueda cruzando usuarios (§33 "Usuario" como criterio):
+				// mismo interruptor que la búsqueda personal.
+				if h.SearchEnabled {
+					r.Get("/admin/search", h.AdminSearch)
+				}
+			})
+		}) // fin de RequireWritable
 	})
 
 	// Backups entrantes de otro servidor NexusCloud (ADR-029): fuera del

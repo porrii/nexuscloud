@@ -46,10 +46,11 @@ func newRealTestEnv(t *testing.T, driver string) *testEnv {
 	versions := NewSQLVersionRepository(conn)
 	shares := NewSQLShareRepository(conn)
 	userRepo := users.NewSQLRepository(conn)
+	userSvc := users.NewService(userRepo)
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
-			true, true, 10, 0, 0, true, true),
+			true, true, 10, 0, 0, true, true, WithOwnerStatus(userSvc)),
 		files:       files,
 		directories: directories,
 		versions:    versions,
@@ -57,7 +58,7 @@ func newRealTestEnv(t *testing.T, driver string) *testEnv {
 		pools:       pools,
 		poolDir:     poolDir,
 		provider:    provider,
-		userSvc:     users.NewService(userRepo),
+		userSvc:     userSvc,
 		userRepo:    userRepo,
 		conn:        conn,
 	}

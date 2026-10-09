@@ -2,6 +2,7 @@ part of 'file_browser_page.dart';
 
 enum _MenuAction {
   open,
+  preview,
   download,
   rename,
   move,
@@ -33,6 +34,23 @@ mixin _BrowserActions on State<FileBrowserPage> {
   Future<void> _reload();
   void _openItem(BrowserItem item);
   void _selectAll();
+
+  /// Vista previa de [item] (§35). Se puede pasar al resto de archivos de
+  /// la carpeta, en el orden en que se ven, sin cerrarla.
+  void _preview(BrowserItem item) {
+    final files = [
+      for (final i in _visible)
+        if (i.file != null) i.file!,
+    ];
+    final index = files.indexWhere((f) => f.id == item.id);
+    if (index < 0) return;
+    showFilePreview(
+      context,
+      files: files,
+      initialIndex: index,
+      onDownload: (file) => _download([BrowserItem.file(file)]),
+    );
+  }
 
   void _toast(String message, {bool error = false}) {
     final messenger = ScaffoldMessenger.maybeOf(context);
@@ -168,7 +186,8 @@ mixin _BrowserActions on State<FileBrowserPage> {
 
   /// `informe.pdf` → `informe (1).pdf` si ya existe en la carpeta elegida
   /// (con descarga múltiple no hay diálogo de "¿reemplazar?" por archivo).
-  String _uniqueLocalPath(String directory, String name) {
+  String _uniqueLocalPath(String directory, String remoteName) {
+    final name = safeLocalFileName(remoteName);
     var candidate = p.join(directory, name);
     final ext = p.extension(name);
     final base = p.basenameWithoutExtension(name);
@@ -236,6 +255,9 @@ mixin _BrowserActions on State<FileBrowserPage> {
               ? 'Esa carpeta no está vacía: elimina primero su contenido.'
               : e.message,
         );
+        // Sesión caducada: el resto del lote fallaría igual (y la app ya
+        // vuelve al login).
+        if (e.statusCode == 401) break;
       }
     }
     if (!mounted) return;
@@ -355,6 +377,7 @@ mixin _BrowserActions on State<FileBrowserPage> {
         }
       } on ApiException catch (e) {
         failures.add('«${item.name}»: ${e.message}');
+        if (e.statusCode == 401) break;
       }
     }
     if (!mounted) return;
@@ -447,6 +470,13 @@ mixin _BrowserActions on State<FileBrowserPage> {
           'Abrir',
           shortcut: 'Intro',
         ),
+      if (single != null && !single.isDirectory)
+        _menuItem(
+          _MenuAction.preview,
+          Icons.visibility_outlined,
+          'Vista previa',
+          shortcut: 'Intro',
+        ),
       if (hasFiles)
         _menuItem(
           _MenuAction.download,
@@ -454,7 +484,6 @@ mixin _BrowserActions on State<FileBrowserPage> {
           targets.length > 1
               ? 'Descargar ${targets.where((t) => !t.isDirectory).length} archivos'
               : 'Descargar',
-          shortcut: single != null ? 'Intro' : null,
         ),
       if (single != null)
         _menuItem(
@@ -528,6 +557,8 @@ mixin _BrowserActions on State<FileBrowserPage> {
     switch (action) {
       case _MenuAction.open:
         if (targets.isNotEmpty) _openItem(targets.first);
+      case _MenuAction.preview:
+        if (targets.length == 1) _preview(targets.first);
       case _MenuAction.download:
         _download(targets);
       case _MenuAction.rename:

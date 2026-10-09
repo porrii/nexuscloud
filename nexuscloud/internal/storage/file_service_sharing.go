@@ -302,11 +302,24 @@ func (s *FileService) ListSharedDirectory(ctx context.Context, requesterID, dire
 // Share.checkLifecycle, para poder distinguir un probe de metadata (que
 // quiere mostrar el estado) de un intento real de acceso (que debe
 // rechazarlo).
+//
+// Sí comprueba que el propietario siga activo (ADR-043): el enlace de una
+// cuenta desactivada responde ErrShareNotFound, igual que un token que no
+// existe -- ni el probe de metadata debe revelar que existió. Va aquí, antes
+// del ciclo de vida, de la contraseña (Argon2id) y del contador de
+// descargas, porque todo acceso público pasa por esta función.
 func (s *FileService) ResolvePublicShare(ctx context.Context, token string) (*Share, error) {
 	if !s.publicLinksEnabled {
 		return nil, ErrPublicLinksDisabled
 	}
-	return s.shares.GetShareByTokenHash(ctx, hashShareToken(token))
+	share, err := s.shares.GetShareByTokenHash(ctx, hashShareToken(token))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireActiveOwner(ctx, share.OwnerID, ErrShareNotFound); err != nil {
+		return nil, err
+	}
+	return share, nil
 }
 
 // verifySharePassword no distingue entre "sin contraseña" y "contraseña
