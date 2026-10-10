@@ -91,6 +91,10 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 		r.Use(h.RequireAuth)
 
 		r.Post("/auth/logout", h.Logout)
+		// Modo «sudo» (§126, ADR-042 Decisión 2): mismo rate limit que el
+		// login, porque también comprueba una contraseña. Autoservicio: una
+		// cuenta read_only también puede (no escribe datos).
+		r.With(loginLimiter.Middleware(keyFunc)).Post("/auth/reauthenticate", h.Reauthenticate)
 		r.Get("/auth/sessions", h.ListSessions)
 		r.Delete("/auth/sessions/{id}", h.RevokeSession)
 		r.Post("/auth/totp/enroll", h.EnrollTOTP)
@@ -192,7 +196,32 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 				r.Get("/users", h.ListUsers)
 				r.Post("/users", h.CreateUser)
 				r.Patch("/users/{id}", h.PatchUser)
-				r.Delete("/users/{id}", h.DeleteUser)
+
+				// Administración de cuentas (ADR-042, B1). El cambio de rol
+				// exige reautenticación solo hacia o desde administrador
+				// (lo decide el handler); el resto de lo destructivo, siempre.
+				r.Put("/users/{id}/role", h.SetUserRole)
+				r.Get("/users/{id}/passkeys", h.ListUserPasskeys)
+				r.Get("/users/{id}/sessions", h.ListUserSessions)
+				r.Delete("/users/{id}/sessions", h.RevokeAllUserSessions)
+				r.Delete("/users/{id}/sessions/{sessionId}", h.RevokeUserSession)
+				r.Get("/users/{id}/api-tokens", h.ListUserAPITokens)
+				r.Delete("/users/{id}/api-tokens/{tokenId}", h.RevokeUserAPIToken)
+				r.Get("/users/{id}/webdav-tokens", h.ListUserWebDAVTokens)
+				r.Delete("/users/{id}/webdav-tokens/{tokenId}", h.RevokeUserWebDAVToken)
+				r.Get("/users/{id}/shares", h.ListUserShares)
+				r.Delete("/users/{id}/shares/{shareId}", h.RevokeUserShare)
+				r.Get("/users/{id}/anonymous-uploads", h.ListUserAnonymousUploads)
+				r.Delete("/users/{id}/anonymous-uploads/{linkId}", h.RevokeUserAnonymousUpload)
+
+				r.Group(func(r chi.Router) {
+					r.Use(h.RequireRecentReauth)
+					r.Delete("/users/{id}", h.DeleteUser)
+					r.Post("/users/{id}/password", h.ResetUserPassword)
+					r.Delete("/users/{id}/totp", h.RemoveUserTOTP)
+					r.Delete("/users/{id}/passkeys/{credentialId}", h.RemoveUserPasskey)
+					r.Delete("/groups/{id}", h.DeleteGroup)
+				})
 
 				r.Get("/invitations", h.ListInvitations)
 				r.Post("/invitations", h.CreateInvitation)
@@ -200,7 +229,9 @@ func NewRouter(h *Handlers, loginLimiter, apiLimiter, publicLimiter, anonymousUp
 
 				r.Post("/groups", h.CreateGroup)
 				r.Patch("/groups/{id}", h.PatchGroup)
+				r.Get("/groups/{id}/members", h.ListGroupMembers)
 				r.Post("/groups/{id}/members", h.AddGroupMember)
+				r.Delete("/groups/{id}/members/{userId}", h.RemoveGroupMember)
 
 				r.Get("/audit", h.ListAuditEvents)
 

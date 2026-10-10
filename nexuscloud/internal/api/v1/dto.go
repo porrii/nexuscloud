@@ -25,6 +25,10 @@ type userResponse struct {
 	// hereda del grupo o la global, 0 = ilimitada. El límite efectivo que le
 	// afecta, y el uso, salen de GET /users/me/quota.
 	QuotaBytes *int64 `json:"quota_bytes,omitempty"`
+	// Role (ADR-042 Decisión 8): el rol único de la cuenta. Solo lo rellenan
+	// las respuestas de administración y GET /users/me (withRole); en
+	// login/canje queda ausente.
+	Role string `json:"role,omitempty"`
 }
 
 func toUserResponse(u *users.User) userResponse {
@@ -46,10 +50,25 @@ func toUserResponse(u *users.User) userResponse {
 // usuarios, §33), así que se calcula aparte en vez de tocar userResponse/
 // toUserResponse, usados también por login/redeem/listar/crear/editar
 // usuario, donde el rol de la respuesta no aporta nada.
+//
+// ServerVersion y Capabilities (ADR-042 Decisión 6): qué sabe hacer ESTE
+// servidor, para que un cliente nuevo no ofrezca una función que un
+// servidor viejo no tiene. Solo lo ve un usuario autenticado.
 type meResponse struct {
 	userResponse
-	IsAdmin bool `json:"is_admin"`
+	IsAdmin       bool     `json:"is_admin"`
+	ServerVersion string   `json:"server_version"`
+	Capabilities  []string `json:"capabilities"`
 }
+
+// Capacidades anunciadas en GET /users/me. Cadenas estables: los clientes
+// las comparan tal cual.
+const (
+	CapabilityReadOnlyRole       = "read_only_role"       // ADR-044
+	CapabilityDisabledOwnerLinks = "disabled_owner_links" // ADR-043
+	CapabilityAccountAdmin       = "account_admin"        // ADR-042 B1
+	CapabilityReauthentication   = "reauthentication"     // ADR-042 Decisión 2
+)
 
 type sessionResponse struct {
 	ID         string    `json:"id"`

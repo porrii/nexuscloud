@@ -18,7 +18,7 @@ func testConfig(t *testing.T) *config.Config {
 // currentSchemaVersion es la versión de esquema más alta esperada tras
 // aplicar todas las migraciones embebidas. Actualízala al añadir una nueva
 // migración (§8: cada una suma, nunca se reescribe una ya aplicada).
-const currentSchemaVersion = 16
+const currentSchemaVersion = 17
 
 func TestMigrateAppliesFullSchema(t *testing.T) {
 	cfg := testConfig(t)

@@ -98,7 +98,29 @@ void main() {
     expect(sent.containsKey('quota_bytes'), isFalse);
   });
 
-  test('los eventos de auditoría usan las claves de Go (ID, EventType...)', () async {
+  test('los eventos de auditoría usan claves snake_case (ADR-042)', () async {
+    adapter.body = [
+      {
+        'id': 'e2',
+        'occurred_at': '2026-10-10T10:00:00Z',
+        'actor_user_id': 'u1',
+        'event_type': 'role_changed',
+        'target_type': 'user',
+        'target_id': 'u2',
+        'metadata': {'before': 'user', 'after': 'read_only'},
+      },
+    ];
+
+    final events = await service.listAuditEvents();
+
+    expect(events.single.id, 'e2');
+    expect(events.single.eventType, 'role_changed');
+    expect(events.single.targetId, 'u2');
+    expect(events.single.ip, isNull);
+    expect(events.single.metadata['after'], 'read_only');
+  });
+
+  test('un servidor anterior a ADR-042 sigue funcionando con las claves de Go', () async {
     adapter.body = [
       {
         'ID': 'e1',

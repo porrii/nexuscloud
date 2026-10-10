@@ -54,7 +54,8 @@ Hallazgos de la revisión del código:
      y `GET /files/{id}` a través de una compartición;
    - gestionar su propia cuenta: cerrar sesión, revocar sesiones, TOTP,
      passkeys, tokens de API y WebDAV, y favoritos (metadatos suyos, no
-     datos de archivos);
+     datos de archivos). Desde ADR-042 también `POST /auth/reauthenticate`
+     (modo «sudo»): solo marca su propia sesión, no cambia ningún dato;
    - revocar sus propios enlaces y comparticiones (`DELETE /shares/{id}`,
      `DELETE /anonymous-uploads/{id}`): reducir lo que está expuesto nunca es
      una escritura peligrosa.

@@ -50,6 +50,19 @@ func (h *Handlers) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Una invitación de super_admin concede ese rol (ADR-042 Decisión 8).
+	if req.Role == users.RoleSuperAdmin {
+		actorRole, err := h.UserSvc.PrimaryRole(r.Context(), actor.ID)
+		if err != nil {
+			h.writeAccountAdminError(w, err, "Usuario no encontrado.")
+			return
+		}
+		if actorRole != users.RoleSuperAdmin {
+			h.writeAccountAdminError(w, users.ErrSuperAdminProtected, "")
+			return
+		}
+	}
+
 	var ttl time.Duration
 	if req.TTLHours > 0 {
 		ttl = time.Duration(req.TTLHours) * time.Hour

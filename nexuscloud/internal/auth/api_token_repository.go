@@ -86,6 +86,14 @@ func (r *SQLAPITokenRepository) RevokeToken(ctx context.Context, id, userID stri
 	return nil
 }
 
+func (r *SQLAPITokenRepository) RevokeAllForUser(ctx context.Context, userID string) (int64, error) {
+	res, err := r.conn.ExecContext(ctx, `DELETE FROM api_tokens WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("revocando los tokens de API del usuario: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 const apiTokenSelectColumns = `SELECT id, user_id, token_hash, label, created_at, expires_at, last_used_at FROM api_tokens`
 
 func scanAPIToken(row rowScanner) (*APIToken, error) {

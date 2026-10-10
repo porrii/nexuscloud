@@ -136,6 +136,139 @@ func (r *SQLRepository) HasRole(ctx context.Context, userID, roleID string) (boo
 	return n > 0, nil
 }
 
+// SetRole deja a userID con UN solo rol, roleID (ADR-042 Decisión 8), en
+// una transacción. Si con el cambio el usuario deja de ser super_admin,
+// comprueba DENTRO de la misma transacción que queda al menos otro
+// super_admin activo (ErrLastSuperAdmin si no). En PostgreSQL/MySQL con
+// READ COMMITTED dos degradaciones simultáneas de los dos últimos
+// super_admin podrían cruzarse; es una operación manual y rara, y el
+// servicio vuelve a comprobarlo antes de llamar aquí.
+func (r *SQLRepository) SetRole(ctx context.Context, userID, roleID string) error {
+	tx, err := r.conn.BeginTx(ctx)
+	if err != nil {
+		return fmt.Errorf("iniciando transacción: %w", err)
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE id = ?`, userID).Scan(&exists); err != nil {
+		return fmt.Errorf("buscando usuario: %w", err)
+	}
+	if exists == 0 {
+		return ErrNotFound
+	}
+	if roleID != RoleSuperAdmin {
+		var wasSuper, others int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM user_roles WHERE user_id = ? AND role_id = ?`, userID, RoleSuperAdmin).Scan(&wasSuper); err != nil {
+			return fmt.Errorf("comprobando rol actual: %w", err)
+		}
+		if wasSuper > 0 {
+			if err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
+				WHERE ur.role_id = ? AND u.status = ? AND u.id <> ?`,
+				RoleSuperAdmin, string(StatusActive), userID).Scan(&others); err != nil {
+				return fmt.Errorf("contando super_admin: %w", err)
+			}
+			if others == 0 {
+				return ErrLastSuperAdmin
+			}
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("quitando roles: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)`, userID, roleID); err != nil {
+		return fmt.Errorf("asignando rol: %w", err)
+	}
+	return tx.Commit()
+}
+
+// CountActiveSuperAdmins cuenta los super_admin activos sin contar a
+// excludeUserID (vacío = contarlos todos).
+func (r *SQLRepository) CountActiveSuperAdmins(ctx context.Context, excludeUserID string) (int, error) {
+	var n int
+	err := r.conn.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM user_roles ur JOIN users u ON u.id = ur.user_id
+		WHERE ur.role_id = ? AND u.status = ? AND u.id <> ?`,
+		RoleSuperAdmin, string(StatusActive), excludeUserID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("contando super_admin: %w", err)
+	}
+	return n, nil
+}
+
+// ListGroupMembers devuelve los miembros del grupo ordenados por nombre de
+// usuario. ErrNotFound si el grupo no existe.
+func (r *SQLRepository) ListGroupMembers(ctx context.Context, groupID string) ([]*User, error) {
+	if _, err := r.GetGroupByID(ctx, groupID); err != nil {
+		return nil, err
+	}
+	rows, err := r.conn.QueryContext(ctx, `
+		SELECT u.id, u.username, u.display_name, u.email, u.password_hash, u.status, u.quota_bytes, u.totp_secret, u.created_at, u.updated_at, u.last_login_at
+		FROM users u JOIN user_groups ug ON ug.user_id = u.id
+		WHERE ug.group_id = ? ORDER BY u.username`, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("listando miembros del grupo: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*User
+	for rows.Next() {
+		u, err := scanUserRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// RemoveUserFromGroup saca a userID del grupo. ErrNotFound si no era
+// miembro (o el grupo o el usuario no existen).
+func (r *SQLRepository) RemoveUserFromGroup(ctx context.Context, userID, groupID string) error {
+	res, err := r.conn.ExecContext(ctx,
+		`DELETE FROM user_groups WHERE user_id = ? AND group_id = ?`, userID, groupID)
+	if err != nil {
+		return fmt.Errorf("quitando miembro del grupo: %w", err)
+	}
+	return rowsAffectedOrNotFound(res)
+}
+
+// RenameGroup cambia el nombre del grupo. ErrAlreadyExists si el nombre ya
+// lo usa otro grupo; ErrNotFound si el grupo no existe.
+func (r *SQLRepository) RenameGroup(ctx context.Context, groupID, name string) error {
+	res, err := r.conn.ExecContext(ctx,
+		`UPDATE `+groupsTable(r.conn.Driver)+` SET name = ? WHERE id = ?`, name, groupID)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyExists
+		}
+		return fmt.Errorf("renombrando grupo: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("comprobando filas afectadas: %w", err)
+	}
+	if n == 0 {
+		// MySQL cuenta filas CAMBIADAS: el mismo nombre da 0 sin que falte.
+		if _, err := r.GetGroupByID(ctx, groupID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// DeleteGroup borra el grupo. Las FK con ON DELETE CASCADE se llevan sus
+// membresías (user_groups) y las comparticiones dirigidas a él (shares).
+func (r *SQLRepository) DeleteGroup(ctx context.Context, groupID string) error {
+	res, err := r.conn.ExecContext(ctx, `DELETE FROM `+groupsTable(r.conn.Driver)+` WHERE id = ?`, groupID)
+	if err != nil {
+		return fmt.Errorf("borrando grupo: %w", err)
+	}
+	return rowsAffectedOrNotFound(res)
+}
+
 // groupsTable (ADR-031): "groups" a secas es palabra reservada en MySQL 8+
 // (introducida para la unidad de ventana ROWS|RANGE|GROUPS, SQL:2016) --
 // CREATE TABLE/INSERT/SELECT sin comillas contra ella falla con

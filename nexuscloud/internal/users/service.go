@@ -22,6 +22,8 @@ type Service struct {
 	repo Repository
 	// defaultQuotaBytes es la cuota global (0 = sin ella); ver WithDefaultQuota.
 	defaultQuotaBytes int64
+	// publications (ADR-042): ver WithPublicationCounter.
+	publications PublicationCounter
 }
 
 func NewService(repo Repository, opts ...ServiceOption) *Service {

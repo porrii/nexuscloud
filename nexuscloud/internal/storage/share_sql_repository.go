@@ -292,6 +292,15 @@ func (r *SQLShareRepository) IncrementDownloadCount(ctx context.Context, shareID
 	return n > 0, nil
 }
 
+func (r *SQLShareRepository) CountActiveSharesForGroup(ctx context.Context, groupID string) (int, error) {
+	var n int
+	if err := r.conn.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM shares WHERE target_group_id = ? AND revoked_at IS NULL`, groupID).Scan(&n); err != nil {
+		return 0, fmt.Errorf("contando shares del grupo: %w", err)
+	}
+	return n, nil
+}
+
 func (r *SQLShareRepository) RevokeShare(ctx context.Context, id string, revokedAt time.Time) error {
 	res, err := r.conn.ExecContext(ctx,
 		`UPDATE shares SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL`,

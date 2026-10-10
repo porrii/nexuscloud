@@ -23,7 +23,7 @@ func newUsersCmd() *cobra.Command {
 		Short: "Gestión de usuarios (§20-21)",
 	}
 	cmd.AddCommand(newUsersListCmd(), newUsersCreateCmd(), newUsersDisableCmd(), newUsersEnableCmd(),
-		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersQuotaCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(),
+		newUsersEditCmd(), newUsersDeleteCmd(), newUsersSetRoleCmd(), newUsersResetPasswordCmd(), newUsersGroupCmd(), newUsersQuotaCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(),
 		newUsersWebdavTokenCmd(), newUsersAPITokenCmd(), newUsersInvitationCmd())
 	return cmd
 }
@@ -133,7 +133,8 @@ func newUsersGroupCmd() *cobra.Command {
 		Use:   "group",
 		Short: "Gestión de grupos (§22)",
 	}
-	cmd.AddCommand(newUsersGroupCreateCmd(), newUsersGroupEditCmd(), newUsersGroupAddMemberCmd())
+	cmd.AddCommand(newUsersGroupCreateCmd(), newUsersGroupEditCmd(), newUsersGroupAddMemberCmd(),
+		newUsersGroupMembersCmd(), newUsersGroupRemoveMemberCmd(), newUsersGroupRenameCmd(), newUsersGroupDeleteCmd())
 	return cmd
 }
 
@@ -340,12 +341,12 @@ func newUsersTotpDisableCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
 			}
-			u.TOTPSecret = ""
-			u.UpdatedAt = time.Now().UTC()
-			if err := userRepo.UpdateUser(context.Background(), u); err != nil {
+			// Mismo servicio que DELETE /users/{id}/totp (ADR-042 Decisión
+			// 10): además de quitar el secreto, cierra sus sesiones.
+			if err := openAccountAdmin(cfg, sqlDB, userRepo).RemoveTOTP(context.Background(), "", u.ID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q.\n", username)
+			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q y sus sesiones cerradas.\n", username)
 			return nil
 		},
 	}
@@ -441,14 +442,15 @@ func newUsersWebauthnRevokeCmd() *cobra.Command {
 			}
 			// DeleteCredential exige coincidencia de userID (§198 IDOR):
 			// --username no es solo cosmético, evita revocar por error el
-			// passkey de otro usuario aunque se acierte el ID.
-			if err := openWebAuthnCredRepo(cfg, sqlDB).DeleteCredential(context.Background(), args[0], u.ID); err != nil {
+			// passkey de otro usuario aunque se acierte el ID. Mismo servicio
+			// que la API (ADR-042 Decisión 10): también cierra sus sesiones.
+			if err := openAccountAdmin(cfg, sqlDB, userRepo).RemovePasskey(context.Background(), "", u.ID, args[0]); err != nil {
 				if errors.Is(err, auth.ErrWebAuthnCredentialNotFound) {
 					return fmt.Errorf("passkey %q no encontrado para %q", args[0], username)
 				}
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q.\n", args[0], username)
+			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q y sus sesiones cerradas.\n", args[0], username)
 			return nil
 		},
 	}
@@ -631,6 +633,10 @@ func newUsersDisableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Nunca cero super_admin activos (ADR-042 Decisión 8).
+			if err := userSvc.EnsureNotLastSuperAdmin(context.Background(), u.ID); err != nil {
+				return err
+			}
 			if err := userSvc.Disable(context.Background(), u.ID); err != nil {
 				return err
 			}
@@ -762,6 +768,10 @@ func newUsersDeleteCmd() *cobra.Command {
 
 			u, err := userRepo.GetUserByUsername(context.Background(), args[0])
 			if err != nil {
+				return err
+			}
+			// Nunca cero super_admin activos (ADR-042 Decisión 8).
+			if err := users.NewService(userRepo).EnsureNotLastSuperAdmin(context.Background(), u.ID); err != nil {
 				return err
 			}
 			if err := userRepo.DeleteUser(context.Background(), u.ID); err != nil {

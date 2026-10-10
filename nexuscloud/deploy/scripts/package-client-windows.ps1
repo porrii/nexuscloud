@@ -60,7 +60,8 @@ if (-not (Test-Path (Join-Path $PackDir 'nexuscloud_client.exe'))) {
     throw "no encuentro nexuscloud_client.exe en $PackDir -- ¿falló el build?"
 }
 # Bibliotecas nativas de terceros que los paquetes DESCARGAN al compilar
-# (no se compilan aquí): libmpv de media_kit (vista previa de vídeo/audio)
+# (no se compilan aquí): libmpv (vista previa de vídeo/audio; desde ADR-046
+# la build reciente que fija client/windows/CMakeLists.txt, no la de media_kit)
 # y PDFium de pdfrx (PDF). En origen solo se verifican con MD5 o con nada
 # (revisión de seguridad 2026-10), así que se fijan por SHA-256: si el
 # artefacto cambia en silencio, la release se detiene. Son los hashes del
@@ -68,7 +69,7 @@ if (-not (Test-Path (Join-Path $PackDir 'nexuscloud_client.exe'))) {
 # media_kit_libs_video o pdfrx, recalcúlalos con Get-FileHash y revisa el
 # cambio antes de aceptarlo.
 $PinnedNativeLibs = @{
-    'libmpv-2.dll' = 'd5f0694b08c124e785d858d00082f3e3b158dd9138bfc48c0382bf1eb443a5fc'
+    'libmpv-2.dll' = '34780746a0273a4fcae42dfe262a28984a426a238939474afd3a1561b450bbef'
     'pdfium.dll'   = '019b6ee6e54e5508002e43c5199b00f6caca26d32dd23c7bb229ff6855cd5394'
 }
 foreach ($lib in $PinnedNativeLibs.Keys) {

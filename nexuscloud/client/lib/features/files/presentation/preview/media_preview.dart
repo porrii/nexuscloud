@@ -30,6 +30,30 @@ bool looksLikeTextNotMedia(List<int> prefix) {
   return true;
 }
 
+/// Endurecimiento de libmpv (ADR-046), verificado con la libmpv real contra
+/// mp4, mkv, webm, mp3 (se reproducen), avi (se rechaza) y listas HLS/M3U
+/// disfrazadas de .mp4. OJO, comprobado: `demuxer=lavf` y
+/// `access-references=no` rompen media_kit (abre cada medio a través de una
+/// lista temporal local) y no se pueden usar.
+const Map<String, String> kHardenedMpvOptions = {
+  // FFmpeg solo puede hablar HTTP/TCP (con el proxy de loopback) y solo
+  // abre estos demuxers: un formato raro, con más historial de fallos, ni
+  // se intenta. `mov` cubre mp4/m4a/3gp; `matroska` cubre webm.
+  'demuxer-lavf-o':
+      'protocol_whitelist=[http,tcp],'
+      'format_whitelist=[mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,mp3,ogg,'
+      'flac,wav,aac]',
+  'ytdl': 'no',
+  'load-unsafe-playlists': 'no',
+  'ordered-chapters': 'no',
+  'sub-auto': 'no',
+  'audio-file-auto': 'no',
+  'cover-art-auto': 'no',
+  // media_kit activa la caché en disco: contenido privado de otros usuarios
+  // no debe quedarse en ficheros temporales.
+  'cache-on-disk': 'no',
+};
+
 /// Vídeo o audio con media_kit (libmpv). Se reproduce por partes desde el
 /// servidor (`Range`, ADR-010): no hace falta descargarlo entero ni tiene
 /// límite de tamaño.
@@ -123,10 +147,14 @@ class _MediaPreviewState extends State<MediaPreview> {
       _proxy = proxy;
       final player = _player!;
       final platform = player.platform;
-      if (platform is NativePlayer) {
-        // media_kit activa la caché en disco: contenido privado de otros
-        // usuarios no debe quedarse en ficheros temporales.
-        await platform.setProperty('cache-on-disk', 'no');
+      // Fallar cerrado: sin poder aplicar el endurecimiento, no se
+      // reproduce. Si setProperty lanza, el catch de abajo muestra el error
+      // y tampoco se llega a abrir nada.
+      if (platform is! NativePlayer) {
+        throw StateError('reproductor sin endurecimiento disponible');
+      }
+      for (final option in kHardenedMpvOptions.entries) {
+        await platform.setProperty(option.key, option.value);
       }
       if (!mounted) return;
       await player.open(Media(proxy.uri.toString()));

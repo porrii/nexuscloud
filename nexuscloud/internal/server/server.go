@@ -18,6 +18,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/porrii/nexuscloud/internal/accountadmin"
 	apiv1 "github.com/porrii/nexuscloud/internal/api/v1"
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
@@ -164,6 +165,15 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		// dentro de FileService en cada operación que lo necesita.
 		storage.WithAnonymousUploads(storage.NewSQLAnonymousUploadRepository(conn), cfg.Sharing.AnonymousUploadEnabled),
 		storage.WithThumbnails(storage.NewSQLThumbnailJobRepository(conn), thumbnailCache, layout.Temp, thumbnailLimits, cfg.Thumbnails.Enabled))
+	// Pasar una cuenta a read_only necesita contar lo que tiene publicado
+	// (ADR-042 Decisión 8), y eso lo sabe fileSvc, que a su vez se construye
+	// con userSvc: la opción se aplica aquí, una vez existen los dos.
+	users.WithPublicationCounter(fileSvc)(userSvc)
+	// Administración de cuentas (ADR-042, B1). El repositorio de tokens
+	// WebDAV se usa aunque WebDAV esté desactivado: restablecer una
+	// contraseña tiene que revocar también esos tokens.
+	webdavTokenRepo := webdav.NewSQLTokenRepository(conn)
+	accountAdmin := accountadmin.New(userSvc, userRepo, hasher, sessionRepo, apiTokenRepo, webdavTokenRepo, webauthnCredRepo)
 	auditRecorder := audit.NewRecorder(auditRepo, logger)
 	backupRepo := backup.NewSQLRepository(conn)
 	// backupManager lo consume el bucle automático de más abajo (ADR-016);
@@ -210,7 +220,7 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 		webdavLimiter *security.RateLimiter
 	)
 	if cfg.WebDAV.Enabled {
-		webdavTokens = webdav.NewTokenService(webdav.NewSQLTokenRepository(conn), userRepo, logger)
+		webdavTokens = webdav.NewTokenService(webdavTokenRepo, userRepo, logger)
 		webdavHandler = webdav.NewHandler(fileSvc, webdavTokens, auditRecorder, webdav.Options{
 			Prefix:             cfg.WebDAV.Path,
 			ReadOnly:           cfg.WebDAV.ReadOnly,
@@ -221,19 +231,21 @@ func Build(cfg *config.Config, logger *slog.Logger) (*Server, error) {
 	}
 
 	h := &apiv1.Handlers{
-		Auth:           authenticator,
-		Hasher:         hasher,
-		Invitations:    invitationSvc,
-		InvitationRepo: invitationRepo,
-		SessionRepo:    sessionRepo,
-		APITokens:      apiTokenSvc,
-		UserSvc:        userSvc,
-		UserRepo:       userRepo,
-		Files:          fileSvc,
-		AuditLog:       auditRecorder,
-		AuditRepo:      auditRepo,
-		Logger:         logger,
-		TrustedProxies: cfg.Server.TrustedProxies,
+		Auth:            authenticator,
+		Hasher:          hasher,
+		Invitations:     invitationSvc,
+		InvitationRepo:  invitationRepo,
+		SessionRepo:     sessionRepo,
+		APITokens:       apiTokenSvc,
+		UserSvc:         userSvc,
+		UserRepo:        userRepo,
+		AccountAdmin:    accountAdmin,
+		WebDAVTokenRepo: webdavTokenRepo,
+		Files:           fileSvc,
+		AuditLog:        auditRecorder,
+		AuditRepo:       auditRepo,
+		Logger:          logger,
+		TrustedProxies:  cfg.Server.TrustedProxies,
 		// BackupsDir/BackupRepo/BackupReceiveToken (ADR-029): habilitan
 		// que ESTA instancia reciba backups de otro servidor NexusCloud.
 		// El token nunca vive en config.yaml (mismo criterio que

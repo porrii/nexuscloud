@@ -29,6 +29,7 @@ const (
 // que debe constar en ADR-044, no un arreglo para que pase el test.
 var readOnlySelfServiceRoutes = map[string]bool{
 	"POST /api/v1/auth/logout":                      true,
+	"POST /api/v1/auth/reauthenticate":              true, // ADR-042 Decisión 2 (nota en ADR-044 Decisión 1)
 	"DELETE /api/v1/auth/sessions/{id}":             true,
 	"POST /api/v1/auth/totp/enroll":                 true,
 	"POST /api/v1/auth/totp/verify":                 true,

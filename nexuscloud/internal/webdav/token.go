@@ -59,6 +59,9 @@ type TokenRepository interface {
 	// defensa en profundidad contra IDOR (§198), mismo criterio que
 	// SessionRepository.RevokeSession.
 	RevokeToken(ctx context.Context, id, userID string) error
+	// RevokeAllForUser borra todos los tokens de userID y devuelve cuántos
+	// había (ADR-042 Decisión 9: tras restablecer la contraseña).
+	RevokeAllForUser(ctx context.Context, userID string) (int64, error)
 }
 
 // TokenService orquesta el ciclo de vida de los tokens de acceso WebDAV.

@@ -52,6 +52,37 @@ nexuscloud --config config.yaml users edit maria --quota 100GB
 Al menos uno de los flags es obligatorio; el que omitas no se toca. La cuota
 está explicada [más abajo](#cuotas-de-almacenamiento).
 
+### Cambiar el rol
+
+```sh
+nexuscloud --config config.yaml users set-role maria read_only
+```
+
+Roles: `super_admin`, `administrator`, `user` y `read_only` (puede ver y
+descargar, pero no cambiar ni publicar nada). Cada cuenta tiene **un solo
+rol**: el nuevo sustituye al anterior. Hay dos límites:
+
+- nunca se queda la instancia sin ningún superadministrador activo (tampoco
+  al deshabilitar o borrar a uno);
+- no se pasa una cuenta a `read_only` mientras tenga enlaces públicos,
+  enlaces de subida anónima o comparticiones con permiso de subida
+  vigentes: el error dice cuántos hay de cada uno, para revocarlos antes.
+
+Desde la app, un `administrator` no puede tocar a un `super_admin`
+(editarlo, deshabilitarlo, borrarlo ni cambiar su rol), ni conceder ese
+rol: solo otro superadministrador puede.
+
+### Restablecer la contraseña de otra persona
+
+```sh
+nexuscloud --config config.yaml users reset-password maria
+```
+
+Sin `--password`, la pide sin eco. Además de cambiarla, **cierra todas sus
+sesiones y revoca todos sus tokens de API y WebDAV**: quien tuviera la
+contraseña antigua deja de entrar. La persona tendrá que volver a crear los
+tokens que use.
+
 ### Borrar un usuario para siempre
 
 ```sh
@@ -153,6 +184,17 @@ Usuario "maria" añadido al grupo "Familia"
 
 `add-member` es idempotente: repetir la misma llamada no da error ni
 duplica nada. Un nombre de grupo repetido sí da error (409/"ya existe").
+
+```sh
+nexuscloud --config config.yaml users group members Familia
+nexuscloud --config config.yaml users group remove-member maria Familia
+nexuscloud --config config.yaml users group rename Familia "Familia García"
+nexuscloud --config config.yaml users group delete "Familia García" --yes
+```
+
+Borrar un grupo se lleva sus membresías y **todas las comparticiones
+dirigidas a él**: quien las veía por pertenecer al grupo deja de verlas. Sin
+`--yes`, el comando dice cuántas comparticiones se perderían y no borra nada.
 
 Un grupo también puede llevar una cuota de almacenamiento para sus miembros
 (`--quota`, ver [Cuotas de almacenamiento](#cuotas-de-almacenamiento)).
@@ -288,7 +330,8 @@ nexuscloud --config config.yaml users totp disable --username maria
 Desactiva 2FA para ese usuario sin necesitar ningún código — la vía de
 recuperación si se perdió el teléfono con la app, o el secreto se copió
 mal. En un servidor headless de un solo administrador, esto es
-importante: no hay ninguna otra forma de deshacerlo.
+importante: no hay ninguna otra forma de deshacerlo. También cierra sus
+sesiones abiertas, porque se validaron con el segundo factor que se quita.
 
 ## Passkeys (WebAuthn)
 
@@ -327,8 +370,9 @@ nexuscloud --config config.yaml users webauthn revoke <id-del-passkey> --usernam
 navegador) junto con su nombre y fecha de último uso. `revoke` quita ese
 passkey concreto sin necesitar el dispositivo físico — la vía de
 recuperación si se perdió la llave/el teléfono, mismo criterio que
-`users totp disable`. Si el usuario se queda sin ningún passkey y no
-tiene TOTP activado, el login vuelve a pedir solo contraseña.
+`users totp disable`, y como él cierra sus sesiones abiertas. Si el usuario
+se queda sin ningún passkey y no tiene TOTP activado, el login vuelve a
+pedir solo contraseña.
 
 ## Acceso WebDAV (unidad de red)
 
@@ -404,6 +448,20 @@ El administrador puede gestionar la papelera y el historial de
 versiones de CUALQUIER usuario sin que ese usuario intervenga —
 ver [`comandos.md`](comandos.md#archivos-de-un-usuario-files)
 (`files trash list/restore`, `files versions list/download/restore`).
+
+## Administrar desde la app: confirmar la contraseña
+
+Desde el cliente de escritorio o la API, las acciones delicadas sobre otras
+cuentas piden **volver a escribir tu contraseña** (y el código de doble
+factor, si lo tienes): borrar un usuario, restablecer su contraseña, quitarle
+el doble factor o un passkey, darle o quitarle el rol de administrador y
+borrar un grupo. Después tienes 10 minutos para hacerlas sin que vuelva a
+preguntar. Así, alguien que robe una sesión abierta no puede hacerlas sin
+saber tu contraseña.
+
+Los tokens de API no pueden hacer estas acciones: para automatizarlas, usa
+la CLI de esta página. Por API, la confirmación es
+`POST /api/v1/auth/reauthenticate` con `{"password": "...", "totp_code": "..."}`.
 
 ## Registro de auditoría
 

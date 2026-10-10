@@ -131,9 +131,10 @@ class CreatedInvitation {
   final String token;
 }
 
-/// Evento de auditoría. El servidor lo serializa sin etiquetas JSON (los
-/// nombres de campo de Go: `ID`, `OccurredAt`...), por eso las claves en
-/// mayúscula.
+/// Evento de auditoría. Desde ADR-042 (Decisión 7) el servidor usa claves
+/// snake_case (`id`, `occurred_at`...); los servidores anteriores mandaban
+/// los nombres de campo de Go (`ID`, `OccurredAt`...), que se siguen
+/// aceptando como respaldo.
 class AuditEvent {
   const AuditEvent({
     required this.id,
@@ -147,20 +148,24 @@ class AuditEvent {
   });
 
   factory AuditEvent.fromJson(Map<String, dynamic> json) {
-    String? str(String key) {
-      final value = json[key] as String?;
+    // Clave nueva (snake_case) o, si no está, la antigua de Go.
+    Object? field(String key, String legacyKey) => json[key] ?? json[legacyKey];
+    String? str(String key, String legacyKey) {
+      final value = field(key, legacyKey) as String?;
       return value == null || value.isEmpty ? null : value;
     }
 
     return AuditEvent(
-      id: json['ID'] as String? ?? '',
-      occurredAt: _date(json['OccurredAt']) ?? DateTime.now(),
-      eventType: json['EventType'] as String? ?? '',
-      actorUserId: str('ActorUserID'),
-      targetType: str('TargetType'),
-      targetId: str('TargetID'),
-      ip: str('IP'),
-      metadata: (json['Metadata'] as Map?)?.cast<String, dynamic>() ?? const {},
+      id: str('id', 'ID') ?? '',
+      occurredAt: _date(field('occurred_at', 'OccurredAt')) ?? DateTime.now(),
+      eventType: str('event_type', 'EventType') ?? '',
+      actorUserId: str('actor_user_id', 'ActorUserID'),
+      targetType: str('target_type', 'TargetType'),
+      targetId: str('target_id', 'TargetID'),
+      ip: str('ip', 'IP'),
+      metadata:
+          (field('metadata', 'Metadata') as Map?)?.cast<String, dynamic>() ??
+          const {},
     );
   }
 

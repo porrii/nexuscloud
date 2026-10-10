@@ -58,8 +58,16 @@ nexuscloud users disable <usuario>
 nexuscloud users enable <usuario>
 nexuscloud users edit <usuario> [--display-name <n>] [--email <e>] [--quota <valor>]
 nexuscloud users delete <usuario> --confirm
+nexuscloud users set-role <usuario> <super_admin|administrator|user|read_only>
+nexuscloud users reset-password <usuario> [--password '...']
 nexuscloud users quota [<usuario>] [--detail]
 ```
+
+`set-role` deja a la cuenta con un único rol; nunca deja la instancia sin un
+superadministrador activo ni pasa a `read_only` una cuenta con enlaces o
+comparticiones con subida vigentes. `reset-password` cierra además todas sus
+sesiones y revoca sus tokens de API y WebDAV. Detalles en
+[`administracion.md`](administracion.md#cambiar-el-rol).
 
 `--quota` fija la cuota de almacenamiento propia del usuario: un tamaño
 (`100GB`, `1.5TB`, `500MB` o bytes a secas; binarios, 1 GB = 1 GiB),
@@ -99,7 +107,14 @@ vez en vez de una por una):
 nexuscloud users group create <nombre> [--quota <valor>]
 nexuscloud users group edit <grupo> --quota <valor>
 nexuscloud users group add-member <usuario> <grupo>
+nexuscloud users group members <grupo>
+nexuscloud users group remove-member <usuario> <grupo>
+nexuscloud users group rename <grupo> <nombre-nuevo>
+nexuscloud users group delete <grupo> --yes
 ```
+
+`group delete` se lleva las comparticiones dirigidas al grupo; sin `--yes`
+dice cuántas son y no borra nada.
 
 La cuota de un grupo es un límite **por miembro** (cada miembro puede usar hasta
 esa cantidad salvo que tenga cuota propia), con los mismos valores que la del

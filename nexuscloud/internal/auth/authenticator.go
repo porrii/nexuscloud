@@ -193,6 +193,43 @@ func (a *Authenticator) ValidateToken(ctx context.Context, token string) (*users
 	return u, sess, nil
 }
 
+// Reauthenticate es el modo «sudo» (§126, ADR-042 Decisión 2): la sesión
+// ya autenticada vuelve a presentar la contraseña -- y el código TOTP si la
+// cuenta lo tiene -- y queda marcada durante ReauthWindow. Mismos errores
+// genéricos que Login (ErrAuthenticationFailed / ErrTOTPRequired /
+// ErrTOTPInvalid). Las cuentas con passkeys se reautentican solo con la
+// contraseña: una ceremonia WebAuthn aquí queda fuera de B1 (el robo de
+// una cookie de sesión no da la contraseña, que es lo que se exige).
+func (a *Authenticator) Reauthenticate(ctx context.Context, sess *Session, password, totpCode string) error {
+	u, err := a.users.GetUserByID(ctx, sess.UserID)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			return ErrAuthenticationFailed
+		}
+		return err
+	}
+	if !u.IsActive() {
+		return ErrUserDisabled
+	}
+	if err := a.hasher.Verify(password, u.PasswordHash); err != nil {
+		return ErrAuthenticationFailed
+	}
+	if u.HasTOTP() {
+		if totpCode == "" {
+			return ErrTOTPRequired
+		}
+		if !ValidateTOTP(totpCode, u.TOTPSecret) {
+			return ErrTOTPInvalid
+		}
+	}
+	now := time.Now().UTC()
+	if err := a.sessions.MarkReauthenticated(ctx, sess.ID, u.ID, now); err != nil {
+		return err
+	}
+	sess.ReauthenticatedAt = &now
+	return nil
+}
+
 // Logout exige que sessionID pertenezca a userID (comprobado también en el
 // repositorio, defensa en profundidad contra IDOR, §198).
 func (a *Authenticator) Logout(ctx context.Context, sessionID, userID string) error {

@@ -67,17 +67,30 @@ const (
 	// recentActivityEventTypes (activity_handlers.go), mismo criterio que
 	// EventFavoriteAdded/Removed.
 	EventThumbnailGenerationFailed = "thumbnail_generation_failed"
+
+	// Administración de cuentas (ADR-042 Decisión 3, B1). Actor = el
+	// administrador; objetivo = la cuenta o el grupo afectado.
+	EventReauthenticated    = "reauthenticated"
+	EventRoleChanged        = "role_changed"
+	EventPasswordReset      = "password_reset"
+	EventTOTPRemoved        = "totp_removed"
+	EventSessionsRevoked    = "sessions_revoked"
+	EventGroupMemberRemoved = "group_member_removed"
+	EventGroupRenamed       = "group_renamed"
+	EventGroupDeleted       = "group_deleted"
 )
 
+// Event lleva etiquetas JSON snake_case porque GET /audit lo serializa tal
+// cual (ADR-042 Decisión 7); antes salían los nombres de campo de Go.
 type Event struct {
-	ID          string
-	OccurredAt  time.Time
-	ActorUserID string // vacío si el evento no tiene actor autenticado (p.ej. login_failed de usuario inexistente)
-	EventType   string
-	TargetType  string
-	TargetID    string
-	IP          string
-	Metadata    map[string]any
+	ID          string         `json:"id"`
+	OccurredAt  time.Time      `json:"occurred_at"`
+	ActorUserID string         `json:"actor_user_id,omitempty"` // vacío si el evento no tiene actor autenticado (p.ej. login_failed de usuario inexistente)
+	EventType   string         `json:"event_type"`
+	TargetType  string         `json:"target_type,omitempty"`
+	TargetID    string         `json:"target_id,omitempty"`
+	IP          string         `json:"ip,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
 }
 
 type Repository interface {

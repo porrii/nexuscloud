@@ -65,7 +65,9 @@ En **Mis archivos**:
   o es demasiado grande (texto de más de 5 MB, imágenes de más de 64 MB
   o de 40 megapíxeles, PDF de más de 100 MB), ofrece "Descargar". Un
   "vídeo" que por dentro es texto (una lista de reproducción disfrazada)
-  no se reproduce, por seguridad.
+  no se reproduce, por seguridad. Vídeo y audio se previsualizan en los
+  formatos habituales (MP4/MOV, MKV/WebM, MP3, OGG, FLAC, WAV, AAC); otros,
+  como AVI, hay que descargarlos (ver ADR-046).
 - "Nueva carpeta", y en cada elemento (al pasar el ratón, con clic
   derecho o con "Más acciones"): vista previa, descargar, compartir,
   renombrar, mover a otra carpeta, historial de versiones y mover a la

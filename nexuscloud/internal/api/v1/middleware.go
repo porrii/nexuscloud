@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/porrii/nexuscloud/internal/auth"
 )
@@ -102,6 +103,37 @@ func (h *Handlers) RequireWritable(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// RequireRecentReauth (ADR-042 Decisión 2) exige que la sesión haya pasado
+// POST /auth/reauthenticate hace menos de auth.ReauthWindow. Un token de API
+// no tiene sesión interactiva detrás, así que nunca lo pasa: esas acciones
+// son de sesión o de CLI local. Montarlo después de RequireAuth.
+func (h *Handlers) RequireRecentReauth(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !h.checkRecentReauth(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// checkRecentReauth es la misma comprobación para los handlers que solo la
+// exigen en algunos casos (p. ej. un cambio de rol hacia o desde
+// administrador). Si falla, ya ha escrito la respuesta.
+func (h *Handlers) checkRecentReauth(w http.ResponseWriter, r *http.Request) bool {
+	sess, ok := SessionFromContext(r.Context())
+	if !ok || sess == nil {
+		writeError(w, http.StatusForbidden, "reauth_unavailable",
+			"Esta acción exige una sesión iniciada con contraseña; no se puede hacer con un token de API.")
+		return false
+	}
+	if !sess.RecentlyReauthenticated(time.Now().UTC()) {
+		writeError(w, http.StatusForbidden, "reauth_required",
+			"Por seguridad, vuelve a introducir tu contraseña para hacer esto.")
+		return false
+	}
+	return true
 }
 
 // RequireAdmin debe montarse después de RequireAuth. Comprueba el rol en
