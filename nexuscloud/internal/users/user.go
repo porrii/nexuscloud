@@ -4,7 +4,10 @@
 // ciclos de importación.
 package users
 
-import "time"
+import (
+	"errors"
+	"time"
+)
 
 type Status string
 
@@ -18,8 +21,26 @@ const (
 	RoleSuperAdmin    = "super_admin"
 	RoleAdministrator = "administrator"
 	RoleUser          = "user"
-	RoleReadOnly      = "read_only"
+	// RoleReadOnly puede leer su árbol y lo que le comparten, pero no
+	// cambiar datos ni publicarlos (ADR-044). Si se combina con otro rol,
+	// gana este: la restricción prevalece.
+	RoleReadOnly = "read_only"
 )
+
+// ErrInvalidRole se devuelve cuando un rol no es uno de los predefinidos.
+var ErrInvalidRole = errors.New("users: rol desconocido (super_admin, administrator, user o read_only)")
+
+// ValidateRole acepta los cuatro roles predefinidos y el vacío (= RoleUser
+// por defecto). Se comprueba antes de crear nada (ADR-044 Decisión 6): con
+// un rol desconocido, CreateUser llegaba a insertar el usuario y luego la FK
+// de user_roles rechazaba el rol, dejando una cuenta sin ningún rol.
+func ValidateRole(role string) error {
+	switch role {
+	case "", RoleSuperAdmin, RoleAdministrator, RoleUser, RoleReadOnly:
+		return nil
+	}
+	return ErrInvalidRole
+}
 
 type User struct {
 	ID           string

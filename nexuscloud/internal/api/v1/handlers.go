@@ -3,6 +3,7 @@ package apiv1
 import (
 	"log/slog"
 
+	"github.com/porrii/nexuscloud/internal/accountadmin"
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/backup"
@@ -20,13 +21,26 @@ type Handlers struct {
 	Invitations    *auth.InvitationService
 	InvitationRepo auth.InvitationRepository
 	SessionRepo    auth.SessionRepository
-	UserSvc        *users.Service
-	UserRepo       users.Repository
-	Files          *storage.FileService
-	AuditLog       *audit.Recorder
-	AuditRepo      audit.Repository
-	Logger         *slog.Logger
-	TrustedProxies []string
+	// APITokens (§78, ADR-037): tokens de acceso a la API REST completa, de
+	// alcance todo-o-nada. A diferencia de WebDAVTokens, no depende de
+	// ninguna opción de config -- siempre está disponible, como las
+	// sesiones.
+	APITokens *auth.APITokenService
+	UserSvc   *users.Service
+	UserRepo  users.Repository
+	// AccountAdmin (ADR-042, B1): restablecer contraseña, quitar 2FA o
+	// passkeys y revocar el acceso de OTRA cuenta. Siempre disponible para
+	// administradores, como el resto de B1.
+	AccountAdmin *accountadmin.Service
+	// WebDAVTokenRepo existe siempre, aunque WebDAV esté desactivado: un
+	// administrador tiene que poder ver y revocar tokens que volverían a
+	// valer si se reactivara (ADR-042 Decisión 12).
+	WebDAVTokenRepo webdav.TokenRepository
+	Files           *storage.FileService
+	AuditLog        *audit.Recorder
+	AuditRepo       audit.Repository
+	Logger          *slog.Logger
+	TrustedProxies  []string
 	// BackupsDir/BackupRepo/BackupReceiveToken (ADR-029): solo se usan si
 	// esta instancia actúa de RECEPTORA de backups de otro servidor
 	// NexusCloud -- ver backup_remote_handlers.go. Con BackupReceiveToken
@@ -54,4 +68,8 @@ type Handlers struct {
 	// real a configurar en el cliente en vez de suponer "/webdav". Solo
 	// tiene efecto si WebDAVTokens != nil.
 	WebDAVPath string
+	// SearchEnabled (§33): solo se usa si search.enabled=true en
+	// config.yaml. Con false (nunca por defecto), NewRouter ni siquiera
+	// registra las rutas de búsqueda, mismo criterio que ClientUpdatesProxy.
+	SearchEnabled bool
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/porrii/nexuscloud/internal/db"
@@ -187,6 +188,68 @@ func (r *SQLFileRepository) ListAllTrashedFiles(ctx context.Context) ([]*FileMet
 		fileSelectColumns+` WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("listando toda la papelera para purga por tamaño: %w", err)
+	}
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
+// searchFileConditions añade a las condiciones comunes (searchConditions,
+// en search.go) las que solo tienen sentido para un archivo -- una carpeta
+// no tiene mime_type/extensión/tamaño propios.
+func (r *SQLFileRepository) searchFileConditions(f SearchFilters) ([]string, []any) {
+	conds, args := searchConditions(f)
+	if f.MimeType != "" {
+		conds = append(conds, "mime_type LIKE ?")
+		args = append(args, escapeLikePattern(f.MimeType)+"%")
+	}
+	if f.Ext != "" {
+		conds = append(conds, `LOWER(name) LIKE ? ESCAPE '\'`)
+		args = append(args, "%."+escapeLikePattern(strings.ToLower(f.Ext)))
+	}
+	if f.SizeMin != nil {
+		conds = append(conds, "size_bytes >= ?")
+		args = append(args, *f.SizeMin)
+	}
+	if f.SizeMax != nil {
+		conds = append(conds, "size_bytes <= ?")
+		args = append(args, *f.SizeMax)
+	}
+	return conds, args
+}
+
+func (r *SQLFileRepository) SearchFiles(ctx context.Context, ownerID string, f SearchFilters) ([]*FileMeta, error) {
+	conds, args := r.searchFileConditions(f)
+	where := "owner_id = ? AND deleted_at IS NULL"
+	allArgs := append([]any{ownerID}, args...)
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	rows, err := r.conn.QueryContext(ctx, fileSelectColumns+` WHERE `+where+` ORDER BY name`, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("buscando archivos: %w", err)
+	}
+	defer rows.Close()
+	return scanFileRows(rows)
+}
+
+// SearchFilesAllOwners es la variante admin (§33 "Usuario" como criterio):
+// ownerID vacío busca en TODOS los propietarios, uno concreto acota a ese
+// usuario -- igual criterio de autorización que ListAuditEvents (RequireAdmin
+// en el router, nunca comprobado aquí).
+func (r *SQLFileRepository) SearchFilesAllOwners(ctx context.Context, f SearchFilters, ownerID string) ([]*FileMeta, error) {
+	conds, args := r.searchFileConditions(f)
+	where := "deleted_at IS NULL"
+	allArgs := args
+	if ownerID != "" {
+		where = "owner_id = ? AND " + where
+		allArgs = append([]any{ownerID}, args...)
+	}
+	if len(conds) > 0 {
+		where += " AND " + strings.Join(conds, " AND ")
+	}
+	rows, err := r.conn.QueryContext(ctx, fileSelectColumns+` WHERE `+where+` ORDER BY owner_id, name`, allArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("buscando archivos (admin): %w", err)
 	}
 	defer rows.Close()
 	return scanFileRows(rows)

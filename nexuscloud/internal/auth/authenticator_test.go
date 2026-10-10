@@ -19,6 +19,7 @@ type testEnv struct {
 	invitations      InvitationRepository
 	webauthnCreds    WebAuthnCredentialRepository
 	webauthnCeremony WebAuthnCeremonyRepository
+	apiTokens        APITokenRepository
 	hasher           *Hasher
 }
 
@@ -44,12 +45,17 @@ func newTestEnv(t *testing.T) *testEnv {
 		invitations:      NewSQLInvitationRepository(conn),
 		webauthnCreds:    NewSQLWebAuthnCredentialRepository(conn),
 		webauthnCeremony: NewSQLWebAuthnCeremonyRepository(conn),
+		apiTokens:        NewSQLAPITokenRepository(conn),
 		hasher:           NewHasher(config.Argon2Config{MemoryKiB: 8 * 1024, Iterations: 1, Parallelism: 1}),
 	}
 }
 
 func (e *testEnv) authenticator() *Authenticator {
 	return NewAuthenticator(e.users, e.sessions, e.webauthnCreds, e.hasher, 24, nil)
+}
+
+func (e *testEnv) apiTokenService() *APITokenService {
+	return NewAPITokenService(e.apiTokens, e.users, nil)
 }
 
 func (e *testEnv) webAuthnService(t *testing.T) *WebAuthnService {
@@ -286,5 +292,22 @@ func TestInvitationRevokedCannotBeRedeemed(t *testing.T) {
 	_, err = invSvc.Redeem(ctx, RedeemInvitationInput{Token: token, Username: "tarde", Password: "contraseña"})
 	if !errors.Is(err, ErrInvitationRevoked) {
 		t.Errorf("err = %v, esperado ErrInvitationRevoked", err)
+	}
+}
+
+// TestInvitationCreateRejectsUnknownRole (ADR-044 Decisión 6): el rol se
+// valida antes de insertar, con users.ErrInvalidRole y no con un error de
+// FK de la base de datos.
+func TestInvitationCreateRejectsUnknownRole(t *testing.T) {
+	ctx := context.Background()
+	env := newTestEnv(t)
+	admin := env.createUser(t, ctx, "admin", "contraseña-admin")
+	invSvc := NewInvitationService(env.invitations, users.NewService(env.users), env.hasher)
+
+	if _, _, err := invSvc.Create(ctx, CreateInvitationInput{CreatedBy: admin.ID, RoleID: "root"}); !errors.Is(err, users.ErrInvalidRole) {
+		t.Errorf("Create con rol desconocido = %v, esperado users.ErrInvalidRole", err)
+	}
+	if _, _, err := invSvc.Create(ctx, CreateInvitationInput{CreatedBy: admin.ID, RoleID: users.RoleReadOnly}); err != nil {
+		t.Errorf("Create con rol read_only = %v, esperado éxito", err)
 	}
 }

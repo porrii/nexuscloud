@@ -20,10 +20,18 @@ var ErrInvalidUsername = errors.New("users: nombre de usuario inválido (minúsc
 // paquete y no al revés.
 type Service struct {
 	repo Repository
+	// defaultQuotaBytes es la cuota global (0 = sin ella); ver WithDefaultQuota.
+	defaultQuotaBytes int64
+	// publications (ADR-042): ver WithPublicationCounter.
+	publications PublicationCounter
 }
 
-func NewService(repo Repository) *Service {
-	return &Service{repo: repo}
+func NewService(repo Repository, opts ...ServiceOption) *Service {
+	s := &Service{repo: repo}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type CreateUserInput struct {
@@ -42,6 +50,12 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 	if !usernamePattern.MatchString(in.Username) {
 		return nil, ErrInvalidUsername
 	}
+	if err := ValidateQuota(in.QuotaBytes); err != nil {
+		return nil, err
+	}
+	if err := ValidateRole(in.Role); err != nil {
+		return nil, err
+	}
 	if in.DisplayName == "" {
 		in.DisplayName = in.Username
 	}
@@ -58,7 +72,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (*User, er
 		Email:        in.Email,
 		PasswordHash: in.PasswordHash,
 		Status:       StatusActive,
-		QuotaBytes:   in.QuotaBytes,
+		QuotaBytes:   copyQuota(in.QuotaBytes),
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -83,6 +97,21 @@ func (s *Service) Disable(ctx context.Context, userID string) error {
 	return s.repo.UpdateUser(ctx, u)
 }
 
+// IsActive indica si un usuario existe y está activo (ADR-043). Un usuario
+// inexistente da (false, nil): para quien pregunta (p. ej. la resolución de
+// un enlace público) es lo mismo que uno desactivado. Cumple
+// storage.OwnerStatusChecker sin que storage importe este paquete.
+func (s *Service) IsActive(ctx context.Context, userID string) (bool, error) {
+	u, err := s.repo.GetUserByID(ctx, userID)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return u.IsActive(), nil
+}
+
 // IsFirstUser indica si todavía no existe ningún usuario, para decidir si
 // el siguiente `admin create-user` debe recibir el rol super_admin (§140).
 func (s *Service) IsFirstUser(ctx context.Context) (bool, error) {
@@ -91,6 +120,12 @@ func (s *Service) IsFirstUser(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return n == 0, nil
+}
+
+// IsReadOnly indica si el usuario tiene el rol read_only (ADR-044). Basta
+// con tenerlo: si lo combina con otro rol, gana la restricción.
+func (s *Service) IsReadOnly(ctx context.Context, userID string) (bool, error) {
+	return s.repo.HasRole(ctx, userID, RoleReadOnly)
 }
 
 // IsAdmin comprueba si un usuario tiene rol super_admin o administrator.

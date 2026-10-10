@@ -20,6 +20,26 @@ services:
     volumes:
       - nexuscloud-data:/data
     # No usar privileged ni montar "/" del host (§104).
+    security_opt:
+      - no-new-privileges:true
+    # Contención de recursos por cgroup (§34, ADR-041 Decisión 0/6): cubre
+    # el proceso del servidor MÁS cada ffmpeg/pdftoppm que lance al generar
+    # una miniatura (thumbnails.enabled=true) -- sin esto, generar muchas
+    # miniaturas de vídeo a la vez podría agotar la memoria del host
+    # entero, no solo la de este contenedor. Ajusta a tu hardware y carga
+    # real; 2 GiB/2 CPUs es un punto de partida razonable para uso
+    # personal/familiar con thumbnails.maxConcurrentGenerations en su valor
+    # por defecto (4).
+    mem_limit: 2g
+    cpus: 2
+    # Hardening adicional opcional: NexusCloud solo escribe bajo
+    # storage.dataDir (el volumen de arriba), así que en principio funciona
+    # con el resto de la imagen en solo lectura. Coméntalo si algo
+    # necesitara escribir en /tmp por una ruta que no sea la de la propia
+    # aplicación:
+    # read_only: true
+    # tmpfs:
+    #   - /tmp
 
   # Opcional (§8): PostgreSQL para instalaciones mayores que un uso
   # personal/familiar. SQLite (por defecto, arriba) ya cubre ese caso.

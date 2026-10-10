@@ -1,44 +1,33 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as p;
 
 import '../../../../core/di/service_locator.dart';
-import '../../../../core/storage/window_preferences_store.dart';
+import '../../../../core/format/formatters.dart';
+import '../../../../core/paths/remote_path.dart';
+import '../../../../core/theme/app_palette.dart';
 import '../../../../core/widgets/confirm_dialog.dart';
-import '../../../../core/window/app_tray_service.dart';
-import '../../../../core/window/launch_at_startup_service.dart';
-import '../../domain/entities/auto_sync_settings.dart';
+import '../../../../core/widgets/page_scaffold.dart';
+import '../../../../core/widgets/view_states.dart';
 import '../../domain/entities/pair_sync_outcome.dart';
 import '../../domain/entities/pending_delete.dart';
 import '../../domain/entities/sync_direction.dart';
 import '../../domain/entities/sync_pair.dart';
 import '../../domain/entities/sync_pair_config.dart';
 import '../../domain/repositories/sync_config_repository.dart';
-import '../../domain/services/auto_sync_scheduler.dart';
 import '../../domain/services/local_change_watcher_service.dart';
 import '../../domain/services/multi_pair_sync_coordinator.dart';
-import '../../domain/services/sync_engine.dart';
+import '../sync_activity.dart';
 import '../widgets/pair_edit_dialog.dart';
 import '../widgets/pair_sync_result_card.dart';
 
-/// Intervalos de sincronización automática ofrecidos en el desplegable.
-/// 5 minutos es el mínimo -- por debajo de eso, el coste de recorrer el
-/// árbol remoto entero en cada tick (ADR-011, sin estado incremental) deja
-/// de ser razonable para carpetas con muchos archivos.
-const _autoSyncIntervalOptions = [5, 15, 30, 60];
-
-/// Opciones ofrecidas para el umbral de la guarda anti-"borrado masivo"
-/// (#23, ADR-013) -- mismo criterio que [_autoSyncIntervalOptions]: un
-/// puñado de valores fijos en vez de un campo de texto libre, para no tener
-/// que validar un número arbitrario aquí.
-const _maxAutoDeleteBatchOptions = [5, 10, 20, 50, 100];
-
-/// Configura la lista de pares carpeta-remota/carpeta-local a sincronizar
-/// (slice A ADR-011 -- un único par; slice 15 ADR-014 -- varios, cada uno
-/// con su propio sentido), dispara sincronizaciones manuales (todos los
-/// pares o solo uno), y desde el slice 8 permite activar una sincronización
-/// automática global que cubre todos los pares mientras la app esté abierta.
+/// Carpetas vinculadas (pares carpeta-remota/carpeta-local, ADR-011 y
+/// ADR-014): cada una en su tarjeta con su sentido, su último resultado y
+/// sus acciones; más "Sincronizar todo". Los ajustes globales (auto-sync,
+/// vigilancia, bandeja, arranque con Windows) viven ahora en Ajustes.
+///
+/// El estado de las sincronizaciones (en curso, mensajes, últimos
+/// resultados) vive en [SyncActivity], compartido con el indicador de la
+/// barra lateral y vivo aunque se salga de esta página.
 class SyncSettingsPage extends StatefulWidget {
   const SyncSettingsPage({super.key});
 
@@ -48,195 +37,40 @@ class SyncSettingsPage extends StatefulWidget {
 
 class _SyncSettingsPageState extends State<SyncSettingsPage> {
   final SyncConfigRepository _configRepository = sl<SyncConfigRepository>();
-  final SyncEngine _syncEngine = sl<SyncEngine>();
   final MultiPairSyncCoordinator _coordinator = sl<MultiPairSyncCoordinator>();
-  final AutoSyncScheduler _autoSyncScheduler = sl<AutoSyncScheduler>();
-  final LocalChangeWatcherService _watcherService = sl<LocalChangeWatcherService>();
-  final AppTrayService _trayService = sl<AppTrayService>();
-  final LaunchAtStartupService _launchAtStartupService =
-      sl<LaunchAtStartupService>();
-  // Directo a `WindowPreferencesStore`, no a través de `AppTrayService` ni
-  // `LaunchAtStartupService`: "iniciar minimizado" no es dueño de ninguno
-  // de los dos (ver el plan del slice 10 sobre por qué la coordinación
-  // entre ambos vive aquí, en la página, y no dentro de un servicio).
-  final WindowPreferencesStore _windowPreferencesStore =
-      sl<WindowPreferencesStore>();
+  final LocalChangeWatcherService _watcherService =
+      sl<LocalChangeWatcherService>();
+  final SyncActivity _activity = sl<SyncActivity>();
 
   List<SyncPairConfig> _pairs = [];
-
-  bool _syncing = false;
-  String? _statusMessage;
-  List<PairSyncOutcome>? _lastOutcomes;
-
-  bool _autoSyncEnabled = false;
-  int _autoSyncIntervalMinutes = _autoSyncIntervalOptions[1];
-  ({DateTime at, String summary})? _lastAutoOutcome;
-
-  int _maxAutoDeleteBatch = 10;
-
-  bool _watchLocalChangesEnabled = false;
-
-  /// Instantánea de `AppTrayService.minimizeToTrayOnClose` (slice 9) --
-  /// mismo criterio que `_engineBusy`: el servicio ya lo cachea tras su
-  /// propio `init()`, así que leerlo aquí no necesita otro `await`.
-  bool _minimizeToTrayOnClose = false;
-
-  /// A diferencia de `_minimizeToTrayOnClose`, no hay valor cacheado
-  /// síncrono disponible -- `launchAtStartup.isEnabled()` relee el
-  /// registro de Windows de verdad en cada llamada (es la fuente de
-  /// verdad, no `shared_preferences`), así que empieza en `false` hasta
-  /// que `_loadLaunchAtStartupSettings` resuelve.
-  bool _launchAtStartupEnabled = false;
-  bool _startMinimized = false;
-  String? _launchAtStartupError;
-
-  /// Reflejo de `SyncEngine.onBusyChanged` -- true mientras CUALQUIER par
-  /// tenga una sincronización en curso (slice 15: el motor la mantiene por
-  /// par, ver ADR-014), la haya arrancado un botón de esta página o un tick
-  /// de `_autoSyncScheduler`. Las acciones de esta página se deshabilitan
-  /// también con esto para que un clic nunca pueda unirse en silencio a un
-  /// tick automático ya en curso para un par distinto al que se ve en
-  /// pantalla.
-  bool _engineBusy = false;
-
-  late final StreamSubscription<List<PairSyncOutcome>> _autoResultSubscription;
-  late final StreamSubscription<String> _autoStatusSubscription;
-  late final StreamSubscription<bool> _busySubscription;
+  bool _loaded = false;
 
   @override
   void initState() {
     super.initState();
-    // Las tres suscripciones se crean aquí, antes de cualquier `await`,
-    // para no perder ningún evento emitido justo tras montar la página --
-    // los `StreamController.broadcast()` de por debajo no repiten nada a
-    // quien se suscribe tarde.
-    _autoResultSubscription = _autoSyncScheduler.onResult.listen(
-      _handleAutoResult,
-    );
-    _autoStatusSubscription = _autoSyncScheduler.onStatus.listen(
-      _handleAutoStatus,
-    );
-    _busySubscription = _syncEngine.onBusyChanged.listen(_handleBusyChanged);
-    // Instantánea del estado actual -- el stream de arriba solo avisa de
-    // cambios futuros, no repite el último valor a quien llega tarde.
-    _engineBusy = _syncEngine.isRunning;
-    _minimizeToTrayOnClose = _trayService.minimizeToTrayOnClose;
-
     _loadPairs();
-    _loadAutoSyncSettings();
-    _loadMaxAutoDeleteBatch();
-    _loadWatchLocalChangesSetting();
-    _loadLaunchAtStartupSettings();
   }
 
   Future<void> _loadPairs() async {
     final pairs = await _configRepository.readPairs();
     if (!mounted) return;
-    setState(() => _pairs = pairs);
-  }
-
-  @override
-  void dispose() {
-    _autoResultSubscription.cancel();
-    _autoStatusSubscription.cancel();
-    _busySubscription.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadAutoSyncSettings() async {
-    final settings = await _configRepository.readAutoSync();
-    final outcome = await _configRepository.readLastAutoSyncOutcome();
-    if (!mounted) return;
     setState(() {
-      _autoSyncEnabled = settings.enabled;
-      _autoSyncIntervalMinutes = settings.intervalMinutes;
-      _lastAutoOutcome = outcome;
+      _pairs = pairs;
+      _loaded = true;
     });
   }
 
-  Future<void> _loadMaxAutoDeleteBatch() async {
-    final value = await _configRepository.readMaxAutoDeleteBatch();
-    if (!mounted) return;
-    setState(() => _maxAutoDeleteBatch = value);
-  }
-
-  Future<void> _loadWatchLocalChangesSetting() async {
-    final enabled = await _configRepository.readWatchLocalChanges();
-    if (!mounted) return;
-    setState(() => _watchLocalChangesEnabled = enabled);
-  }
-
-  /// El invariante de "iniciar minimizado no puede quedar huérfano" se
-  /// cierra en DOS sitios (ver el plan del slice 10): aquí, al cargar la
-  /// página, y en `_setLaunchAtStartupEnabled` al desactivar el interruptor
-  /// a mano. Hace falta aquí también porque `isEnabled()` puede volverse
-  /// `false` sin que esta app se entere -- p.ej. si el usuario lo
-  /// desactiva desde el Administrador de tareas → "Aplicaciones de
-  /// inicio", que no pasa por ningún código de esta app en absoluto.
-  Future<void> _loadLaunchAtStartupSettings() async {
-    final enabled = await _launchAtStartupService.isEnabled();
-    final startMinimized = await _windowPreferencesStore.readStartMinimized();
-    if (!enabled && startMinimized) {
-      await _windowPreferencesStore.saveStartMinimized(false);
-    }
-    if (!mounted) return;
-    setState(() {
-      _launchAtStartupEnabled = enabled;
-      _startMinimized = enabled && startMinimized;
-    });
-  }
-
-  void _handleAutoResult(List<PairSyncOutcome> outcomes) {
-    if (!mounted) return;
-    // Mismo campo que ya pinta el bloque "Resultado" de más abajo -- desde
-    // el punto de vista del usuario es el mismo concepto, disparado a mano
-    // o solo, no hace falta una sección aparte. A diferencia de un sync
-    // manual, un tick automático NUNCA abre el diálogo de confirmación de
-    // borrados por su cuenta -- ver `_runSync`.
-    setState(() => _lastOutcomes = _mergeOutcomes(outcomes));
-  }
-
-  void _handleAutoStatus(String status) {
-    if (!mounted || _syncing) return;
-    setState(() => _statusMessage = status);
-  }
-
-  void _handleBusyChanged(bool busy) {
-    if (!mounted) return;
-    setState(() {
-      _engineBusy = busy;
-      if (!busy && !_syncing) {
-        // Un tick automático (o, en el límite, un sync manual disparado
-        // desde otra ventana) acaba de terminar -- limpia el mensaje de
-        // progreso para no dejarlo colgado en pantalla.
-        _statusMessage = null;
-      }
-    });
-  }
-
-  /// Combina [newOutcomes] con lo que ya hubiera en [_lastOutcomes] --
-  /// sincronizar solo UN par (o un tick automático que, en el límite,
-  /// cubriera menos pares que los configurados) no debe hacer desaparecer
-  /// el último resultado de los demás. El orden final sigue el de [_pairs]
-  /// actual; un par que ya no está en la lista se descarta.
-  List<PairSyncOutcome> _mergeOutcomes(List<PairSyncOutcome> newOutcomes) {
-    final byKey = {
-      for (final o in _lastOutcomes ?? const <PairSyncOutcome>[])
-        o.pair.stableKey: o,
-      for (final o in newOutcomes) o.pair.stableKey: o,
-    };
-    return [
-      for (final cfg in _pairs)
-        if (byKey.containsKey(cfg.pair.stableKey)) byKey[cfg.pair.stableKey]!,
-    ];
+  Future<void> _savePairs() async {
+    await _configRepository.savePairs(_pairs);
+    await _watcherService.updatePairs(_pairs);
+    await _activity.refreshConfig();
   }
 
   Future<void> _addPair() async {
     final config = await showPairEditDialog(context, existingPairs: _pairs);
     if (config == null || !mounted) return;
     setState(() => _pairs = [..._pairs, config]);
-    await _configRepository.savePairs(_pairs);
-    await _watcherService.updatePairs(_pairs);
+    await _savePairs();
   }
 
   Future<void> _editPair(int index) async {
@@ -251,60 +85,57 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     setState(() {
       _pairs = [..._pairs]..[index] = config;
     });
-    await _configRepository.savePairs(_pairs);
-    await _watcherService.updatePairs(_pairs);
+    await _savePairs();
   }
 
   Future<void> _removePair(int index) async {
-    setState(() {
-      _pairs = [..._pairs]..removeAt(index);
-      _lastOutcomes = _lastOutcomes?.where(
-        (o) => _pairs.any((c) => c.pair.stableKey == o.pair.stableKey),
-      ).toList();
-    });
-    await _configRepository.savePairs(_pairs);
-    await _watcherService.updatePairs(_pairs);
+    final removed = _pairs[index];
+    final confirmed = await showConfirmDialog(
+      context,
+      title: 'Desvincular carpeta',
+      message:
+          '${removed.pair.remotePath} → ${removed.pair.localPath}\n\n'
+          'Se dejará de sincronizar. No se borra ningún archivo, ni en el '
+          'servidor ni en este equipo.',
+      confirmLabel: 'Desvincular',
+    );
+    if (!confirmed || !mounted) return;
+    setState(() => _pairs = [..._pairs]..removeAt(index));
+    _activity.forgetPair(removed.pair.stableKey);
+    await _savePairs();
   }
 
   Future<void> _syncAll() => _runSync(_pairs);
 
   Future<void> _syncOnePair(SyncPairConfig config) => _runSync([config]);
 
-  /// Compartido entre "Sincronizar todo ahora", el botón de sincronizar un
-  /// único par, y la re-sincronización que dispara
-  /// `_confirmPendingDeletesFor` tras confirmar un lote de borrados de un
-  /// par concreto (ADR-013/ADR-014) -- mismo flujo en los tres casos, solo
-  /// cambia la lista de pares a procesar.
+  /// Compartido entre "Sincronizar todo", el botón de sincronizar un único
+  /// par, y la re-sincronización que dispara `_confirmPendingDeletesFor`
+  /// tras confirmar un lote de borrados de un par concreto (ADR-013/ADR-014)
+  /// -- mismo flujo en los tres casos, solo cambia la lista de pares.
   Future<void> _runSync(
     List<SyncPairConfig> toSync, {
     Map<String, Set<String>>? confirmedDeletePathsByPair,
   }) async {
     if (toSync.isEmpty) return;
-    setState(() {
-      _syncing = true;
-      _statusMessage = 'Preparando...';
-    });
+    _activity.beginManual();
 
     final outcomes = await _coordinator.syncAllNow(
       toSync,
       confirmedDeletePathsByPair: confirmedDeletePathsByPair,
-      onStatus: (pair, status) {
-        if (!mounted) return;
-        setState(() => _statusMessage = '${p.basename(pair.localPath)}: $status');
-      },
+      onStatus: (pair, status) => _activity.reportManualStatus(
+        '${p.basename(pair.localPath)}: $status',
+      ),
     );
+    _activity
+      ..recordOutcomes(outcomes)
+      ..endManual();
     if (!mounted) return;
-    setState(() {
-      _syncing = false;
-      _statusMessage = null;
-      _lastOutcomes = _mergeOutcomes(outcomes);
-    });
 
-    // Solo un sync disparado desde aquí (nunca un tick automático, que no
-    // pasa por `_runSync`) abre el diálogo de confirmación, uno por par si
-    // hiciera falta -- ver `PairSyncResultCard`/el botón "Revisar y
-    // confirmar borrados" para el caso de un lote que llegó de un tick con
-    // la página ya abierta.
+    // Solo un sync disparado desde aquí (nunca un tick automático) abre el
+    // diálogo de confirmación, uno por par si hiciera falta -- ver el botón
+    // "Revisar y confirmar borrados" de cada tarjeta para el caso de un lote
+    // que llegó de un tick con la página ya abierta.
     for (final outcome in outcomes) {
       final pending = outcome.result?.pendingDeletes;
       if (pending != null && pending.isNotEmpty) {
@@ -325,18 +156,19 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
     if (!mounted || pending.isEmpty) return;
 
     final details = pending
-        .map((p) {
-          final hint = p.direction == DeleteDirection.toRemote
+        .map((d) {
+          final hint = d.direction == DeleteDirection.toRemote
               ? 'se borraría en el servidor (papelera)'
               : 'se movería a la papelera local';
-          return '${p.displayPath} -- $hint';
+          return '${d.displayPath} -- $hint';
         })
         .join('\n');
 
     final confirmed = await showConfirmDialog(
       context,
       title: 'Confirmar ${pending.length} borrados',
-      message: '${pair.remotePath} → ${pair.localPath}\n\n'
+      message:
+          '${pair.remotePath} → ${pair.localPath}\n\n'
           'Estos archivos desaparecieron de un lado desde la última '
           'sincronización. Nada se borra para siempre -- van a una '
           'papelera, recuperable. Revísalos antes de confirmar:\n\n$details',
@@ -365,364 +197,395 @@ class _SyncSettingsPageState extends State<SyncSettingsPage> {
 
   @override
   Widget build(BuildContext context) {
-    final syncDisabled = _syncing || _engineBusy;
-    return Scaffold(
-      appBar: AppBar(title: const Text('Sincronización')),
-      // SingleChildScrollView, no Padding a secas: con auto-sync activado
-      // (desplegable de intervalo visible), varios pares en la lista y el
-      // interruptor de bandeja del slice 9, el contenido puede superar la
-      // altura de una ventana de 720px real, y sin scroll eso desborda en
-      // vez de recortarse.
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Sincroniza una o varias carpetas remotas con carpetas '
-                  'locales. Cada carpeta añadida tiene su propio sentido: '
-                  '"Descargar" solo trae del servidor, "Subir" solo envía, '
-                  '"Ambos" reconcilia los dos lados. En "Descargar"/"Subir" '
-                  'nada se borra nunca: un archivo que falte en el lado no '
-                  'tocado se vuelve a traer del otro. En "Ambos", si un '
-                  'archivo cambió en los dos sitios, no se sobrescribe nada '
-                  '-- se deja una copia "(conflicto ...)" al lado; y si lo '
-                  'borras en un lado, se borra también en el otro (a una '
-                  'papelera, recuperable), salvo que sean muchos de golpe, '
-                  'en cuyo caso se te pide confirmar antes viendo la lista '
-                  'real. "Sincronizar todo ahora" recorre todas las '
-                  'carpetas configuradas; cada una también se puede '
-                  'sincronizar sola. La sincronización automática, si la '
-                  'activas más abajo, cubre todas por igual mientras la '
-                  'app esté abierta.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 24),
-                if (_pairs.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Text('Ninguna carpeta configurada todavía.'),
-                  )
-                else
-                  for (var i = 0; i < _pairs.length; i++) ...[
-                    _PairRow(
-                      config: _pairs[i],
-                      disabled: syncDisabled,
-                      onSync: () => _syncOnePair(_pairs[i]),
-                      onEdit: () => _editPair(i),
-                      onRemove: () => _removePair(i),
-                    ),
-                    const Divider(height: 1),
-                  ],
-                const SizedBox(height: 16),
-                OutlinedButton(
-                  onPressed: syncDisabled ? null : _addPair,
-                  child: const Text('Añadir carpeta a sincronizar'),
-                ),
-                const SizedBox(height: 16),
-                FilledButton(
-                  onPressed: (syncDisabled || _pairs.isEmpty) ? null : _syncAll,
-                  child: _syncing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('Sincronizar todo ahora'),
-                ),
-                if (_statusMessage != null) ...[
-                  const SizedBox(height: 16),
-                  Text(
-                    _statusMessage!,
-                    style: Theme.of(context).textTheme.bodySmall,
+    return ListenableBuilder(
+      listenable: _activity,
+      builder: (context, _) {
+        final busy = _activity.isBusy;
+        return Scaffold(
+          body: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              PageHeader(
+                title: 'Sincronización',
+                subtitle: 'Vincula carpetas del servidor con carpetas de este equipo.',
+                actions: [
+                  OutlinedButton.icon(
+                    onPressed: busy ? null : _addPair,
+                    icon: const Icon(Icons.add_rounded, size: 18),
+                    label: const Text('Vincular carpeta'),
                   ),
-                ],
-                const SizedBox(height: 24),
-                const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Sincronizar automáticamente'),
-                  subtitle: const Text(
-                    'Repite la sincronización de todas las carpetas sola '
-                    'mientras la app esté abierta.',
-                  ),
-                  value: _autoSyncEnabled,
-                  onChanged: _setAutoSyncEnabled,
-                ),
-                if (_autoSyncEnabled) ...[
-                  Row(
-                    children: [
-                      const Text('Cada'),
-                      const SizedBox(width: 12),
-                      DropdownButton<int>(
-                        value: _autoSyncIntervalMinutes,
-                        items: [
-                          for (final minutes in _autoSyncIntervalOptions)
-                            DropdownMenuItem(
-                              value: minutes,
-                              child: Text('$minutes minutos'),
+                  FilledButton.icon(
+                    onPressed: (busy || _pairs.isEmpty) ? null : _syncAll,
+                    icon: _activity.manualRunning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
                             ),
-                        ],
-                        onChanged: (minutes) {
-                          if (minutes != null) _setAutoSyncInterval(minutes);
-                        },
-                      ),
-                    ],
+                          )
+                        : const Icon(Icons.sync_rounded, size: 18),
+                    label: const Text('Sincronizar todo ahora'),
                   ),
                 ],
-                const SizedBox(height: 16),
-                Row(
-                  children: [
-                    const Expanded(
-                      child: Text(
-                        'Avisar antes de borrar más de esta cantidad de '
-                        'archivos de golpe (cualquier sincronización, '
-                        'manual o automática)',
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    DropdownButton<int>(
-                      value: _maxAutoDeleteBatch,
-                      items: [
-                        for (final n in _maxAutoDeleteBatchOptions)
-                          DropdownMenuItem(value: n, child: Text('$n')),
-                      ],
-                      onChanged: (value) {
-                        if (value != null) _setMaxAutoDeleteBatch(value);
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Vigilar cambios locales'),
-                  subtitle: const Text(
-                    'Sincroniza sola, poco después de guardar o borrar un '
-                    'archivo en una carpeta con sentido "Subir" o "Ambos". '
-                    'No sustituye al reloj ni al botón manual, los '
-                    'complementa.',
-                  ),
-                  value: _watchLocalChangesEnabled,
-                  onChanged: _setWatchLocalChangesEnabled,
-                ),
-                const SizedBox(height: 8),
-                const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Minimizar a la bandeja al cerrar'),
-                  subtitle: const Text(
-                    'La X esconde la ventana en vez de cerrar la app -- así '
-                    'la sincronización automática sigue corriendo. El icono '
-                    'de la bandeja del sistema deja volver a abrirla o salir '
-                    'de verdad.',
-                  ),
-                  value: _minimizeToTrayOnClose,
-                  onChanged: _setMinimizeToTrayOnClose,
-                ),
-                const SizedBox(height: 8),
-                const Divider(),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Arrancar NexusCloud con Windows'),
-                  subtitle: const Text(
-                    'Se abre sola al iniciar sesión en Windows -- así la '
-                    'sincronización automática puede estar activa incluso '
-                    'tras reiniciar el equipo.',
-                  ),
-                  value: _launchAtStartupEnabled,
-                  onChanged: _setLaunchAtStartupEnabled,
-                ),
-                if (_launchAtStartupError != null) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    _launchAtStartupError!,
-                    style: TextStyle(
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                  ),
-                ],
-                if (_launchAtStartupEnabled) ...[
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Iniciar minimizado en la bandeja'),
-                    subtitle: const Text(
-                      'Al arrancar con Windows, empieza escondida en la '
-                      'bandeja del sistema en vez de mostrar la ventana.',
-                    ),
-                    value: _startMinimized,
-                    onChanged: _setStartMinimized,
-                  ),
-                ],
-                if (_lastOutcomes != null && _lastOutcomes!.isNotEmpty) ...[
-                  const SizedBox(height: 24),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  Text('Resultado', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 8),
-                  for (final outcome in _lastOutcomes!)
-                    PairSyncResultCard(
-                      outcome: outcome,
-                      disabled: syncDisabled,
-                      onConfirmPendingDeletes: (pending) =>
-                          _confirmPendingDeletesFor(outcome.pair, pending),
-                    ),
-                ] else if (_lastAutoOutcome != null) ...[
-                  // Sin ningún resultado todavía en esta sesión de la
-                  // página (nunca se pulsó un botón de sync ni corrió
-                  // ningún tick mientras estaba abierta) pero sí hay un
-                  // intento automático de una sesión anterior -- solo un
-                  // resumen de texto (ver por qué en SyncConfigRepository),
-                  // no el desglose completo de arriba.
-                  const SizedBox(height: 24),
-                  const Divider(),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Última sincronización automática: '
-                    '${_lastAutoOutcome!.summary} '
-                    '(${_lastAutoOutcome!.at.toLocal()})',
-                    style: Theme.of(context).textTheme.bodySmall,
-                  ),
-                ],
-              ],
+              ),
+              if (busy) _BusyBanner(message: _activity.statusMessage),
+              Expanded(child: _buildBody(context, busy)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildBody(BuildContext context, bool busy) {
+    if (!_loaded) return const LoadingState();
+    if (_pairs.isEmpty) {
+      return EmptyState(
+        icon: Icons.sync_alt_rounded,
+        title: 'Ninguna carpeta configurada todavía',
+        message:
+            'Vincula una carpeta del servidor con una de este equipo y '
+            'NexusCloud mantendrá las dos al día.',
+        action: FilledButton.icon(
+          onPressed: _addPair,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Vincular una carpeta'),
+        ),
+      );
+    }
+    final outcomes = _activity.outcomesByKey;
+    final lastAuto = _activity.lastAutoOutcome;
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 28),
+      children: [
+        for (var i = 0; i < _pairs.length; i++) ...[
+          _PairCard(
+            config: _pairs[i],
+            outcome: outcomes[_pairs[i].pair.stableKey],
+            disabled: busy,
+            onSync: () => _syncOnePair(_pairs[i]),
+            onEdit: () => _editPair(i),
+            onRemove: () => _removePair(i),
+            onConfirmPendingDeletes: (pending) =>
+                _confirmPendingDeletesFor(_pairs[i].pair, pending),
+          ),
+          const SizedBox(height: 12),
+        ],
+        if (outcomes.isEmpty && lastAuto != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 12),
+            // Sin resultados en esta sesión pero sí un intento automático
+            // de una anterior -- solo un resumen de texto (ver por qué en
+            // SyncConfigRepository), no el desglose completo.
+            child: InlineAlert(
+              message:
+                  'Última sincronización automática '
+                  '(${formatDateTime(lastAuto.at)}): ${lastAuto.summary}',
             ),
           ),
+        const SizedBox(height: 4),
+        const _HowItWorks(),
+      ],
+    );
+  }
+}
+
+class _BusyBanner extends StatelessWidget {
+  const _BusyBanner({required this.message});
+
+  final String? message;
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.palette;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+        decoration: BoxDecoration(
+          color: pal.accentSoft,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: pal.accent.withValues(alpha: 0.25)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: pal.accent,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    message ?? 'Sincronizando…',
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: pal.accentOnSoft,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            const LinearProgressIndicator(minHeight: 3),
+          ],
         ),
       ),
     );
   }
-
-  Future<void> _setAutoSyncEnabled(bool enabled) async {
-    setState(() => _autoSyncEnabled = enabled);
-    await _autoSyncScheduler.updateSettings(
-      AutoSyncSettings(
-        enabled: enabled,
-        intervalMinutes: _autoSyncIntervalMinutes,
-      ),
-    );
-  }
-
-  Future<void> _setAutoSyncInterval(int minutes) async {
-    setState(() => _autoSyncIntervalMinutes = minutes);
-    await _autoSyncScheduler.updateSettings(
-      AutoSyncSettings(enabled: _autoSyncEnabled, intervalMinutes: minutes),
-    );
-  }
-
-  Future<void> _setMaxAutoDeleteBatch(int value) async {
-    setState(() => _maxAutoDeleteBatch = value);
-    await _configRepository.saveMaxAutoDeleteBatch(value);
-    _syncEngine.updateMaxAutoDeleteBatch(value);
-  }
-
-  Future<void> _setWatchLocalChangesEnabled(bool value) async {
-    setState(() => _watchLocalChangesEnabled = value);
-    await _watcherService.setEnabled(value);
-  }
-
-  Future<void> _setMinimizeToTrayOnClose(bool value) async {
-    setState(() => _minimizeToTrayOnClose = value);
-    await _trayService.updateMinimizeToTrayOnClose(value);
-  }
-
-  /// A diferencia de los demás interruptores de esta página, envuelve la
-  /// llamada en `try/catch` (ver el plan del slice 10): a diferencia de
-  /// `shared_preferences`/el scheduler en memoria que respaldan los otros,
-  /// esto son dos escrituras de registro Win32 no atómicas vía FFI cruda,
-  /// que sí pueden lanzar -- y el booleano que devolvería `enable()`/
-  /// `disable()` no serviría para detectar un fallo aunque se comprobara
-  /// (siempre `true` en Windows sin MSIX, confirmado en su código fuente).
-  Future<void> _setLaunchAtStartupEnabled(bool value) async {
-    final previous = _launchAtStartupEnabled;
-    setState(() {
-      _launchAtStartupEnabled = value;
-      _launchAtStartupError = null;
-      // Mismo invariante que en la carga: si se desactiva, "iniciar
-      // minimizado" no puede quedar activado sin que el interruptor que
-      // lo controla siga visible.
-      if (!value) _startMinimized = false;
-    });
-    try {
-      await _launchAtStartupService.setEnabled(value);
-      if (!value) {
-        await _windowPreferencesStore.saveStartMinimized(false);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _launchAtStartupEnabled = previous;
-        _launchAtStartupError =
-            'No se pudo cambiar el ajuste de arranque con Windows.';
-      });
-    }
-  }
-
-  Future<void> _setStartMinimized(bool value) async {
-    setState(() => _startMinimized = value);
-    await _windowPreferencesStore.saveStartMinimized(value);
-  }
 }
 
-/// Una fila de la lista de pares configurados: rutas + dirección, con
-/// acciones de sincronizar solo este/editar/quitar -- mismo lenguaje visual
-/// que las filas de `FileBrowserPage`/`MySharesPage` (icono de acción a la
-/// derecha de cada fila).
-class _PairRow extends StatelessWidget {
-  const _PairRow({
+class _PairCard extends StatelessWidget {
+  const _PairCard({
     required this.config,
+    required this.outcome,
     required this.disabled,
     required this.onSync,
     required this.onEdit,
     required this.onRemove,
+    required this.onConfirmPendingDeletes,
   });
 
   final SyncPairConfig config;
+  final PairSyncOutcome? outcome;
   final bool disabled;
   final VoidCallback onSync;
   final VoidCallback onEdit;
   final VoidCallback onRemove;
+  final void Function(List<PendingDelete> pending) onConfirmPendingDeletes;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Row(
-        children: [
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    final pal = context.palette;
+    final text = Theme.of(context).textTheme;
+    final pair = config.pair;
+    final remoteLabel = [
+      'Mis archivos',
+      ...RemotePath.segments(pair.remotePath),
+    ].join(' › ');
+    final (IconData dirIcon, String dirHint) = switch (config.direction) {
+      SyncDirection.download => (
+        Icons.arrow_downward_rounded,
+        'Solo trae del servidor',
+      ),
+      SyncDirection.upload => (
+        Icons.arrow_upward_rounded,
+        'Solo envía al servidor',
+      ),
+      SyncDirection.both => (
+        Icons.swap_vert_rounded,
+        'Mantiene los dos lados iguales',
+      ),
+    };
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(18, 16, 12, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
               children: [
-                Text(
-                  '${config.pair.remotePath} → ${config.pair.localPath}',
-                  overflow: TextOverflow.ellipsis,
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _Endpoint(
+                        icon: Icons.cloud_outlined,
+                        label: remoteLabel,
+                        caption: 'Servidor',
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 9),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 1.5,
+                              height: 14,
+                              color: pal.border,
+                            ),
+                            const SizedBox(width: 17),
+                            Icon(dirIcon, size: 14, color: pal.accent),
+                            const SizedBox(width: 4),
+                            Text(
+                              '${config.direction.label} · $dirHint',
+                              style: text.bodySmall?.copyWith(
+                                color: pal.accentOnSoft,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      _Endpoint(
+                        icon: Icons.computer_rounded,
+                        label: pair.localPath,
+                        caption: 'Este equipo',
+                      ),
+                    ],
+                  ),
                 ),
-                Text(
-                  config.direction.label,
-                  style: Theme.of(context).textTheme.bodySmall,
+                const SizedBox(width: 12),
+                if (config.autoSyncEnabled)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 8),
+                    child: StatusPill(
+                      label: 'Automática',
+                      icon: Icons.schedule_rounded,
+                    ),
+                  ),
+                IconButton(
+                  icon: const Icon(Icons.sync_rounded),
+                  tooltip: 'Sincronizar solo esta carpeta',
+                  onPressed: disabled ? null : onSync,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.edit_outlined),
+                  tooltip: 'Editar',
+                  onPressed: disabled ? null : onEdit,
+                ),
+                IconButton(
+                  icon: const Icon(Icons.link_off_rounded),
+                  tooltip: 'Desvincular',
+                  onPressed: disabled ? null : onRemove,
                 ),
               ],
             ),
+            if (outcome != null) ...[
+              const SizedBox(height: 12),
+              const Divider(height: 1),
+              const SizedBox(height: 12),
+              PairSyncResultCard(
+                outcome: outcome!,
+                disabled: disabled,
+                onConfirmPendingDeletes: onConfirmPendingDeletes,
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Endpoint extends StatelessWidget {
+  const _Endpoint({
+    required this.icon,
+    required this.label,
+    required this.caption,
+  });
+
+  final IconData icon;
+  final String label;
+  final String caption;
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.palette;
+    final text = Theme.of(context).textTheme;
+    return Row(
+      children: [
+        Container(
+          width: 20,
+          height: 20,
+          alignment: Alignment.center,
+          child: Icon(icon, size: 18, color: pal.textSecondary),
+        ),
+        const SizedBox(width: 10),
+        Flexible(
+          child: Text(
+            label,
+            overflow: TextOverflow.ellipsis,
+            style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
           ),
-          IconButton(
-            icon: const Icon(Icons.sync),
-            tooltip: 'Sincronizar solo esta carpeta',
-            onPressed: disabled ? null : onSync,
-          ),
-          IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'Editar',
-            onPressed: disabled ? null : onEdit,
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline),
-            tooltip: 'Quitar de la lista',
-            onPressed: disabled ? null : onRemove,
+        ),
+        const SizedBox(width: 8),
+        Text(caption, style: text.bodySmall?.copyWith(fontSize: 11.5)),
+      ],
+    );
+  }
+}
+
+class _HowItWorks extends StatelessWidget {
+  const _HowItWorks();
+
+  @override
+  Widget build(BuildContext context) {
+    final pal = context.palette;
+    final text = Theme.of(context).textTheme;
+    Widget item(IconData icon, String title, String body) => Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: pal.accent),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: '$title. ',
+                    style: const TextStyle(fontWeight: FontWeight.w600),
+                  ),
+                  TextSpan(text: body),
+                ],
+              ),
+              style: text.bodyMedium?.copyWith(
+                color: pal.textSecondary,
+                fontSize: 13.5,
+              ),
+            ),
           ),
         ],
+      ),
+    );
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          leading: Icon(Icons.help_outline_rounded, color: pal.textMuted),
+          title: Text(
+            '¿Cómo funciona la sincronización?',
+            style: text.titleSmall,
+          ),
+          childrenPadding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          children: [
+            item(
+              Icons.arrow_downward_rounded,
+              'Descargar y Subir',
+              'Solo copian en un sentido y nunca borran: un archivo que falte en '
+                  'el lado no tocado se vuelve a traer del otro.',
+            ),
+            item(
+              Icons.swap_vert_rounded,
+              'Ambos',
+              'Reconcilia los dos lados. Si un archivo cambió en los dos sitios no se '
+                  'sobrescribe nada: se deja una copia «(conflicto …)» al lado.',
+            ),
+            item(
+              Icons.delete_sweep_outlined,
+              'Borrados',
+              'En «Ambos», borrar en un lado borra en el otro (a una papelera, '
+                  'recuperable). Si son muchos de golpe se te pide confirmar viendo la lista real.',
+            ),
+            item(
+              Icons.schedule_rounded,
+              'Automática',
+              'Si la activas en Ajustes, cubre todas las carpetas mientras la app esté '
+                  'abierta; con «Minimizar a la bandeja» sigue funcionando con la ventana cerrada.',
+            ),
+          ],
+        ),
       ),
     );
   }

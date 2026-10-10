@@ -74,6 +74,22 @@ NexusCloud — comandos, cómo funciona cada cosa, sin necesitar leer código.
 arquitectura, decisiones de diseño (ADRs), referencia de la API HTTP a
 nivel de esquema.
 
+**¿Puedo limitar cuánto espacio usa cada persona?**
+Sí, con cuotas de almacenamiento: por usuario (`users edit maria --quota
+100GB`), por grupo (`users group edit Familia --quota 500GB`, es un límite
+por miembro) o una global (`storage.defaultQuotaBytes` en `config.yaml`). Por
+defecto no hay ninguna. Cuentan los archivos, la papelera y las versiones
+anteriores, y lo que otras personas suben a una carpeta tuya cuenta contra
+la tuya. Ver [`administracion.md`](administracion.md#cuotas-de-almacenamiento).
+
+**Me dice «No hay espacio suficiente: has alcanzado tu cuota», pero borré
+archivos. ¿Por qué?**
+Borrar mueve a la papelera, y la papelera también cuenta (igual que las
+versiones anteriores de un archivo que sobrescribiste). El espacio se libera
+al vaciar la papelera o al pasar su tiempo de retención. Puedes ver en qué se
+va el espacio en la barra «Almacenamiento» de la web (pasa el ratón por encima)
+o con `nexuscloud users quota <usuario> --detail`.
+
 **No encuentro respuesta a mi problema aquí.**
 Revisa [`mantenimiento.md`](mantenimiento.md#problemas-frecuentes) para
 fallos concretos (servicio no arranca, `doctor` en rojo, contraseña

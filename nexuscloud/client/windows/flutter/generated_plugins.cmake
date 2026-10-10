@@ -3,11 +3,15 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  desktop_drop
   file_selector_windows
   flutter_secure_storage_windows
+  media_kit_libs_windows_video
+  media_kit_video
   nexus_startup_task
   screen_retriever_windows
   tray_manager
+  url_launcher_windows
   window_manager
 )
 

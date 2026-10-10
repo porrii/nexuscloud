@@ -18,7 +18,17 @@ Los enlaces públicos son la única superficie de la API que acepta peticiones s
 
 **Mitigado hoy**: **desactivados por defecto** (`sharing.publicLinksEnabled: false`) — la superficie ni siquiera existe hasta que el administrador la activa explícitamente (secure-by-default, §3/§47). El token tiene 256 bits de entropía (`idgen.Token()`, mismo generador que sesiones), tan inviable de adivinar por fuerza bruta como una sesión robada. La contraseña (opcional, Argon2id) se transmite por cabecera `X-Share-Password`, nunca en la URL, y un rate limiter dedicado (`security.rateLimit.publicLinkPerMinute`, 20/min por defecto) cubre todo `/api/v1/public/*` — mismo motivo que `loginLimiter` para `/auth/login`. El probe de metadata (`GET /api/v1/public/shares/{token}`) no revela nombre/tamaño de un enlace con contraseña hasta que la cabecera correcta llega. `max_downloads` se aplica con un `UPDATE...WHERE...AND(...)` atómico (no leer-luego-escribir), verificado con un test de concurrencia real: dos descargas simultáneas contra el último hueco disponible nunca dejan pasar a ambas. Navegar/descargar dentro de una carpeta compartida recalcula la ruta lógica a partir de la raíz del share en cada petición y rechaza cualquier resultado que no quede exactamente dentro de ella o de una subcarpeta suya (protección contra escape, además del `SafeJoin` físico que ya aplica `LocalFilesystemProvider`). La subida por un enlace no sobrescribe un archivo existente de la carpeta del propietario (409), y no distingue si el nombre lo ocupa un archivo activo o algo de su papelera: un anónimo no debe averiguar qué ha borrado el propietario.
 
-**Pendiente**: `max_upload_size_bytes` limita cada subida individual a través de un enlace, pero no hay un límite acumulado de espacio total ocupado por todas las subidas de un mismo enlace a lo largo del tiempo — un enlace de subida activo durante mucho tiempo sin `max_downloads`/expiración podría, en conjunto, ocupar una cantidad de disco no acotada de antemano (mitigable hoy fijando `expires_at` al crear el enlace). §38 (Subida Anónima) es un modelo de autorización distinto y separado, todavía sin implementar.
+**Pendiente**: `max_upload_size_bytes` limita cada subida individual a través de un enlace, pero no hay un límite acumulado de espacio total ocupado por todas las subidas de un mismo enlace a lo largo del tiempo — un enlace de subida activo durante mucho tiempo sin `max_downloads`/expiración podría, en conjunto, ocupar una cantidad de disco no acotada de antemano (mitigable hoy fijando `expires_at` al crear el enlace).
+
+## Subida anónima (§38)
+
+Modelo de autorización SEPARADO de los enlaces públicos de arriba, no una variante suya — ver [ADR-039](../architecture/decisions/ADR-039-subida-anonima.md): `BrowsePublicShare` ignora `can_download`, así que un enlace público de solo-subida no garantiza de verdad "sin acceso al resto"; §38 lo resuelve sin que exista ningún endpoint de navegación para este modelo, en vez de depender de un permiso que haya que recordar respetar en cada sitio.
+
+**Puede intentar**: adivinar el token de un enlace por fuerza bruta; enumerar si un token es válido, revocado, caducado o nunca existió (para acotar dónde intentar más); llenar el disco del servidor abusando de un enlace de subida; usar un enlace ya revocado o caducado; forzar el rate limit propio de esta superficie con peticiones concurrentes.
+
+**Mitigado hoy**: **desactivada por defecto** (`sharing.anonymousUploadEnabled: false`) — la superficie ni siquiera existe hasta que el administrador la activa explícitamente (secure-by-default, §3/§47), mismo criterio que `publicLinksEnabled`. El token tiene 256 bits de entropía (`idgen.Token()`, mismo generador que sesiones/enlaces), y un rate limiter dedicado (`security.rateLimit.anonymousUploadPerMinute`, 10/min por defecto — más estricto que `publicLinkPerMinute`) cubre `/api/v1/public/anonymous-uploads/*` en un cubo propio, independiente del resto de la API. El probe (`GET /api/v1/public/anonymous-uploads/{token}`) y la subida devuelven un único 404 genérico para inexistente/revocado/caducado, sin distinguir el motivo: reduce la superficie de enumeración frente a quien prueba tokens al azar. No existe ningún endpoint de listado/navegación sobre este modelo — la garantía de "sin acceso al resto" es estructural, no una comprobación de permiso. La subida nunca sobrescribe un archivo existente (409) y no distingue si el nombre lo ocupa un archivo activo o algo de la papelera del propietario, mismo criterio que los enlaces públicos. La cuota que se aplica y se agota es la del propietario de la carpeta, nunca revelada a quien sube (mensaje 507 genérico).
+
+**Pendiente**: mismo límite acumulado de espacio total sin acotar que los enlaces públicos de subida (mitigable hoy fijando `expires_at` al crear el enlace); sin límite al número de enlaces que un usuario puede crear.
 
 ## Usuario autenticado malicioso
 
@@ -28,7 +38,73 @@ Los enlaces públicos son la única superficie de la API que acepta peticiones s
 
 **Sharing (§37)**: compartir un archivo o carpeta con otro usuario/grupo añade una segunda vía de acceso legítimo además de la propiedad — `FileService.Download`/`ListSharedDirectory` comprueban un share activo (directo o sobre una carpeta ancestro) antes de conceder acceso, nunca antes de comprobar propiedad. Revocar (`DELETE /api/v1/shares/{id}`) exige ser quien lo creó (§198) y es efectivo de inmediato (soft-update `revoked_at`, comprobado en cada acceso). Un usuario con permiso de solo-descarga no puede escalar a modificar/eliminar el recurso: esas operaciones siguen exigiendo propiedad, no están en el conjunto de permisos que un share concede (ver `docs/storage.md#compartición-37`). Lo único que un share de usuario o de grupo puede añadir a la lectura es **subir archivos nuevos** a una carpeta (`can_upload`, [ADR-035](../architecture/decisions/ADR-035-subida-a-carpeta-compartida.md)), y esa ruta se acota así: la autorización se re-deriva de la base de datos a partir del ID de la carpeta en cada petición (sin subruta que el cliente pueda manipular), el nombre pasa por la misma validación que cualquier subida (sin separadores ni `..`), no sobrescribe un archivo existente (la comprobación es previa, no atómica: dos subidas simultáneas con el mismo nombre nuevo pueden cruzarse), quien sube no puede renombrar, mover ni borrar, el límite de tamaño corta la lectura sin dejar parciales, y el archivo queda en el árbol del propietario (con su papelera y su versionado); quién lo subió queda en la auditoría.
 
-**Pendiente**: no hay todavía límites de cuota aplicados en la ruta de subida (el campo `quota_bytes` existe en el modelo de datos pero no se aplica activamente — Fase 2).
+**Cuotas (§24, [ADR-036](../architecture/decisions/ADR-036-cuotas-de-almacenamiento.md))**: un usuario —o alguien que suba por una carpeta compartida o un enlace público de subida— puede llenar el disco del servidor. Con cuotas configuradas, `FileService.Upload` rechaza (507) lo que no cabe en la cuota del **propietario de los datos** (la de quien sube a una carpeta ajena no cuenta, y un anónimo no averigua el uso ni el límite del propietario). La comprobación se hace antes de leer el cuerpo si el tamaño se anuncia, corta la lectura al pasarse y se confirma al final bajo un cerrojo por propietario, así que subidas simultáneas no se la saltan; cuenta la huella real (archivos + papelera + versiones), de modo que borrar y volver a subir, o sobrescribir, tampoco la evade.
+
+**Previsualización de contenido (§35, §138, [ADR-040](../architecture/decisions/ADR-040-busqueda.md) Fase 2)**: hasta esta fase, NexusCloud trataba todo contenido de usuario como bytes opacos (se guarda/hashea/sirve, nunca se interpreta) — la previsualización es la primera vez que se interpreta contenido subido por un usuario en cualquier capa, y lo hace en el NAVEGADOR de quien previsualiza (nunca en el servidor). Markdown (`.md`/`.markdown`) se convierte a HTML (`marked`) y se sanitiza (`DOMPurify`, configuración por defecto + `FORBID_TAGS: ['style']`) antes de tocar el DOM; código con extensión reconocida se resalta con `highlight.js`, que escapa el texto crudo antes de colorearlo — en ningún caso se inyecta el contenido del archivo tal cual. La clasificación del tipo de previsualización se basa en la EXTENSIÓN del nombre, igual que la detección de `mime_type` del propio servidor (`detectMimeType`, ninguna de las dos es más fiable que la otra) — esto es seguro porque cada rama de la previsualización sanitiza o escapa de forma independiente: renombrar cualquier archivo a `.md` o `.py` como mucho produce una previsualización rota, nunca salta el sanitizado, porque este no depende de si el contenido "de verdad" es Markdown o código. Aplica exactamente igual sin importar la vía de subida — autenticada, carpeta compartida, enlace público o **subida anónima (§38)**, ya que todas pasan por el mismo `FileService.Upload`/`detectMimeType` y por el mismo componente de previsualización en el cliente. La descarga de PDF/vídeo/audio pasó de `Content-Disposition: attachment` a `inline` (necesario para que el navegador los renderice en vez de forzar guardar) de forma acotada a esos tres tipos — `image/*` se dejó fuera a propósito (`<img>` ya ignora esa cabecera y nunca ejecuta script embebido, ni siquiera en una SVG) — y `X-Frame-Options` se relaja de `DENY` a `SAMEORIGIN` únicamente para PDF (el visor de Chrome vía `<embed>` respeta esa cabecera; `<video>`/`<audio>` no la necesitan). Revisado por un pase de `security-reviewer` dedicado antes de cerrar la fase: sin hallazgos CRITICAL/HIGH/MEDIUM.
+
+**Pendiente**: por defecto **no hay ninguna cuota** (hasta que el administrador configure `users edit --quota` o `storage.defaultQuotaBytes` el riesgo sigue abierto), y las cuotas no sustituyen a vigilar el espacio libre del disco: que la suma de cuotas supere lo que hay es cosa del administrador. Una subida por la CLI a la vez que el servidor, para el mismo usuario, puede pasarse de la cuota por un archivo (el cerrojo es de proceso).
+
+## Miniaturas (§34, [ADR-041](../architecture/decisions/ADR-041-miniaturas.md))
+
+Distinto de "Previsualización de contenido" de arriba en un punto esencial:
+la previsualización interpreta contenido de usuario en el NAVEGADOR de quien
+mira; las miniaturas lo hacen en el **servidor**, y para vídeo/PDF además
+ejecutando un binario externo (`ffmpeg`/`pdftoppm`) — la primera vez que
+NexusCloud hace cualquiera de las dos cosas. Por eso tiene su propia sección
+en vez de ampliar la de arriba: el actor relevante no es "quien mira", es
+"cualquier usuario autenticado que sube un archivo" — la generación se
+dispara automáticamente (`FileService.Upload` encola el job) sin que nadie
+tenga que llamar a ningún endpoint de miniatura para que el procesamiento
+ocurra.
+
+**Puede intentar**: subir una imagen con dimensiones declaradas
+astronómicas para una decompression bomb; subir un `.mp4`/`.pdf` cuyo
+contenido real intente hacer que ffmpeg/pdftoppm lean un archivo del propio
+servidor o una URL interna (LFI/SSRF vía demuxer); pedir muchas miniaturas
+de vídeo grandes nunca vistas a la vez para agotar memoria/CPU del host;
+provocar un panic en un decodificador con bytes malformados para tumbar el
+proceso; averiguar por temporización si otro inquilino ya subió un archivo
+de contenido idéntico al suyo.
+
+**Mitigado hoy**: **desactivado por defecto**
+(`thumbnails.enabled: false`) — la superficie de decodificación/subproceso
+ni existe hasta que el administrador la activa explícitamente, mismo
+criterio que `sharing.publicLinksEnabled`/`anonymousUploadEnabled`, aquí
+reforzado por ser además la primera vez que se cambia la imagen Docker de
+producción para dar cabida a un gestor de paquetes real. Límite de tamaño
+de entrada y de píxeles declarados (`image.DecodeConfig` antes de decodificar
+completo) antes de tocar el contenido de una imagen; un fuzz test dedicado
+(89.208 ejecuciones sin panic) cubre el pipeline de decodificación completo,
+no solo casos elegidos a mano. `ffmpeg` se invoca siempre con
+`-protocol_whitelist file`: el contenido de un `.mp4` que intente referenciar
+`file://` u otro protocolo se rechaza (confirmado con un fixture real que lo
+intenta); `pdftoppm` con `-f 1 -l 1` nunca procesa más de una página. Un
+semáforo de concurrencia global (`thumbnails.maxConcurrentGenerations`, 4
+por defecto) compartido por los tres pipelines, más `singleflight` para no
+duplicar trabajo, evita que muchas peticiones simultáneas agoten
+memoria/CPU — con el cupo lleno, `503` inmediato en vez de encolar sin
+límite. `middleware.Recoverer` (nuevo, protege TODO el servidor, no solo
+esta función) más `recover()` explícito en la goroutine de decodificación
+con timeout y en el bucle en segundo plano: un panic de decodificación se
+convierte en un intento fallido del job, nunca en una caída del proceso
+completo. La caché de miniaturas está particionada por propietario
+(`<ThumbnailsDir>/<owner_id>/<sha256>...`), no por contenido puro — cierra
+el oráculo de temporización cross-tenant que un diseño de deduplicación
+global habría abierto, sin renunciar a deduplicar dentro de un mismo
+usuario. Escritura de caché atómica (staging + rename): confirmada sin
+corrupción bajo escritura concurrente real (`-race`, 20 goroutines).
+
+**Pendiente**: sin sandboxing por namespaces/seccomp de ffmpeg/pdftoppm —
+un 0-day de memoria en cualquiera de los dos (ambos C/C++, con historial de
+bugs encontrados por fuzzing) da ejecución como el usuario del servicio;
+aceptado como límite conocido de esta fase, ver ADR-041. Sin eviction LRU
+de la caché de miniaturas: `thumbnails.maxCacheBytes` deja de generar
+miniaturas nuevas al llenarse, pero no libera espacio de las existentes por
+su cuenta. En Windows, sin `Setpgid`/cgroups: el timeout mata el proceso
+principal de ffmpeg/pdftoppm pero no tiene el mismo mecanismo de contención
+de recursos a nivel de SO que Linux (systemd `MemoryMax`/`CPUQuota` o
+`docker run --memory`/`--cpus`) — misma asimetría ya documentada en
+`docs/deployment.md` para el hardening general.
 
 ## Sesión/cuenta comprometida (credential theft)
 

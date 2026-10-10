@@ -126,6 +126,9 @@ type ShareRepository interface {
 	// agotado.
 	IncrementDownloadCount(ctx context.Context, shareID string) (ok bool, err error)
 	RevokeShare(ctx context.Context, id string, revokedAt time.Time) error
+	// CountActiveSharesForGroup cuenta los shares no revocados dirigidos a
+	// groupID (ADR-042 Decisión 11).
+	CountActiveSharesForGroup(ctx context.Context, groupID string) (int, error)
 }
 
 // hashShareToken calcula el hash de almacenamiento de un token de enlace

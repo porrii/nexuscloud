@@ -20,4 +20,6 @@ flutter test
 flutter run -d windows   # o -d linux
 ```
 
+En Linux, la vista previa de vídeo/audio (media_kit) necesita libmpv del sistema: `sudo apt install libmpv-dev` (o el paquete de tu distribución). En Windows, pdfrx descarga `pdfium.dll` y `windows/CMakeLists.txt` descarga una libmpv reciente verificada por SHA-256 que sustituye a la que trae media_kit (ADR-046), así que el primer build necesita red; pdfrx exige además el Modo de desarrollador de Windows (enlaces simbólicos). Actualizar libmpv es manual: ver el procedimiento en ADR-046.
+
 Requiere un servidor NexusCloud real corriendo y accesible (la URL se introduce en la pantalla de login, nunca es una constante — §48).

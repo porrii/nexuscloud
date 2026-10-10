@@ -46,10 +46,11 @@ func newRealTestEnv(t *testing.T, driver string) *testEnv {
 	versions := NewSQLVersionRepository(conn)
 	shares := NewSQLShareRepository(conn)
 	userRepo := users.NewSQLRepository(conn)
+	userSvc := users.NewService(userRepo)
 
 	return &testEnv{
 		svc: NewFileService(files, directories, versions, shares, pools, resolver, &testPasswordHasher{},
-			true, true, 10, 0, 0, true, true),
+			true, true, 10, 0, 0, true, true, WithOwnerStatus(userSvc)),
 		files:       files,
 		directories: directories,
 		versions:    versions,
@@ -57,7 +58,7 @@ func newRealTestEnv(t *testing.T, driver string) *testEnv {
 		pools:       pools,
 		poolDir:     poolDir,
 		provider:    provider,
-		userSvc:     users.NewService(userRepo),
+		userSvc:     userSvc,
 		userRepo:    userRepo,
 		conn:        conn,
 	}
@@ -472,4 +473,75 @@ func mustDefaultPoolID(ctx context.Context, t *testing.T, env *testEnv) string {
 		t.Fatalf("DefaultPool: %v", err)
 	}
 	return pool.ID
+}
+
+// TestMySQLUsageAndQuotaOnRealEngines (ADR-036) ejercita contra MySQL y
+// PostgreSQL reales lo que sqlite no puede ver: las sumas de tamaño (SUM
+// devuelve DECIMAL/NUMERIC y hay que devolverlo como entero) con valores de más
+// de 2 GiB -- que solo caben desde la migración 0011 --, el reparto entre
+// activos, papelera y versiones, el JOIN con file_versions y la comprobación
+// de cuota de extremo a extremo con el motor real.
+func TestMySQLUsageAndQuotaOnRealEngines(t *testing.T) {
+	for _, driver := range []string{"mysql", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			ctx := context.Background()
+			env := newRealTestEnv(t, driver)
+			env.withQuotas()
+			suffix := idgen.New()[:8]
+			owner := env.user(t, "cuota-"+suffix)
+			other := env.user(t, "otro-"+suffix)
+			pool, err := env.pools.DefaultPool(ctx)
+			if err != nil {
+				t.Fatalf("DefaultPool: %v", err)
+			}
+
+			const gib = int64(1) << 30
+			now := time.Now().UTC()
+			register := func(ownerID, name string, size int64) *FileMeta {
+				t.Helper()
+				m := &FileMeta{
+					ID: idgen.New(), PoolID: pool.ID, OwnerID: ownerID, ParentPath: "/", Name: name,
+					SizeBytes: size, SHA256: "h-" + name, MimeType: "application/octet-stream", CreatedAt: now, UpdatedAt: now,
+				}
+				if err := env.files.UpsertFile(ctx, m); err != nil {
+					t.Fatalf("registrando %s de %d bytes: %v", name, size, err)
+				}
+				return m
+			}
+			big := register(owner, "enorme.bin", 5*gib)
+			trashed := register(owner, "borrado.bin", 3*gib)
+			if err := env.files.SoftDeleteFile(ctx, trashed.ID, now); err != nil {
+				t.Fatalf("SoftDeleteFile: %v", err)
+			}
+			if err := env.versions.CreateVersion(ctx, &FileVersion{
+				ID: idgen.New(), FileID: big.ID, VersionNum: 1, SizeBytes: gib, SHA256: "v", MimeType: "application/octet-stream",
+				StorageKey: "k-" + suffix, CreatedAt: now,
+			}); err != nil {
+				t.Fatalf("CreateVersion: %v", err)
+			}
+			register(other, "ajeno.bin", 7)
+
+			want := Usage{FilesBytes: 5 * gib, TrashBytes: 3 * gib, VersionsBytes: gib}
+			if got := mustUsage(t, env, owner); got != want {
+				t.Errorf("Usage = %+v, esperado %+v", got, want)
+			}
+			all, err := NewSQLUsageRepository(env.conn).AllOwnersUsage(ctx)
+			if err != nil {
+				t.Fatalf("AllOwnersUsage: %v", err)
+			}
+			if all[owner] != want || all[other] != (Usage{FilesBytes: 7}) {
+				t.Errorf("AllOwnersUsage[owner] = %+v, [other] = %+v", all[owner], all[other])
+			}
+
+			// Cuota de más de 2 GiB de extremo a extremo (usuario -> resolver -> Upload).
+			env.setQuota(t, owner, 10*gib)
+			if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "cabe.txt", Content: bytes.NewReader(blob(1, 1024))}); err != nil {
+				t.Errorf("con 9 GiB usados de 10 GiB, 1 KiB debe caber: %v", err)
+			}
+			env.setQuota(t, owner, 9*gib+512)
+			if _, err := env.svc.Upload(ctx, UploadInput{OwnerID: owner, ParentPath: "/", Name: "no-cabe.txt", Content: bytes.NewReader(blob(2, 1024))}); !errors.Is(err, ErrQuotaExceeded) {
+				t.Errorf("quedan 511 bytes y se suben 1024 = %v, esperado ErrQuotaExceeded", err)
+			}
+		})
+	}
 }

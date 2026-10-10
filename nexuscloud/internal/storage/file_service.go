@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/porrii/nexuscloud/internal/idgen"
+	"golang.org/x/sync/singleflight"
 )
 
 var (
@@ -55,6 +56,47 @@ type FileService struct {
 	maxVersionsTotalSizeBytes int64
 	sharingEnabled            bool
 	publicLinksEnabled        bool
+
+	// Cuotas (ADR-036): nil = sin cuotas, ver WithQuotas.
+	quotaResolver QuotaResolver
+	usage         UsageRepository
+	owners        ownerLocks
+
+	// Estado del propietario de los enlaces públicos y de subida anónima
+	// (ADR-043): nil = esas superficies rechazan toda resolución, ver
+	// WithOwnerStatus.
+	ownerStatus OwnerStatusChecker
+
+	// Favoritos (§87, ADR-038): nil = sin favoritos activados, ver WithFavorites.
+	favorites FavoriteRepository
+
+	// Subida anónima (§38, ADR-039): nil = desactivada, ver WithAnonymousUploads.
+	// anonymousUploadEnabled es sharing.anonymousUploadEnabled -- mismo
+	// criterio exacto que ResolvePublicShare/publicLinksEnabled: crear un
+	// enlace nuevo Y resolver uno ya existente (la superficie PÚBLICA)
+	// exigen el interruptor activado, así que apagarlo corta también los
+	// enlaces ya creados, no solo los nuevos. Listar/revocar los propios
+	// (autoservicio, autenticado) no lo exigen -- un usuario siempre puede
+	// limpiar lo suyo, aunque el administrador haya apagado la función.
+	anonymousUploads       AnonymousUploadRepository
+	anonymousUploadEnabled bool
+
+	// Miniaturas (§34, ADR-041): nil = desactivadas, ver WithThumbnails.
+	// thumbnailSem+thumbnailSingle son COMPARTIDOS por las 3 pipelines
+	// (imagen/vídeo/PDF) -- hallazgo ALTO del pase de security-reviewer
+	// sobre el diseño: sin límite de concurrencia, pedir la miniatura de
+	// muchos archivos nunca vistos a la vez puede agotar memoria (imagen:
+	// goroutines de decodificación abandonadas tras un timeout; vídeo/PDF:
+	// procesos concurrentes contra el mismo cgroup que el proceso
+	// principal) hasta que el OOM-killer del kernel mate al servidor
+	// entero, no solo a la función de miniaturas.
+	thumbnailJobs     ThumbnailJobRepository
+	thumbnailCache    *ThumbnailCache
+	thumbnailTempDir  string
+	thumbnailLimits   ThumbnailLimits
+	thumbnailsEnabled bool
+	thumbnailSem      chan struct{}
+	thumbnailSingle   singleflight.Group
 }
 
 func NewFileService(
@@ -62,14 +104,19 @@ func NewFileService(
 	pools PoolRepository, providers ProviderResolver, hasher PasswordHasher,
 	trashEnabled, versioningEnabled bool, maxVersionsPerFile, maxVersionAgeDays int, maxVersionsTotalSizeBytes int64,
 	sharingEnabled, publicLinksEnabled bool,
+	opts ...FileServiceOption,
 ) *FileService {
-	return &FileService{
+	s := &FileService{
 		files: files, directories: directories, versions: versions, shares: shares,
 		pools: pools, providers: providers, hasher: hasher,
 		trashEnabled: trashEnabled, versioningEnabled: versioningEnabled, maxVersionsPerFile: maxVersionsPerFile,
 		maxVersionAgeDays: maxVersionAgeDays, maxVersionsTotalSizeBytes: maxVersionsTotalSizeBytes,
 		sharingEnabled: sharingEnabled, publicLinksEnabled: publicLinksEnabled,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // TrashEnabled indica si borrar es lógico (a la papelera, que reserva el
@@ -130,6 +177,13 @@ type UploadInput struct {
 	// (dejando una versión). Es lo que necesita quien sube a una carpeta que
 	// NO es suya (§40: no sobrescribir silenciosamente).
 	NoOverwrite bool
+	// SizeHint es el tamaño que anuncia quien sube (Content-Length; 0 o
+	// negativo = desconocido). Solo sirve para rechazar por cuota ANTES de
+	// leer el cuerpo: no se fía de él, el tamaño real lo da lo escrito.
+	SizeHint int64
+	// SkipQuota exime la subida de la cuota del propietario (ADR-036). Solo
+	// para restaurar un backup, que no debe fallar porque la política cambiara.
+	SkipQuota bool
 }
 
 // resolveTargetPool centraliza la resolución de pool destino que Upload y
@@ -181,8 +235,21 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 		}
 	}
 
+	// Cuota (ADR-036): antes de leer el cuerpo se decide cuánto cabe; si el
+	// tamaño anunciado ya no cabe se rechaza sin leer nada, y si no se anuncia
+	// la lectura se corta en cuanto se pasa de lo que cabe. La decisión
+	// definitiva se toma más abajo, con el contenido ya escrito.
+	content := in.Content
+	gate, err := s.beginQuota(ctx, in, pool.ID, parent)
+	if err != nil {
+		return nil, err
+	}
+	if gate != nil {
+		content = &errLimitReader{r: content, remaining: gate.avail, err: ErrQuotaExceeded}
+	}
+
 	staging := stagingPath(in.OwnerID)
-	size, sha, err := prov.Write(ctx, staging, in.Content)
+	size, sha, err := prov.Write(ctx, staging, content)
 	if err != nil {
 		return nil, fmt.Errorf("escribiendo archivo: %w", err)
 	}
@@ -193,9 +260,23 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 		}
 	}()
 
+	// Con cuota, el tramo de confirmar (comprobar + mover + registrar) va
+	// bajo el cerrojo del propietario: así dos subidas simultáneas no pueden
+	// pasarse las dos de la cuota. La lectura del cuerpo, lo lento, ya acabó.
+	if gate != nil {
+		unlock := s.owners.lock(in.OwnerID)
+		defer unlock()
+	}
+
 	rel := physicalPath(in.OwnerID, parent, in.Name)
 	existing, existingErr := s.files.GetFileByNaturalKey(ctx, pool.ID, in.OwnerID, parent, in.Name)
 	hasActiveExisting := existingErr == nil && !existing.IsTrashed()
+
+	if gate != nil {
+		if err := s.checkQuotaAtCommit(ctx, gate, in.OwnerID, size, sha, existing, hasActiveExisting); err != nil {
+			return nil, err
+		}
+	}
 
 	if hasActiveExisting && s.versioningEnabled && existing.SHA256 != sha {
 		if err := s.snapshotVersion(ctx, existing); err != nil {
@@ -224,6 +305,7 @@ func (s *FileService) Upload(ctx context.Context, in UploadInput) (*FileMeta, er
 	if err := s.files.UpsertFile(ctx, meta); err != nil {
 		return nil, err
 	}
+	s.enqueueThumbnailJob(ctx, meta)
 	return meta, nil
 }
 
@@ -404,6 +486,11 @@ func (s *FileService) RestoreVersion(ctx context.Context, requesterID, fileID st
 	if err := s.files.UpsertFile(ctx, meta); err != nil {
 		return nil, err
 	}
+	// Restaurar una versión cambia qué contenido es "el actual" (nuevo
+	// SHA256) -- la miniatura cacheada de la versión anterior ya no
+	// corresponde a este archivo, así que hace falta un job nuevo, mismo
+	// criterio que una subida (§34, ADR-041).
+	s.enqueueThumbnailJob(ctx, meta)
 	return meta, nil
 }
 

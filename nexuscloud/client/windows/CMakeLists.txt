@@ -106,3 +106,33 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# === libmpv reciente (ADR-046) ===
+# media_kit_libs_windows_video trae fija una libmpv de 2023-09 (FFmpeg sin
+# parches posteriores), y la vista previa la usa para decodificar vídeos que
+# pueden haber subido terceros. Se sustituye por una build reciente de
+# shinchiro/mpv-winbuild-cmake, verificada con el SHA-256 que GitHub publica
+# para ese asset. Para actualizarla: cambia nombre, URL y hash aquí, y el
+# hash de la DLL en deploy/scripts/package-client-windows.ps1, y repite la
+# batería de formatos descrita en el ADR.
+set(NEXUS_LIBMPV_ARCHIVE_NAME "mpv-dev-x86_64-20261010-git-b2c255c13e.7z")
+set(NEXUS_LIBMPV_URL "https://github.com/shinchiro/mpv-winbuild-cmake/releases/download/20261010/${NEXUS_LIBMPV_ARCHIVE_NAME}")
+set(NEXUS_LIBMPV_SHA256 "394490ed6354c2294b87c63dfa3663b23524b5551aace9cbe35c4085682b14fa")
+set(NEXUS_LIBMPV_ARCHIVE "${CMAKE_BINARY_DIR}/${NEXUS_LIBMPV_ARCHIVE_NAME}")
+set(NEXUS_LIBMPV_DIR "${CMAKE_BINARY_DIR}/nexus-libmpv-20261010")
+if(NOT EXISTS "${NEXUS_LIBMPV_DIR}/libmpv-2.dll")
+  file(DOWNLOAD "${NEXUS_LIBMPV_URL}" "${NEXUS_LIBMPV_ARCHIVE}"
+    EXPECTED_HASH SHA256=${NEXUS_LIBMPV_SHA256})
+  file(MAKE_DIRECTORY "${NEXUS_LIBMPV_DIR}")
+  execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E tar xf "${NEXUS_LIBMPV_ARCHIVE}"
+    WORKING_DIRECTORY "${NEXUS_LIBMPV_DIR}"
+    RESULT_VARIABLE NEXUS_LIBMPV_EXTRACT_RESULT)
+  if(NOT NEXUS_LIBMPV_EXTRACT_RESULT EQUAL 0 OR NOT EXISTS "${NEXUS_LIBMPV_DIR}/libmpv-2.dll")
+    message(FATAL_ERROR "No se pudo extraer libmpv-2.dll de ${NEXUS_LIBMPV_ARCHIVE_NAME}")
+  endif()
+endif()
+# Va DESPUÉS de PLUGIN_BUNDLED_LIBRARIES: sobrescribe la DLL del paquete.
+install(FILES "${NEXUS_LIBMPV_DIR}/libmpv-2.dll"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+  COMPONENT Runtime)

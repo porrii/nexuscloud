@@ -1,5 +1,10 @@
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:nexuscloud_client/core/di/service_locator.dart';
 import 'package:nexuscloud_client/core/network/api_client.dart';
 import 'package:nexuscloud_client/core/network/api_exception.dart';
@@ -9,12 +14,17 @@ import 'package:nexuscloud_client/features/auth/domain/entities/app_user.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/auto_login_outcome.dart';
 import 'package:nexuscloud_client/features/auth/domain/entities/login_result.dart';
 import 'package:nexuscloud_client/features/auth/domain/repositories/auth_repository.dart';
+import 'package:nexuscloud_client/features/files/data/browser_preferences.dart';
+import 'package:nexuscloud_client/features/files/data/file_content_service.dart';
+import 'package:nexuscloud_client/features/files/data/thumbnail_service.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/directory_listing.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_entry.dart';
 import 'package:nexuscloud_client/features/files/domain/entities/file_version.dart';
 import 'package:nexuscloud_client/features/files/domain/repositories/files_repository.dart';
 import 'package:nexuscloud_client/features/files/presentation/pages/file_browser_page.dart';
+import 'package:nexuscloud_client/features/files/presentation/preview/file_preview_dialog.dart';
+import 'package:nexuscloud_client/features/files/presentation/widgets/file_entry_views.dart';
 import 'package:nexuscloud_client/features/update/data/update_check_service.dart';
 
 class _FakeTokenStore implements TokenStore {
@@ -76,12 +86,15 @@ class _FakeFilesRepository implements FilesRepository {
   }) =>
       throw UnimplementedError();
 
+  final List<String> createdDirectories = [];
+
   @override
   Future<void> createDirectory({
     required String parentPath,
     required String name,
-  }) =>
-      throw UnimplementedError();
+  }) async {
+    createdDirectories.add('$parentPath|$name');
+  }
 
   @override
   Future<void> downloadFile({
@@ -107,13 +120,34 @@ class _FakeFilesRepository implements FilesRepository {
     deletedDirectoryIds.add(directoryId);
   }
 
-  @override
-  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
-      throw UnimplementedError();
+  /// `id|nuevoPadre|nuevoNombre` de cada movimiento/renombrado pedido.
+  final List<String> moves = [];
 
   @override
-  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
-      throw UnimplementedError();
+  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) async {
+    moves.add('$fileId|$newParentPath|$newName');
+    return FileEntry(
+      id: fileId,
+      parentPath: newParentPath ?? '/',
+      name: newName ?? 'x',
+      sizeBytes: 0,
+      sha256: '',
+      mimeType: '',
+      createdAt: DateTime.utc(2026),
+      updatedAt: DateTime.utc(2026),
+    );
+  }
+
+  @override
+  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) async {
+    moves.add('$directoryId|$newParentPath|$newName');
+    return DirectoryEntry(
+      id: directoryId,
+      parentPath: newParentPath ?? '/',
+      name: newName ?? 'x',
+      createdAt: DateTime.utc(2026),
+    );
+  }
 
   // restoreFile/restoreDirectory/listTrash son responsabilidad de
   // TrashPage, no de FileBrowserPage -- no los ejercita ningún test de
@@ -250,7 +284,9 @@ void main() {
 
       expect(find.byTooltip('Subir archivo'), findsOneWidget);
       expect(find.byTooltip('Descargar'), findsOneWidget);
-      expect(find.byTooltip('Sincronización'), findsOneWidget);
+      // "Sincronización" ya no es un icono del explorador: es una sección
+      // de la barra lateral del shell (AppShell).
+      expect(find.text('Nueva carpeta'), findsOneWidget);
     },
   );
 
@@ -337,7 +373,7 @@ void main() {
   );
 
   testWidgets(
-    'el icono de Historial solo aparece en filas de archivo, no de carpeta',
+    'el Historial de versiones solo aparece en el menú de un archivo, no de una carpeta',
     (tester) async {
       final filesRepo = sl<FilesRepository>() as _FakeFilesRepository;
       filesRepo.listingsByPath['/'] = DirectoryListing(
@@ -366,9 +402,24 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
       await tester.pumpAndSettle();
 
-      // Una sola fila de archivo -> un solo icono de Historial, ninguno
-      // asociado a la fila de la carpeta.
-      expect(find.byTooltip('Historial'), findsOneWidget);
+      // Menú "Más acciones" de la fila del archivo: incluye el historial.
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('entry-f:f1')),
+        matching: find.byTooltip('Más acciones'),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Historial de versiones'), findsOneWidget);
+      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await tester.pumpAndSettle();
+
+      // El de la carpeta, no (solo los archivos tienen versiones).
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('entry-d:d1')),
+        matching: find.byTooltip('Más acciones'),
+      ));
+      await tester.pumpAndSettle();
+      expect(find.text('Renombrar'), findsOneWidget);
+      expect(find.text('Historial de versiones'), findsNothing);
     },
   );
 
@@ -407,18 +458,336 @@ void main() {
       expect(find.byTooltip('Compartir'), findsNWidgets(2));
       expect(
         find.descendant(
-          of: find.widgetWithText(ListTile, 'Carpeta'),
+          of: find.byKey(const ValueKey('entry-d:d1')),
           matching: find.byTooltip('Compartir'),
         ),
         findsOneWidget,
       );
       expect(
         find.descendant(
-          of: find.widgetWithText(ListTile, 'archivo.txt'),
+          of: find.byKey(const ValueKey('entry-f:f1')),
           matching: find.byTooltip('Compartir'),
         ),
         findsOneWidget,
       );
     },
   );
+
+  group('explorador de escritorio', () {
+    FileEntry file(String id, String name, int size, DateTime updated) => FileEntry(
+          id: id,
+          parentPath: '/',
+          name: name,
+          sizeBytes: size,
+          sha256: 'abc',
+          mimeType: 'text/plain',
+          createdAt: DateTime.utc(2026),
+          updatedAt: updated,
+        );
+
+    void seedRoot(_FakeFilesRepository repo) {
+      repo.listingsByPath['/'] = DirectoryListing(
+        directories: [
+          DirectoryEntry(id: 'd1', parentPath: '/', name: 'Fotos', createdAt: DateTime.utc(2026)),
+        ],
+        files: [
+          file('f1', 'notas.txt', 10, DateTime.utc(2026, 1, 1)),
+          file('f2', 'grande.iso', 5000000, DateTime.utc(2026, 1, 2)),
+          file('f3', 'apuntes.md', 300, DateTime.utc(2026, 1, 3)),
+        ],
+      );
+    }
+
+    List<String> visibleOrder(WidgetTester tester) {
+      final keys = tester
+          .widgetList(find.byWidgetPredicate(
+            (w) => w.key is ValueKey<String> &&
+                (w.key! as ValueKey<String>).value.startsWith('entry-'),
+          ))
+          .map((w) => (w.key! as ValueKey<String>).value)
+          .toList();
+      return keys;
+    }
+
+    testWidgets('el filtro deja solo lo que coincide en la carpeta actual', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextField, 'Filtrar en esta carpeta'), 'NOT');
+      await tester.pumpAndSettle();
+
+      expect(find.text('notas.txt'), findsOneWidget);
+      expect(find.text('grande.iso'), findsNothing);
+      expect(find.text('Fotos'), findsNothing);
+    });
+
+    testWidgets('las carpetas van primero y la cabecera Tamaño reordena los archivos', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      // Por nombre ascendente: la carpeta primero, luego a-z.
+      expect(visibleOrder(tester), ['entry-d:d1', 'entry-f:f3', 'entry-f:f2', 'entry-f:f1']);
+
+      // Tamaño empieza descendente (lo más grande primero).
+      await tester.tap(find.text('TAMAÑO'));
+      await tester.pumpAndSettle();
+      expect(visibleOrder(tester), ['entry-d:d1', 'entry-f:f2', 'entry-f:f3', 'entry-f:f1']);
+    });
+
+    testWidgets('crea una carpeta nueva y recarga el listado', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      final requestsBefore = repo.requestedPaths.length;
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Nueva carpeta'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.widgetWithText(TextField, 'Nombre de la carpeta'), 'Facturas');
+      await tester.tap(find.widgetWithText(FilledButton, 'Crear'));
+      await tester.pumpAndSettle();
+
+      expect(repo.createdDirectories, ['/|Facturas']);
+      expect(repo.requestedPaths.length, greaterThan(requestsBefore));
+    });
+
+    testWidgets('no deja crear una carpeta con un nombre que ya existe aquí', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Nueva carpeta'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.widgetWithText(TextField, 'Nombre de la carpeta'), 'fotos');
+      await tester.tap(find.widgetWithText(FilledButton, 'Crear'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ya hay un elemento con ese nombre aquí.'), findsOneWidget);
+      expect(repo.createdDirectories, isEmpty);
+    });
+
+    testWidgets('renombra un archivo desde el menú contextual', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.descendant(
+        of: find.byKey(const ValueKey('entry-f:f1')),
+        matching: find.byTooltip('Más acciones'),
+      ));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Renombrar'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.widgetWithText(TextField, 'Nuevo nombre'), 'notas-2026.txt');
+      await tester.tap(find.widgetWithText(FilledButton, 'Renombrar'));
+      await tester.pumpAndSettle();
+
+      expect(repo.moves, ['f1|null|notas-2026.txt']);
+    });
+
+    testWidgets('Ctrl+clic suma a la selección y Supr manda el lote a la papelera', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('notas.txt'));
+      await tester.pump(const Duration(milliseconds: 500));
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+      await tester.tap(find.text('apuntes.md'));
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+      await tester.pumpAndSettle();
+
+      expect(find.text('2 seleccionados'), findsOneWidget);
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.delete);
+      await tester.pumpAndSettle();
+      expect(find.text('Mover 2 elementos a la papelera'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Mover a la papelera'));
+      await tester.pumpAndSettle();
+
+      expect(repo.deletedFileIds, unorderedEquals(['f1', 'f3']));
+    });
+
+    testWidgets('un clic en un archivo solo lo selecciona; Inicio + Intro entra en la carpeta', (tester) async {
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      seedRoot(repo);
+      repo.listingsByPath['/Fotos'] = const DirectoryListing(directories: [], files: []);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      // Un clic en un archivo solo lo selecciona.
+      await tester.tap(find.text('notas.txt'));
+      await tester.pumpAndSettle();
+      expect(find.text('1 seleccionado'), findsOneWidget);
+      expect(repo.requestedPaths, isNot(contains('/Fotos')));
+
+      // Inicio lleva la selección a la primera fila (la carpeta) e Intro
+      // la abre.
+      await tester.sendKeyEvent(LogicalKeyboardKey.home);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pumpAndSettle();
+      expect(repo.requestedPaths, contains('/Fotos'));
+    });
+
+    testWidgets('doble clic en un archivo abre la vista previa, no la descarga', (tester) async {
+      sl.registerSingleton<FileContentService>(_TextContentService());
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('notas.txt'));
+      await tester.pump(const Duration(milliseconds: 50));
+      await tester.tap(find.text('notas.txt'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(FilePreviewDialog), findsOneWidget);
+      expect(find.text('contenido de f1'), findsOneWidget);
+      // Se puede recorrer el resto de archivos de la carpeta (las carpetas no).
+      expect(find.text('3 de 3'), findsOneWidget);
+    });
+
+    testWidgets('recuerda la vista de cuadrícula al volver a abrir el explorador', (tester) async {
+      SharedPreferences.setMockInitialValues({});
+      sl.registerSingleton(BrowserPreferences());
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileListView), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Vista de cuadrícula'));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileGridView), findsOneWidget);
+      expect(await sl<BrowserPreferences>().readGridView(), isTrue);
+
+      // Un explorador nuevo (p. ej. tras reiniciar la app) sale en cuadrícula.
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      expect(find.byType(FileGridView), findsOneWidget);
+      expect(find.byType(FileListView), findsNothing);
+    });
+
+    testWidgets('al volver a la sección el foco vuelve a la lista', (tester) async {
+      seedRoot(sl<FilesRepository>() as _FakeFilesRepository);
+      var active = true;
+      late StateSetter setActive;
+      // Mismo envoltorio que el shell pone a cada sección.
+      await tester.pumpWidget(MaterialApp(
+        home: StatefulBuilder(builder: (context, setState) {
+          setActive = setState;
+          return TickerMode(
+            enabled: active,
+            child: ExcludeFocus(excluding: !active, child: const FileBrowserPage()),
+          );
+        }),
+      ));
+      await tester.pumpAndSettle();
+      String? focused() => FocusManager.instance.primaryFocus?.debugLabel;
+      expect(focused(), 'browser-list');
+
+      setActive(() => active = false);
+      await tester.pumpAndSettle();
+      expect(focused(), isNot('browser-list'));
+
+      setActive(() => active = true);
+      await tester.pumpAndSettle();
+      expect(focused(), 'browser-list');
+    });
+
+    testWidgets('la cuadrícula pinta la miniatura de una imagen y el icono del resto', (tester) async {
+      sl.registerSingleton(ThumbnailService(apiClient: _thumbnailApiClient()));
+      final repo = sl<FilesRepository>() as _FakeFilesRepository;
+      repo.listingsByPath['/'] = DirectoryListing(
+        directories: const [],
+        files: [
+          FileEntry(
+            id: 'img',
+            parentPath: '/',
+            name: 'playa.png',
+            sizeBytes: 10,
+            sha256: 'sha-img',
+            mimeType: 'image/png',
+            createdAt: DateTime.utc(2026),
+            updatedAt: DateTime.utc(2026),
+          ),
+          file('f1', 'notas.txt', 10, DateTime.utc(2026, 1, 1)),
+        ],
+      );
+
+      await tester.pumpWidget(const MaterialApp(home: FileBrowserPage()));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byTooltip('Vista de cuadrícula'));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
+      await tester.pumpAndSettle();
+
+      Finder imageIn(String key) => find.descendant(
+            of: find.byKey(ValueKey(key)),
+            matching: find.byType(Image),
+          );
+      expect(imageIn('entry-f:img'), findsOneWidget);
+      // Un .txt nunca tiene miniatura: ni se pide.
+      expect(imageIn('entry-f:f1'), findsNothing);
+      expect(_thumbnailRequests, ['/files/img/thumbnail']);
+    });
+  });
+}
+
+/// Sirve `contenido de <id>` para cualquier archivo.
+class _TextContentService implements FileContentService {
+  @override
+  Future<Uint8List> fetchBytes(String fileId, {int? maxBytes}) async =>
+      Uint8List.fromList(utf8.encode('contenido de $fileId'));
+
+  @override
+  Future<Uint8List> fetchPrefix(String fileId, {int length = 1024}) =>
+      throw UnimplementedError();
+
+  @override
+  Future<({Uri uri, Map<String, String> headers})> streamSource(String fileId) =>
+      throw UnimplementedError();
+}
+
+/// PNG de 1×1 px, suficiente para `Image.memory`.
+final _onePixelPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+);
+
+final List<String> _thumbnailRequests = [];
+
+/// ApiClient cuyo adaptador HTTP sirve siempre [_onePixelPng], sin red.
+ApiClient _thumbnailApiClient() {
+  _thumbnailRequests.clear();
+  final dio = Dio()..httpClientAdapter = _PngAdapter();
+  return ApiClient(
+    tokenStore: _FakeTokenStore(),
+    sessionExpiryNotifier: SessionExpiryNotifier(),
+    dio: dio,
+  )..configureBaseUrl('http://test.local');
+}
+
+class _PngAdapter implements HttpClientAdapter {
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) async {
+    _thumbnailRequests.add(options.path);
+    return ResponseBody.fromBytes(_onePixelPng, 200, headers: {
+      Headers.contentTypeHeader: ['image/jpeg'],
+    });
+  }
+
+  @override
+  void close({bool force = false}) {}
 }

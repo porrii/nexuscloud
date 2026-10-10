@@ -7,7 +7,7 @@ import '../datasources/files_remote_data_source.dart';
 
 class FilesRepositoryImpl implements FilesRepository {
   FilesRepositoryImpl({required FilesRemoteDataSource remoteDataSource})
-      : _remoteDataSource = remoteDataSource;
+    : _remoteDataSource = remoteDataSource;
 
   final FilesRemoteDataSource _remoteDataSource;
 
@@ -20,32 +20,29 @@ class FilesRepositoryImpl implements FilesRepository {
     required String localFilePath,
     required String fileName,
     TransferProgress? onProgress,
-  }) =>
-      _remoteDataSource.uploadFile(
-        parentPath: parentPath,
-        localFilePath: localFilePath,
-        fileName: fileName,
-        onProgress: onProgress,
-      );
+  }) => _remoteDataSource.uploadFile(
+    parentPath: parentPath,
+    localFilePath: localFilePath,
+    fileName: fileName,
+    onProgress: onProgress,
+  );
 
   @override
   Future<void> createDirectory({
     required String parentPath,
     required String name,
-  }) =>
-      _remoteDataSource.createDirectory(parentPath: parentPath, name: name);
+  }) => _remoteDataSource.createDirectory(parentPath: parentPath, name: name);
 
   @override
   Future<void> downloadFile({
     required FileEntry file,
     required String saveToPath,
     TransferProgress? onProgress,
-  }) =>
-      _remoteDataSource.downloadFile(
-        file: file,
-        saveToPath: saveToPath,
-        onProgress: onProgress,
-      );
+  }) => _remoteDataSource.downloadFile(
+    file: file,
+    saveToPath: saveToPath,
+    onProgress: onProgress,
+  );
 
   @override
   Future<void> deleteFile(String fileId, {bool permanent = false}) =>
@@ -56,12 +53,26 @@ class FilesRepositoryImpl implements FilesRepository {
       _remoteDataSource.deleteDirectory(directoryId, permanent: permanent);
 
   @override
-  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) =>
-      _remoteDataSource.moveFile(fileId, newParentPath: newParentPath, newName: newName);
+  Future<FileEntry> moveFile(
+    String fileId, {
+    String? newParentPath,
+    String? newName,
+  }) => _remoteDataSource.moveFile(
+    fileId,
+    newParentPath: newParentPath,
+    newName: newName,
+  );
 
   @override
-  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) =>
-      _remoteDataSource.moveDirectory(directoryId, newParentPath: newParentPath, newName: newName);
+  Future<DirectoryEntry> moveDirectory(
+    String directoryId, {
+    String? newParentPath,
+    String? newName,
+  }) => _remoteDataSource.moveDirectory(
+    directoryId,
+    newParentPath: newParentPath,
+    newName: newName,
+  );
 
   @override
   Future<void> restoreFile(String fileId) =>
@@ -84,13 +95,12 @@ class FilesRepositoryImpl implements FilesRepository {
     required FileVersion version,
     required String saveToPath,
     TransferProgress? onProgress,
-  }) =>
-      _remoteDataSource.downloadVersion(
-        fileId: fileId,
-        version: version,
-        saveToPath: saveToPath,
-        onProgress: onProgress,
-      );
+  }) => _remoteDataSource.downloadVersion(
+    fileId: fileId,
+    version: version,
+    saveToPath: saveToPath,
+    onProgress: onProgress,
+  );
 
   @override
   Future<FileEntry> restoreVersion({

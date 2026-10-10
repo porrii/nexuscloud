@@ -23,7 +23,8 @@ func newUsersCmd() *cobra.Command {
 		Short: "Gestión de usuarios (§20-21)",
 	}
 	cmd.AddCommand(newUsersListCmd(), newUsersCreateCmd(), newUsersDisableCmd(), newUsersEnableCmd(),
-		newUsersEditCmd(), newUsersDeleteCmd(), newUsersGroupCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(), newUsersWebdavTokenCmd(), newUsersInvitationCmd())
+		newUsersEditCmd(), newUsersDeleteCmd(), newUsersSetRoleCmd(), newUsersResetPasswordCmd(), newUsersGroupCmd(), newUsersQuotaCmd(), newUsersTotpCmd(), newUsersWebauthnCmd(),
+		newUsersWebdavTokenCmd(), newUsersAPITokenCmd(), newUsersInvitationCmd())
 	return cmd
 }
 
@@ -59,6 +60,7 @@ func newUsersCreateCmd() *cobra.Command {
 		username string
 		role     string
 		password string
+		quota    string
 	)
 	cmd := &cobra.Command{
 		Use:   "create",
@@ -66,6 +68,13 @@ func newUsersCreateCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if username == "" {
 				return fmt.Errorf("--username es obligatorio")
+			}
+			var quotaBytes *int64
+			if cmd.Flags().Changed("quota") {
+				var err error
+				if quotaBytes, err = parseQuotaFlag(quota); err != nil {
+					return err
+				}
 			}
 
 			cfg, err := loadConfig()
@@ -99,6 +108,7 @@ func newUsersCreateCmd() *cobra.Command {
 				Username:     username,
 				PasswordHash: hash,
 				Role:         role,
+				QuotaBytes:   quotaBytes,
 			})
 			if err != nil {
 				return err
@@ -110,6 +120,7 @@ func newUsersCreateCmd() *cobra.Command {
 	cmd.Flags().StringVar(&username, "username", "", "nombre de usuario (obligatorio)")
 	cmd.Flags().StringVar(&role, "role", "", "rol (por defecto: user)")
 	cmd.Flags().StringVar(&password, "password", "", "contraseña (si se omite, se solicita de forma interactiva sin eco)")
+	cmd.Flags().StringVar(&quota, "quota", "", "cuota de almacenamiento: un tamaño (100GB), unlimited o inherit (por defecto hereda la del grupo o la global)")
 	return cmd
 }
 
@@ -122,16 +133,25 @@ func newUsersGroupCmd() *cobra.Command {
 		Use:   "group",
 		Short: "Gestión de grupos (§22)",
 	}
-	cmd.AddCommand(newUsersGroupCreateCmd(), newUsersGroupAddMemberCmd())
+	cmd.AddCommand(newUsersGroupCreateCmd(), newUsersGroupEditCmd(), newUsersGroupAddMemberCmd(),
+		newUsersGroupMembersCmd(), newUsersGroupRemoveMemberCmd(), newUsersGroupRenameCmd(), newUsersGroupDeleteCmd())
 	return cmd
 }
 
 func newUsersGroupCreateCmd() *cobra.Command {
-	return &cobra.Command{
+	var quota string
+	cmd := &cobra.Command{
 		Use:   "create <nombre>",
 		Short: "Crea un grupo",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			var quotaBytes *int64
+			if cmd.Flags().Changed("quota") {
+				var err error
+				if quotaBytes, err = parseQuotaFlag(quota); err != nil {
+					return err
+				}
+			}
 			cfg, err := loadConfig()
 			if err != nil {
 				return err
@@ -142,7 +162,7 @@ func newUsersGroupCreateCmd() *cobra.Command {
 			}
 			defer sqlDB.Close()
 
-			g := &users.Group{ID: idgen.New(), Name: args[0], CreatedAt: time.Now().UTC()}
+			g := &users.Group{ID: idgen.New(), Name: args[0], QuotaBytes: quotaBytes, CreatedAt: time.Now().UTC()}
 			if err := userRepo.CreateGroup(context.Background(), g); err != nil {
 				return err
 			}
@@ -150,6 +170,8 @@ func newUsersGroupCreateCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&quota, "quota", "", "cuota por miembro: un tamaño (500GB), unlimited o inherit (por defecto el grupo no aporta cuota)")
+	return cmd
 }
 
 func newUsersGroupAddMemberCmd() *cobra.Command {
@@ -319,12 +341,12 @@ func newUsersTotpDisableCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("usuario %q no encontrado: %w", username, err)
 			}
-			u.TOTPSecret = ""
-			u.UpdatedAt = time.Now().UTC()
-			if err := userRepo.UpdateUser(context.Background(), u); err != nil {
+			// Mismo servicio que DELETE /users/{id}/totp (ADR-042 Decisión
+			// 10): además de quitar el secreto, cierra sus sesiones.
+			if err := openAccountAdmin(cfg, sqlDB, userRepo).RemoveTOTP(context.Background(), "", u.ID); err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q.\n", username)
+			fmt.Fprintf(cmd.OutOrStdout(), "2FA desactivado para %q y sus sesiones cerradas.\n", username)
 			return nil
 		},
 	}
@@ -420,14 +442,15 @@ func newUsersWebauthnRevokeCmd() *cobra.Command {
 			}
 			// DeleteCredential exige coincidencia de userID (§198 IDOR):
 			// --username no es solo cosmético, evita revocar por error el
-			// passkey de otro usuario aunque se acierte el ID.
-			if err := openWebAuthnCredRepo(cfg, sqlDB).DeleteCredential(context.Background(), args[0], u.ID); err != nil {
+			// passkey de otro usuario aunque se acierte el ID. Mismo servicio
+			// que la API (ADR-042 Decisión 10): también cierra sus sesiones.
+			if err := openAccountAdmin(cfg, sqlDB, userRepo).RemovePasskey(context.Background(), "", u.ID, args[0]); err != nil {
 				if errors.Is(err, auth.ErrWebAuthnCredentialNotFound) {
 					return fmt.Errorf("passkey %q no encontrado para %q", args[0], username)
 				}
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q.\n", args[0], username)
+			fmt.Fprintf(cmd.OutOrStdout(), "Passkey %q revocado para %q y sus sesiones cerradas.\n", args[0], username)
 			return nil
 		},
 	}
@@ -610,6 +633,10 @@ func newUsersDisableCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Nunca cero super_admin activos (ADR-042 Decisión 8).
+			if err := userSvc.EnsureNotLastSuperAdmin(context.Background(), u.ID); err != nil {
+				return err
+			}
 			if err := userSvc.Disable(context.Background(), u.ID); err != nil {
 				return err
 			}
@@ -660,14 +687,21 @@ func newUsersEnableCmd() *cobra.Command {
 }
 
 func newUsersEditCmd() *cobra.Command {
-	var displayName, email string
+	var displayName, email, quota string
 	cmd := &cobra.Command{
 		Use:   "edit <username>",
-		Short: "Edita el nombre visible o el email de un usuario",
+		Short: "Edita el nombre visible, el email o la cuota de un usuario",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if !cmd.Flags().Changed("display-name") && !cmd.Flags().Changed("email") {
-				return fmt.Errorf("indica al menos --display-name o --email")
+			if !cmd.Flags().Changed("display-name") && !cmd.Flags().Changed("email") && !cmd.Flags().Changed("quota") {
+				return fmt.Errorf("indica al menos --display-name, --email o --quota")
+			}
+			var quotaBytes *int64
+			if cmd.Flags().Changed("quota") {
+				var err error
+				if quotaBytes, err = parseQuotaFlag(quota); err != nil {
+					return err
+				}
 			}
 			cfg, err := loadConfig()
 			if err != nil {
@@ -689,6 +723,9 @@ func newUsersEditCmd() *cobra.Command {
 			if cmd.Flags().Changed("email") {
 				u.Email = email
 			}
+			if cmd.Flags().Changed("quota") {
+				u.QuotaBytes = quotaBytes
+			}
 			u.UpdatedAt = time.Now().UTC()
 			if err := userRepo.UpdateUser(context.Background(), u); err != nil {
 				return err
@@ -699,6 +736,7 @@ func newUsersEditCmd() *cobra.Command {
 	}
 	cmd.Flags().StringVar(&displayName, "display-name", "", "nuevo nombre visible")
 	cmd.Flags().StringVar(&email, "email", "", "nuevo email")
+	cmd.Flags().StringVar(&quota, "quota", "", "cuota de almacenamiento: un tamaño (100GB), unlimited (sin límite) o inherit (hereda la del grupo o la global)")
 	return cmd
 }
 
@@ -730,6 +768,10 @@ func newUsersDeleteCmd() *cobra.Command {
 
 			u, err := userRepo.GetUserByUsername(context.Background(), args[0])
 			if err != nil {
+				return err
+			}
+			// Nunca cero super_admin activos (ADR-042 Decisión 8).
+			if err := users.NewService(userRepo).EnsureNotLastSuperAdmin(context.Background(), u.ID); err != nil {
 				return err
 			}
 			if err := userRepo.DeleteUser(context.Background(), u.ID); err != nil {

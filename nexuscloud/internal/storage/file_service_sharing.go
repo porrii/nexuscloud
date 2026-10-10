@@ -302,11 +302,24 @@ func (s *FileService) ListSharedDirectory(ctx context.Context, requesterID, dire
 // Share.checkLifecycle, para poder distinguir un probe de metadata (que
 // quiere mostrar el estado) de un intento real de acceso (que debe
 // rechazarlo).
+//
+// Sí comprueba que el propietario siga activo (ADR-043): el enlace de una
+// cuenta desactivada responde ErrShareNotFound, igual que un token que no
+// existe -- ni el probe de metadata debe revelar que existió. Va aquí, antes
+// del ciclo de vida, de la contraseña (Argon2id) y del contador de
+// descargas, porque todo acceso público pasa por esta función.
 func (s *FileService) ResolvePublicShare(ctx context.Context, token string) (*Share, error) {
 	if !s.publicLinksEnabled {
 		return nil, ErrPublicLinksDisabled
 	}
-	return s.shares.GetShareByTokenHash(ctx, hashShareToken(token))
+	share, err := s.shares.GetShareByTokenHash(ctx, hashShareToken(token))
+	if err != nil {
+		return nil, err
+	}
+	if err := s.requireActiveOwner(ctx, share.OwnerID, ErrShareNotFound); err != nil {
+		return nil, err
+	}
+	return share, nil
 }
 
 // verifySharePassword no distingue entre "sin contraseña" y "contraseña
@@ -449,6 +462,9 @@ type PublicUploadInput struct {
 	SubPath  string
 	Name     string
 	Content  io.Reader
+	// SizeHint es el tamaño anunciado (Content-Length; 0 = desconocido): ver
+	// UploadInput.SizeHint.
+	SizeHint int64
 }
 
 // UploadViaPublicShare exige un share de carpeta con CanUpload=true.
@@ -481,34 +497,40 @@ func (s *FileService) UploadViaPublicShare(ctx context.Context, in PublicUploadI
 
 	content := in.Content
 	if share.MaxUploadSizeBytes != nil {
-		content = &errLimitReader{r: content, remaining: *share.MaxUploadSizeBytes}
+		content = &errLimitReader{r: content, remaining: *share.MaxUploadSizeBytes, err: ErrShareUploadTooLarge}
 	}
 
-	return s.Upload(ctx, UploadInput{OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content, NoOverwrite: true})
+	// La cuota que cuenta es la del propietario de la carpeta (los archivos
+	// subidos son suyos, ADR-036), que Upload aplica por OwnerID.
+	return s.Upload(ctx, UploadInput{
+		OwnerID: dir.OwnerID, ParentPath: target, Name: in.Name, Content: content, SizeHint: in.SizeHint, NoOverwrite: true,
+	})
 }
 
-// errLimitReader corta la lectura con ErrShareUploadTooLarge en cuanto se
-// intenta leer más de `remaining` bytes, a diferencia de io.LimitReader
-// (que trunca en silencio devolviendo EOF). No depende de net/http
-// (http.MaxBytesReader exigiría un http.ResponseWriter, no disponible en
-// esta capa), así que sirve igual para subidas vía enlace público que para
-// cualquier otro origen futuro del contenido.
+// errLimitReader corta la lectura con el error `err` (ErrShareUploadTooLarge
+// para el límite de un enlace o carpeta compartida, ErrQuotaExceeded para la
+// cuota del propietario) en cuanto se intenta leer más de `remaining` bytes, a
+// diferencia de io.LimitReader (que trunca en silencio devolviendo EOF). No
+// depende de net/http (http.MaxBytesReader exigiría un http.ResponseWriter, no
+// disponible en esta capa), así que sirve igual para subidas vía enlace
+// público que para cualquier otro origen futuro del contenido.
 type errLimitReader struct {
 	r         io.Reader
 	remaining int64
+	err       error
 }
 
 // Read pide siempre un byte más de lo permitido (remaining+1): si el origen
 // tiene exactamente `remaining` bytes, esa lectura de más devuelve EOF de
 // forma natural (fin real del contenido) y nunca se dispara el error; si
 // tiene más, se lee ese byte de más, remaining pasa a negativo y se
-// devuelve ErrShareUploadTooLarge junto con los bytes ya leídos (io.Copy los
-// escribe igualmente antes de propagar el error, pero Upload nunca promueve
-// el fichero de staging a destino final cuando hay un error, así que no
-// queda contenido parcial).
+// devuelve l.err junto con los bytes ya leídos (io.Copy los escribe
+// igualmente antes de propagar el error, pero Upload nunca promueve el
+// fichero de staging a destino final cuando hay un error, así que no queda
+// contenido parcial).
 func (l *errLimitReader) Read(p []byte) (int, error) {
 	if l.remaining < 0 {
-		return 0, ErrShareUploadTooLarge
+		return 0, l.err
 	}
 	if int64(len(p)) > l.remaining+1 {
 		p = p[:l.remaining+1]
@@ -516,7 +538,7 @@ func (l *errLimitReader) Read(p []byte) (int, error) {
 	n, err := l.r.Read(p)
 	l.remaining -= int64(n)
 	if l.remaining < 0 {
-		return n, ErrShareUploadTooLarge
+		return n, l.err
 	}
 	return n, err
 }
@@ -528,6 +550,9 @@ type SharedUploadInput struct {
 	DirectoryID string
 	Name        string
 	Content     io.Reader
+	// SizeHint es el tamaño anunciado (Content-Length; 0 = desconocido): ver
+	// UploadInput.SizeHint.
+	SizeHint int64
 }
 
 // UploadToSharedDirectory sube un archivo NUEVO a una carpeta que requesterID
@@ -562,13 +587,15 @@ func (s *FileService) UploadToSharedDirectory(ctx context.Context, in SharedUplo
 		}
 		shareID = grant.ID
 		if grant.MaxUploadSizeBytes != nil {
-			content = &errLimitReader{r: content, remaining: *grant.MaxUploadSizeBytes}
+			content = &errLimitReader{r: content, remaining: *grant.MaxUploadSizeBytes, err: ErrShareUploadTooLarge}
 		}
 	}
 
+	// Los archivos son del propietario de la carpeta: Upload aplica SU cuota
+	// (ADR-036), no la de quien sube.
 	meta, err := s.Upload(ctx, UploadInput{
 		OwnerID: dir.OwnerID, ParentPath: path.Join(dir.ParentPath, dir.Name), Name: in.Name, Content: content,
-		NoOverwrite: true,
+		SizeHint: in.SizeHint, NoOverwrite: true,
 	})
 	if err != nil {
 		return nil, "", err

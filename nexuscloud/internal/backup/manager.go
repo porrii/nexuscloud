@@ -582,8 +582,12 @@ func (m *Manager) RestoreToPool(ctx context.Context, opts RestoreToPoolOptions) 
 				result.Errors = append(result.Errors, fmt.Errorf("descifrando %s: %w", label, err))
 				continue
 			}
+			// SkipQuota (ADR-036): restaurar tras un desastre no debe fallar
+			// porque la cuota del propietario haya cambiado desde el backup;
+			// si lo restaurado lo deja por encima, solo se bloquean subidas nuevas.
 			_, uploadErr := m.fileSvc.Upload(ctx, storage.UploadInput{
 				OwnerID: fm.OwnerID, ParentPath: fm.ParentPath, Name: fm.Name, Content: content, PoolID: opts.PoolID,
+				SkipQuota: true,
 			})
 			f.Close()
 			if uploadErr != nil {

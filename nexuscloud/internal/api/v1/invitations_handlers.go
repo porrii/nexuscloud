@@ -10,6 +10,7 @@ import (
 	"github.com/porrii/nexuscloud/internal/audit"
 	"github.com/porrii/nexuscloud/internal/auth"
 	"github.com/porrii/nexuscloud/internal/security"
+	"github.com/porrii/nexuscloud/internal/users"
 )
 
 type invitationResponse struct {
@@ -49,6 +50,19 @@ func (h *Handlers) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Una invitación de super_admin concede ese rol (ADR-042 Decisión 8).
+	if req.Role == users.RoleSuperAdmin {
+		actorRole, err := h.UserSvc.PrimaryRole(r.Context(), actor.ID)
+		if err != nil {
+			h.writeAccountAdminError(w, err, "Usuario no encontrado.")
+			return
+		}
+		if actorRole != users.RoleSuperAdmin {
+			h.writeAccountAdminError(w, users.ErrSuperAdminProtected, "")
+			return
+		}
+	}
+
 	var ttl time.Duration
 	if req.TTLHours > 0 {
 		ttl = time.Duration(req.TTLHours) * time.Hour
@@ -57,6 +71,10 @@ func (h *Handlers) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 	inv, token, err := h.Invitations.Create(r.Context(), auth.CreateInvitationInput{
 		CreatedBy: actor.ID, RoleID: req.Role, MaxUses: req.MaxUses, TTL: ttl,
 	})
+	if errors.Is(err, users.ErrInvalidRole) {
+		writeError(w, http.StatusBadRequest, "invalid_role", err.Error())
+		return
+	}
 	if err != nil {
 		h.Logger.Error("creando invitación", "error", err)
 		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo crear la invitación.")

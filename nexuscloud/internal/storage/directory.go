@@ -59,4 +59,10 @@ type DirectoryRepository interface {
 	// FileService (que solo conoce las interfaces de repositorio, nunca
 	// SQL directamente, §195-196).
 	MoveDirectoryTree(ctx context.Context, poolID, ownerID, id, oldFullPath, newParentPath, newName, newFullPath string) error
+	// SearchDirectories/SearchDirectoriesAllOwners: ver el mismo par en
+	// FileRepository (§33). MimeType/Ext/SizeMin/SizeMax de SearchFilters no
+	// aplican a una carpeta (no tiene tipo, extensión ni tamaño propio) --
+	// se ignoran aquí, no se rechazan.
+	SearchDirectories(ctx context.Context, ownerID string, f SearchFilters) ([]*Directory, error)
+	SearchDirectoriesAllOwners(ctx context.Context, f SearchFilters, ownerID string) ([]*Directory, error)
 }

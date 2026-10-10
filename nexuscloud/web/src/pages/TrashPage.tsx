@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiClientError, type DirectoryEntry, type FileEntry, type ListResult } from '../api/client'
 import ConfirmDialog from '../components/ConfirmDialog'
+import { notifyUsageChanged } from '../quota'
 
 type PendingForever = { kind: 'file'; entry: FileEntry } | { kind: 'directory'; entry: DirectoryEntry }
 
@@ -58,6 +59,7 @@ export default function TrashPage() {
         await api.deleteDirectoryForever(pendingForever.entry.id)
       }
       setPendingForever(null)
+      notifyUsageChanged() // vaciar la papelera es lo que libera espacio de verdad
       await load()
     } catch (err) {
       setPendingForever(null)

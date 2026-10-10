@@ -86,6 +86,58 @@ func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+type reauthenticateRequest struct {
+	Password string `json:"password"`
+	TOTPCode string `json:"totp_code,omitempty"`
+}
+
+type reauthenticateResponse struct {
+	ReauthenticatedUntil time.Time `json:"reauthenticated_until"`
+}
+
+// Reauthenticate es el modo «sudo» (§126, ADR-042 Decisión 2): la sesión
+// actual vuelve a presentar la contraseña (y el TOTP si la cuenta lo tiene)
+// y durante auth.ReauthWindow puede hacer las acciones protegidas. Va bajo
+// el rate limit de login, con los mismos errores genéricos que el login.
+func (h *Handlers) Reauthenticate(w http.ResponseWriter, r *http.Request) {
+	u, _ := UserFromContext(r.Context())
+	sess, ok := SessionFromContext(r.Context())
+	if !ok || sess == nil {
+		writeError(w, http.StatusForbidden, "reauth_unavailable",
+			"La reautenticación solo existe para sesiones iniciadas con contraseña, no para tokens de API.")
+		return
+	}
+	var req reauthenticateRequest
+	if err := readJSON(r, &req); err != nil || req.Password == "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "password es obligatorio.")
+		return
+	}
+
+	ip := security.ClientIP(r, h.TrustedProxies)
+	if err := h.Auth.Reauthenticate(r.Context(), sess, req.Password, req.TOTPCode); err != nil {
+		h.AuditLog.Record(r.Context(), audit.EventLoginFailed, u.ID, "user", u.ID, ip,
+			map[string]any{"via": "reauthenticate", "reason": err.Error()})
+		code, msg := "unauthorized", "Contraseña incorrecta."
+		switch {
+		case errors.Is(err, auth.ErrTOTPRequired):
+			code, msg = "totp_required", "Se requiere código de doble factor."
+		case errors.Is(err, auth.ErrTOTPInvalid):
+			code, msg = "totp_invalid", "Código de doble factor incorrecto."
+		case errors.Is(err, auth.ErrAuthenticationFailed), errors.Is(err, auth.ErrUserDisabled), errors.Is(err, auth.ErrSessionNotFound):
+		default:
+			h.Logger.Error("reautenticando la sesión", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo completar la operación.")
+			return
+		}
+		// 403 y no 401: la sesión sigue siendo válida, y un 401 haría que el
+		// cliente la diera por caducada y cerrara sesión.
+		writeError(w, http.StatusForbidden, code, msg)
+		return
+	}
+	h.AuditLog.Record(r.Context(), audit.EventReauthenticated, u.ID, "user", u.ID, ip, nil)
+	writeJSON(w, http.StatusOK, reauthenticateResponse{ReauthenticatedUntil: sess.ReauthenticatedAt.Add(auth.ReauthWindow)})
+}
+
 func (h *Handlers) ListSessions(w http.ResponseWriter, r *http.Request) {
 	u, _ := UserFromContext(r.Context())
 	sessions, err := h.SessionRepo.ListSessionsForUser(r.Context(), u.ID)

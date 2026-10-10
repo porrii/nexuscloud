@@ -1,8 +1,11 @@
 package apiv1
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -34,6 +37,9 @@ func (h *Handlers) ListGroups(w http.ResponseWriter, r *http.Request) {
 
 type createGroupRequest struct {
 	Name string `json:"name"`
+	// QuotaBytes: cuota por miembro opcional (§24); ausente o null = el grupo
+	// no aporta cuota.
+	QuotaBytes json.RawMessage `json:"quota_bytes,omitempty"`
 }
 
 // CreateGroup cierra el hueco encontrado en la auditoría "todo por
@@ -51,8 +57,13 @@ func (h *Handlers) CreateGroup(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_request", "name es obligatorio.")
 		return
 	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
 
-	g := &users.Group{ID: idgen.New(), Name: req.Name, CreatedAt: time.Now().UTC()}
+	g := &users.Group{ID: idgen.New(), Name: req.Name, QuotaBytes: quota.value, CreatedAt: time.Now().UTC()}
 	if err := h.UserRepo.CreateGroup(r.Context(), g); err != nil {
 		if errors.Is(err, users.ErrAlreadyExists) {
 			writeError(w, http.StatusConflict, "already_exists", "Ya existe un grupo con ese nombre.")
@@ -66,6 +77,142 @@ func (h *Handlers) CreateGroup(w http.ResponseWriter, r *http.Request) {
 	h.AuditLog.Record(r.Context(), audit.EventGroupCreated, actor.ID, "group", g.ID,
 		security.ClientIP(r, h.TrustedProxies), map[string]any{"name": g.Name})
 	writeJSON(w, http.StatusCreated, toGroupResponse(g))
+}
+
+type patchGroupRequest struct {
+	// Name (ADR-042 Decisión 11): ausente = no se renombra.
+	Name *string `json:"name,omitempty"`
+	// QuotaBytes es tri-estado: null = el grupo deja de aportar cuota, 0 =
+	// ilimitada para sus miembros, >0 = límite por miembro; ausente = no se
+	// toca. Hace falta al menos uno de los dos campos.
+	QuotaBytes json.RawMessage `json:"quota_bytes"`
+}
+
+// PatchGroup renombra el grupo (ADR-042 Decisión 11) y/o fija su cuota por
+// miembro (§24, ADR-036). Un PATCH sin ninguno de los dos campos no haría
+// nada y se rechaza. Admin-only.
+func (h *Handlers) PatchGroup(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+
+	group, err := h.UserRepo.GetGroupByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, users.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "not_found", "Grupo no encontrado.")
+			return
+		}
+		h.Logger.Error("buscando grupo", "error", err)
+		writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo actualizar el grupo.")
+		return
+	}
+
+	var req patchGroupRequest
+	if err := readJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Cuerpo de la petición inválido.")
+		return
+	}
+	quota, err := parseQuotaField(req.QuotaBytes)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	if !quota.present && req.Name == nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Indica name y/o quota_bytes (null = sin cuota, 0 = ilimitada).")
+		return
+	}
+
+	if req.Name != nil && strings.TrimSpace(*req.Name) != group.Name {
+		newName := strings.TrimSpace(*req.Name)
+		if err := h.UserSvc.RenameGroup(r.Context(), id, newName); err != nil {
+			h.writeAccountAdminError(w, err, "Grupo no encontrado.")
+			return
+		}
+		h.AuditLog.Record(r.Context(), audit.EventGroupRenamed, actor.ID, "group", group.ID, security.ClientIP(r, h.TrustedProxies),
+			map[string]any{"before": group.Name, "after": newName})
+		group.Name = newName
+	}
+
+	if quota.present {
+		if err := h.UserSvc.SetGroupQuota(r.Context(), id, quota.value); err != nil {
+			if errors.Is(err, users.ErrNotFound) {
+				writeError(w, http.StatusNotFound, "not_found", "Grupo no encontrado.")
+				return
+			}
+			h.Logger.Error("actualizando la cuota del grupo", "error", err)
+			writeError(w, http.StatusInternalServerError, "internal_error", "No se pudo actualizar el grupo.")
+			return
+		}
+		if !sameQuota(group.QuotaBytes, quota.value) {
+			h.AuditLog.Record(r.Context(), audit.EventQuotaChanged, actor.ID, "group", group.ID, security.ClientIP(r, h.TrustedProxies),
+				map[string]any{"name": group.Name, "before": quotaValue(group.QuotaBytes), "after": quotaValue(quota.value)})
+		}
+		group.QuotaBytes = quota.value
+	}
+	writeJSON(w, http.StatusOK, toGroupResponse(group))
+}
+
+// ListGroupMembers (GET /groups/{id}/members, ADR-042 Decisión 11).
+func (h *Handlers) ListGroupMembers(w http.ResponseWriter, r *http.Request) {
+	members, err := h.UserSvc.ListGroupMembers(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		h.writeAccountAdminError(w, err, "Grupo no encontrado.")
+		return
+	}
+	out := make([]userResponse, 0, len(members))
+	for _, u := range members {
+		out = append(out, toUserResponse(u))
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// RemoveGroupMember (DELETE /groups/{id}/members/{userId}).
+func (h *Handlers) RemoveGroupMember(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserFromContext(r.Context())
+	groupID, userID := chi.URLParam(r, "id"), chi.URLParam(r, "userId")
+	if err := h.UserSvc.RemoveGroupMember(r.Context(), groupID, userID); err != nil {
+		h.writeAccountAdminError(w, err, "Ese usuario no es miembro del grupo.")
+		return
+	}
+	h.AuditLog.Record(r.Context(), audit.EventGroupMemberRemoved, actor.ID, "group", groupID,
+		security.ClientIP(r, h.TrustedProxies), map[string]any{"user_id": userID})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// DeleteGroup (DELETE /groups/{id}?expected_shares=N, con reautenticación).
+// Borrar un grupo se lleva por la cascada de la FK sus membresías y las
+// comparticiones dirigidas a él (ADR-042 Decisión 11). Para que nadie las
+// pierda sin saberlo, el cliente tiene que confirmar cuántas son: sin
+// expected_shares, o con un número que ya no coincide, responde 409
+// confirm_required con el recuento actual y no borra nada.
+func (h *Handlers) DeleteGroup(w http.ResponseWriter, r *http.Request) {
+	actor, _ := UserFromContext(r.Context())
+	id := chi.URLParam(r, "id")
+	group, err := h.UserRepo.GetGroupByID(r.Context(), id)
+	if err != nil {
+		h.writeAccountAdminError(w, err, "Grupo no encontrado.")
+		return
+	}
+	shares, err := h.Files.CountActiveSharesForGroup(r.Context(), id)
+	if err != nil {
+		h.writeAccountAdminError(w, err, "")
+		return
+	}
+	expected, convErr := strconv.Atoi(r.URL.Query().Get("expected_shares"))
+	if convErr != nil || expected != shares {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": map[string]any{
+			"code":    "confirm_required",
+			"message": "Confirma el borrado: se perderán las comparticiones dirigidas a este grupo.",
+			"shares":  shares,
+		}})
+		return
+	}
+	if err := h.UserSvc.DeleteGroup(r.Context(), id); err != nil {
+		h.writeAccountAdminError(w, err, "Grupo no encontrado.")
+		return
+	}
+	h.AuditLog.Record(r.Context(), audit.EventGroupDeleted, actor.ID, "group", id,
+		security.ClientIP(r, h.TrustedProxies), map[string]any{"name": group.Name, "shares_lost": shares})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 type addGroupMemberRequest struct {

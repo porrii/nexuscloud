@@ -30,10 +30,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     refresh().finally(() => setLoading(false))
   }, [refresh])
 
-  const login = useCallback(async (username: string, password: string, totpCode?: string) => {
-    const res = await api.login(username, password, totpCode)
-    setUser(res.user)
-  }, [])
+  const login = useCallback(
+    async (username: string, password: string, totpCode?: string) => {
+      await api.login(username, password, totpCode)
+      // No usamos el `user` embebido en la respuesta de login: viene de
+      // toUserResponse (sin is_admin, §33/ADR-040) y aquí necesitamos la
+      // forma completa de /users/me -- mismo mecanismo que ya usa el login
+      // con passkey (LoginPage.tsx) para leer la sesión recién creada.
+      await refresh()
+    },
+    [refresh],
+  )
 
   const logout = useCallback(async () => {
     await api.logout().catch(() => {

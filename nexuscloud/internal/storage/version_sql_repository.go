@@ -16,13 +16,24 @@ func NewSQLVersionRepository(conn *db.Conn) *SQLVersionRepository {
 	return &SQLVersionRepository{conn: conn}
 }
 
+// CreateVersion guarda una versión copiando el propietario de la propia fila de
+// files (migración 0012, ADR-036): un INSERT ... SELECT, así que ni hace falta ni
+// se admite que quien llama lo indique, y un archivo inexistente inserta cero filas
+// (ErrFileNotFound). El propietario denormalizado no puede diferir nunca del real.
 func (r *SQLVersionRepository) CreateVersion(ctx context.Context, v *FileVersion) error {
-	_, err := r.conn.ExecContext(ctx, `
-		INSERT INTO file_versions (id, file_id, version_num, size_bytes, sha256, mime_type, storage_key, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		v.ID, v.FileID, v.VersionNum, v.SizeBytes, v.SHA256, v.MimeType, v.StorageKey, db.TimeToString(v.CreatedAt))
+	res, err := r.conn.ExecContext(ctx, `
+		INSERT INTO file_versions (id, file_id, owner_id, version_num, size_bytes, sha256, mime_type, storage_key, created_at)
+		SELECT ?, f.id, f.owner_id, ?, ?, ?, ?, ?, ? FROM files f WHERE f.id = ?`,
+		v.ID, v.VersionNum, v.SizeBytes, v.SHA256, v.MimeType, v.StorageKey, db.TimeToString(v.CreatedAt), v.FileID)
 	if err != nil {
 		return fmt.Errorf("guardando versión: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("comprobando filas afectadas: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("guardando versión: %w", ErrFileNotFound)
 	}
 	return nil
 }
@@ -95,12 +106,12 @@ func (r *SQLVersionRepository) DeleteAllVersions(ctx context.Context, fileID str
 	return nil
 }
 
-const versionSelectColumns = `SELECT id, file_id, version_num, size_bytes, sha256, mime_type, storage_key, created_at FROM file_versions`
+const versionSelectColumns = `SELECT id, file_id, owner_id, version_num, size_bytes, sha256, mime_type, storage_key, created_at FROM file_versions`
 
 func scanVersionRow(row rowScanner) (*FileVersion, error) {
 	var v FileVersion
 	var createdAt string
-	if err := row.Scan(&v.ID, &v.FileID, &v.VersionNum, &v.SizeBytes, &v.SHA256, &v.MimeType, &v.StorageKey, &createdAt); err != nil {
+	if err := row.Scan(&v.ID, &v.FileID, &v.OwnerID, &v.VersionNum, &v.SizeBytes, &v.SHA256, &v.MimeType, &v.StorageKey, &createdAt); err != nil {
 		return nil, err
 	}
 	var err error

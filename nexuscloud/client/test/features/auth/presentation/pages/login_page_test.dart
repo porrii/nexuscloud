@@ -77,10 +77,7 @@ void main() {
 
 Future<void> _fillAndSubmit(WidgetTester tester) async {
   await tester.enterText(
-    find.widgetWithText(
-      TextFormField,
-      'Servidor (p.ej. https://nexuscloud.midominio.com)',
-    ),
+    find.widgetWithText(TextFormField, 'Servidor'),
     'http://server.local',
   );
   await tester.enterText(find.widgetWithText(TextFormField, 'Usuario'), 'ivan');

@@ -117,7 +117,13 @@ journalctl -u nexuscloud -f
 `deploy/systemd/nexuscloud.service` es la unit de referencia (hardening:
 `ProtectSystem=strict`, `NoNewPrivileges`, `PrivateTmp`, mínimo privilegio
 §103). Si reubicas `storage.dataDir` o alguna área a otro disco, añade esa
-ruta a `ReadWritePaths=`.
+ruta a `ReadWritePaths=`. También trae `MemoryMax=`/`CPUQuota=` (§34,
+ADR-041 Decisión 0/6): mismo motivo que `--memory`/`--cpus` en Docker más
+abajo -- contener el árbol de procesos completo (el servidor MÁS cada
+`ffmpeg`/`pdftoppm` que lance para generar una miniatura) vía cgroup del
+propio systemd, sin lo cual generar muchas miniaturas de vídeo a la vez
+podría agotar la memoria de la máquina entera. Ajusta el valor a tu
+hardware si lo cambias del que trae la unit por defecto.
 
 ---
 
@@ -181,12 +187,58 @@ docker compose exec nexuscloud nexuscloud admin create-user --username tu-usuari
 ```
 
 La imagen (`Dockerfile`, multi-stage) hace el build en `golang:1.25-bookworm`
-y el runtime en `gcr.io/distroless/static-debian12:nonroot` — sin shell, sin
-gestor de paquetes, uid 65532, sin `privileged`, sin montar `/` del host
-(§103-104). El binario es estático (`CGO_ENABLED=0`, driver SQLite en Go
-puro), no depende de glibc/musl en runtime. Fija `NEXUSCLOUD_DATA_DIR=/data`
-y expone `/data` como volumen; el resto de la config va por `NEXUSCLOUD_*` o
-montando un `config.yaml`.
+y el runtime en `debian:12-slim` — uid 65532 (usuario `nonroot` creado
+explícitamente), sin `privileged`, sin montar `/` del host (§104). El
+binario en sí sigue siendo estático (`CGO_ENABLED=0`, driver SQLite en Go
+puro). Fija `NEXUSCLOUD_DATA_DIR=/data` y expone `/data` como volumen; el
+resto de la config va por `NEXUSCLOUD_*` o montando un `config.yaml`.
+
+**Cambio de imagen base (§34, ADR-041 Decisión 0)**: hasta la fase de
+miniaturas, el runtime era `gcr.io/distroless/static-debian12:nonroot` (sin
+shell ni gestor de paquetes, superficie de ataque mínima). Generar
+miniaturas de vídeo/PDF necesita invocar `ffmpeg`/`pdftoppm` como
+subproceso, y eso exige una base con gestor de paquetes real -- de ahí el
+paso a `debian:12-slim`. Es un coste ACEPTADO explícitamente, no gratis
+(imagen mayor, más paquetes que auditar), compensado con:
+- Escaneo de la imagen en CI (Trivy, `severity: CRITICAL,HIGH`) en cada
+  build más un rebuild semanal programado, para que las actualizaciones de
+  seguridad de `apt` lleguen aunque no haya cambios de código -- ni
+  `govulncheck` (solo módulos Go) ni Dependabot (solo sigue la línea `FROM`)
+  ven lo que `apt-get install` resuelve en cada build (ver
+  `.github/workflows/ci.yml`).
+- El usuario sin privilegios explícito de arriba (mismo uid 65532 que la
+  imagen distroless anterior, para no romper el propietario de volúmenes
+  `/data` ya existentes al actualizar).
+- Las banderas de `docker run`/límites de recursos de abajo.
+
+Recomendado para producción (`docker run` directo; el equivalente en
+`docker-compose.yml` ya viene activo por defecto salvo `--read-only`, que
+queda comentado -- ver el fichero):
+
+```sh
+docker run -d --name nexuscloud \
+    --security-opt=no-new-privileges \
+    --read-only --tmpfs /tmp \
+    --memory=2g --cpus=2 \
+    -p 8080:8080 \
+    -v nexuscloud-data:/data \
+    nexuscloud:latest
+```
+
+`--read-only --tmpfs /tmp`: NexusCloud escribe solo bajo `storage.dataDir`
+(el volumen `/data`); si algo necesitara `/tmp` de todas formas (una ruta
+del sistema, no del propio código de la aplicación), este tmpfs se lo da
+sin abrir el resto del filesystem de la imagen a escritura. `--memory`/
+`--cpus`: contención real del árbol de procesos completo (el propio
+servidor Go MÁS cada `ffmpeg`/`pdftoppm` que lance) -- mecanismo del
+propio kernel/cgroup, no algo que NexusCloud reinvente por su cuenta (§34
+Decisión 6: sin este límite, generar muchas miniaturas de vídeo a la vez
+puede agotar la memoria del host y el OOM-killer puede matar el proceso
+PRINCIPAL, no solo los subprocesos). 2 GiB/2 CPUs es un punto de partida
+razonable para uso personal/familiar con `thumbnails.maxConcurrentGenerations`
+en su valor por defecto (4); ajusta según tu hardware y carga real. En
+bare-metal (sin Docker), el equivalente son `MemoryMax=`/`CPUQuota=` en
+`deploy/systemd/nexuscloud.service` (ver esa sección más abajo).
 
 Para PostgreSQL en vez de SQLite: en `docker-compose.yml` cambia
 `NEXUSCLOUD_DB_DRIVER` a `postgres`, añade `NEXUSCLOUD_DB_DSN` y descomenta

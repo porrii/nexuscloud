@@ -99,6 +99,23 @@ func (r *SQLSessionRepository) RevokeAllForUser(ctx context.Context, userID stri
 	return nil
 }
 
+func (r *SQLSessionRepository) MarkReauthenticated(ctx context.Context, id, userID string, at time.Time) error {
+	res, err := r.conn.ExecContext(ctx,
+		`UPDATE sessions SET reauthenticated_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+		db.TimeToString(at), id, userID)
+	if err != nil {
+		return fmt.Errorf("marcando la reautenticación de la sesión: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("comprobando filas afectadas: %w", err)
+	}
+	if n == 0 {
+		return ErrSessionNotFound
+	}
+	return nil
+}
+
 func (r *SQLSessionRepository) DeleteExpiredSessions(ctx context.Context, before time.Time) (int64, error) {
 	res, err := r.conn.ExecContext(ctx, `DELETE FROM sessions WHERE expires_at < ?`, db.TimeToString(before))
 	if err != nil {
@@ -107,7 +124,7 @@ func (r *SQLSessionRepository) DeleteExpiredSessions(ctx context.Context, before
 	return res.RowsAffected()
 }
 
-const sessionSelectColumns = `SELECT id, user_id, token_hash, device, ip, created_at, last_seen_at, expires_at, revoked_at FROM sessions`
+const sessionSelectColumns = `SELECT id, user_id, token_hash, device, ip, created_at, last_seen_at, expires_at, revoked_at, reauthenticated_at FROM sessions`
 
 func scanSession(row *sql.Row) (*Session, error) {
 	return scanSessionRow(row)
@@ -118,9 +135,9 @@ func scanSessionRow(row rowScanner) (*Session, error) {
 		s                                Session
 		device, ip                       sql.NullString
 		createdAt, lastSeenAt, expiresAt string
-		revokedAt                        sql.NullString
+		revokedAt, reauthAt              sql.NullString
 	)
-	if err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &device, &ip, &createdAt, &lastSeenAt, &expiresAt, &revokedAt); err != nil {
+	if err := row.Scan(&s.ID, &s.UserID, &s.TokenHash, &device, &ip, &createdAt, &lastSeenAt, &expiresAt, &revokedAt, &reauthAt); err != nil {
 		return nil, err
 	}
 	if device.Valid {
@@ -141,6 +158,9 @@ func scanSessionRow(row rowScanner) (*Session, error) {
 	}
 	if s.RevokedAt, err = db.ParseNullableTime(revokedAt.String, revokedAt.Valid); err != nil {
 		return nil, fmt.Errorf("parseando revoked_at: %w", err)
+	}
+	if s.ReauthenticatedAt, err = db.ParseNullableTime(reauthAt.String, reauthAt.Valid); err != nil {
+		return nil, fmt.Errorf("parseando reauthenticated_at: %w", err)
 	}
 	return &s, nil
 }

@@ -26,11 +26,73 @@ func TestDefaultsAreSecureByDefault(t *testing.T) {
 	if cfg.Sharing.PublicLinksEnabled {
 		t.Error("sharing.publicLinksEnabled debe ser false por defecto (§3, §47): es la única superficie sin sesión que añade Sharing")
 	}
+	if cfg.Sharing.AnonymousUploadEnabled {
+		t.Error("sharing.anonymousUploadEnabled debe ser false por defecto (§3, §47, ADR-039): superficie pública nueva, separada de publicLinksEnabled")
+	}
 	if !cfg.Sharing.Enabled {
 		t.Error("sharing.enabled (compartición interna usuario/grupo, siempre autenticada) debe ser true por defecto, igual que trash/versioning")
 	}
+	if !cfg.Search.Enabled {
+		t.Error("search.enabled debe ser true por defecto (§33): solo lectura sobre datos que el usuario ya podía ver, no añade superficie nueva")
+	}
 	if cfg.Backup.Enabled {
 		t.Error("backup.enabled debe ser false por defecto: copia datos reales, por defecto al mismo disco (§19), el admin debe activarlo a propósito (ADR-016)")
+	}
+	if cfg.Thumbnails.Enabled {
+		t.Error("thumbnails.enabled debe ser false por defecto (§34, ADR-041): primera vez que el servidor decodifica contenido de usuario y ejecuta binarios externos, el admin debe activarlo a propósito")
+	}
+}
+
+func TestDefaultsThumbnailsLimitsSonPositivos(t *testing.T) {
+	d := Defaults()
+	if d.Thumbnails.MaxInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxInputBytes)
+	}
+	if d.Thumbnails.MaxVideoInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxVideoInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxVideoInputBytes)
+	}
+	if d.Thumbnails.MaxPDFInputBytes <= 0 {
+		t.Errorf("Thumbnails.MaxPDFInputBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxPDFInputBytes)
+	}
+	if d.Thumbnails.MaxPixels <= 0 {
+		t.Errorf("Thumbnails.MaxPixels = %d, esperado > 0 por defecto", d.Thumbnails.MaxPixels)
+	}
+	if d.Thumbnails.MaxCacheBytes <= 0 {
+		t.Errorf("Thumbnails.MaxCacheBytes = %d, esperado > 0 por defecto", d.Thumbnails.MaxCacheBytes)
+	}
+	if d.Thumbnails.MaxConcurrentGenerations < 1 {
+		t.Errorf("Thumbnails.MaxConcurrentGenerations = %d, esperado >= 1 por defecto", d.Thumbnails.MaxConcurrentGenerations)
+	}
+}
+
+func TestValidateRechazaThumbnailsMalConfigurado(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"maxConcurrentGenerations en 0", func(c *Config) { c.Thumbnails.MaxConcurrentGenerations = 0 }},
+		{"maxInputBytes en 0", func(c *Config) { c.Thumbnails.MaxInputBytes = 0 }},
+		{"maxVideoInputBytes en 0", func(c *Config) { c.Thumbnails.MaxVideoInputBytes = 0 }},
+		{"maxPdfInputBytes en 0", func(c *Config) { c.Thumbnails.MaxPDFInputBytes = 0 }},
+		{"maxPixels en 0", func(c *Config) { c.Thumbnails.MaxPixels = 0 }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Defaults()
+			cfg.Thumbnails.Enabled = true
+			tc.mutate(cfg)
+			if err := Validate(cfg); err == nil {
+				t.Errorf("Validate no rechazó thumbnails con %s", tc.name)
+			}
+		})
+	}
+}
+
+func TestValidateRechazaMaxCacheBytesNegativo(t *testing.T) {
+	cfg := Defaults()
+	cfg.Thumbnails.MaxCacheBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate no rechazó thumbnails.maxCacheBytes negativo")
 	}
 }
 
@@ -315,6 +377,9 @@ func TestDefaultsKeepWebDAVAndWebAuthnOff(t *testing.T) {
 	if cfg.Security.RateLimit.WebDAVPerMinute < 1 {
 		t.Errorf("security.rateLimit.webdavPerMinute = %d, debe tener un valor por defecto útil", cfg.Security.RateLimit.WebDAVPerMinute)
 	}
+	if cfg.Security.RateLimit.AnonymousUploadPerMinute < 1 {
+		t.Errorf("security.rateLimit.anonymousUploadPerMinute = %d, debe tener un valor por defecto útil", cfg.Security.RateLimit.AnonymousUploadPerMinute)
+	}
 }
 
 func TestValidateWebDAVPath(t *testing.T) {
@@ -359,6 +424,14 @@ func TestValidateRejectsZeroWebDAVRateLimit(t *testing.T) {
 	cfg.Security.RateLimit.WebDAVPerMinute = 0
 	if err := Validate(cfg); err == nil {
 		t.Error("Validate debe rechazar security.rateLimit.webdavPerMinute < 1")
+	}
+}
+
+func TestValidateRejectsZeroAnonymousUploadRateLimit(t *testing.T) {
+	cfg := Defaults()
+	cfg.Security.RateLimit.AnonymousUploadPerMinute = 0
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar security.rateLimit.anonymousUploadPerMinute < 1")
 	}
 }
 
@@ -435,5 +508,48 @@ func TestTheExampleConfigLoadsAndValidates(t *testing.T) {
 	}
 	if cfg.WebDAV.Enabled || cfg.Security.WebAuthn.Enabled {
 		t.Error("el ejemplo debe mantener WebDAV y WebAuthn desactivados (secure by default)")
+	}
+}
+
+// storage.defaultQuotaBytes (§24, ADR-036): la cuota global, la que se aplica a
+// quien no tiene cuota propia ni de grupo. 0 = sin cuota (el comportamiento de
+// siempre): las instalaciones existentes no cambian.
+func TestDefaultQuotaIsUnlimitedByDefault(t *testing.T) {
+	if got := Defaults().Storage.DefaultQuotaBytes; got != 0 {
+		t.Errorf("storage.defaultQuotaBytes por defecto = %d, esperado 0 (sin límite)", got)
+	}
+}
+
+func TestValidateRejectsNegativeDefaultQuota(t *testing.T) {
+	cfg := Defaults()
+	cfg.Storage.DefaultQuotaBytes = -1
+	if err := Validate(cfg); err == nil {
+		t.Error("Validate debe rechazar storage.defaultQuotaBytes negativo (0 = sin límite)")
+	}
+}
+
+func TestDefaultQuotaEnvOverride(t *testing.T) {
+	t.Setenv("NEXUSCLOUD_STORAGE_DEFAULT_QUOTA_BYTES", "107374182400") // 100 GiB: no cabe en 32 bits
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load falló: %v", err)
+	}
+	if cfg.Storage.DefaultQuotaBytes != 107374182400 {
+		t.Errorf("storage.defaultQuotaBytes = %d, esperado 107374182400", cfg.Storage.DefaultQuotaBytes)
+	}
+}
+
+func TestDefaultQuotaLoadsFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("storage:\n  defaultQuotaBytes: 53687091200\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load falló: %v", err)
+	}
+	if cfg.Storage.DefaultQuotaBytes != 53687091200 {
+		t.Errorf("storage.defaultQuotaBytes = %d, esperado 53687091200", cfg.Storage.DefaultQuotaBytes)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/porrii/nexuscloud/internal/db"
 )
@@ -50,7 +51,41 @@ func (r *SQLRepository) ListEvents(ctx context.Context, limit, offset int) ([]*E
 		return nil, fmt.Errorf("listando eventos de auditoría: %w", err)
 	}
 	defer rows.Close()
+	return scanEvents(rows)
+}
 
+// ListEventsForActor da el feed de "Recientes" (§88, ADR-038): mismo límite
+// por defecto/tope que ListEvents (es un widget de dashboard, no el listado
+// administrativo completo). eventTypes nunca debe llegar vacío -- con cero
+// tipos no hay ningún IN (...) válido que construir, así que se devuelve
+// una lista vacía sin tocar la base de datos, en vez de un SQL inválido.
+func (r *SQLRepository) ListEventsForActor(ctx context.Context, actorUserID string, eventTypes []string, limit, offset int) ([]*Event, error) {
+	if len(eventTypes) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(eventTypes)), ",")
+	args := make([]any, 0, len(eventTypes)+3)
+	args = append(args, actorUserID)
+	for _, t := range eventTypes {
+		args = append(args, t)
+	}
+	args = append(args, limit, offset)
+
+	rows, err := r.conn.QueryContext(ctx, `
+		SELECT id, occurred_at, actor_user_id, event_type, target_type, target_id, ip, metadata_json
+		FROM audit_events WHERE actor_user_id = ? AND event_type IN (`+placeholders+`)
+		ORDER BY occurred_at DESC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listando actividad reciente: %w", err)
+	}
+	defer rows.Close()
+	return scanEvents(rows)
+}
+
+func scanEvents(rows *sql.Rows) ([]*Event, error) {
 	var out []*Event
 	for rows.Next() {
 		var (
@@ -61,6 +96,7 @@ func (r *SQLRepository) ListEvents(ctx context.Context, limit, offset int) ([]*E
 		if err := rows.Scan(&e.ID, &occurredAt, &actorUserID, &e.EventType, &targetType, &targetID, &ip, &metadataJSON); err != nil {
 			return nil, err
 		}
+		var err error
 		if e.OccurredAt, err = db.StringToTime(occurredAt); err != nil {
 			return nil, fmt.Errorf("parseando occurred_at: %w", err)
 		}

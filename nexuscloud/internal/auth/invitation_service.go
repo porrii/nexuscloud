@@ -29,6 +29,11 @@ type CreateInvitationInput struct {
 }
 
 func (s *InvitationService) Create(ctx context.Context, in CreateInvitationInput) (invitation *Invitation, plainToken string, err error) {
+	// ADR-044 Decisión 6: un rol desconocido se rechaza aquí con
+	// users.ErrInvalidRole, no con un error de FK de la base de datos.
+	if err := users.ValidateRole(in.RoleID); err != nil {
+		return nil, "", err
+	}
 	if in.MaxUses <= 0 {
 		in.MaxUses = 1
 	}

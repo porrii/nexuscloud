@@ -56,7 +56,7 @@ El desarrollo sigue el roadmap de 7 fases descrito en `NEXUSCLOUD.md` §163. **L
 
 ### Explorador de archivos web: alcance real
 
-El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arrastrar y soltar), descarga, creación y borrado de carpetas vacías, historial de versiones, compartición (usuario/grupo/enlace) y gestión de sesiones — todo respaldado por endpoints reales del backend. §143 (dashboard de usuario) menciona además "Favoritos" y "Recientes": **deliberadamente no se construyó ninguna pantalla para estas**, porque el backend todavía no las soporta — una UI para una funcionalidad inexistente sería peor que no tenerla. "Compartido conmigo"/"Compartido por mí"/"Papelera", también mencionadas en §143, sí están implementadas (`web/src/pages/SharedPage.tsx`, `TrashPage.tsx`).
+El explorador (`web/`) cubre navegación por carpetas, subida (con progreso, arrastrar y soltar), descarga, creación y borrado de carpetas vacías, historial de versiones, compartición (usuario/grupo/enlace) y gestión de sesiones — todo respaldado por endpoints reales del backend. §143 (dashboard de usuario) menciona además "Favoritos" y "Recientes": están implementados ([ADR-038](architecture/decisions/ADR-038-favoritos-y-actividad-reciente.md), `web/src/pages/FavoritesPage.tsx`) -- una sola página con pestañas, favoritos solo sobre el árbol propio y "Recientes" como feed de actividad sobre el log de auditoría. Las siete secciones que pide §143 (Mis archivos, Compartido conmigo/por mí, Favoritos, Recientes, Papelera, Cuota) están todas cubiertas.
 
 ### Gaps conocidos dentro de la propia Fase 1
 

@@ -16,7 +16,8 @@ import '../models/file_entry_model.dart';
 import '../models/file_version_model.dart';
 
 class FilesRemoteDataSource {
-  FilesRemoteDataSource({required ApiClient apiClient}) : _apiClient = apiClient;
+  FilesRemoteDataSource({required ApiClient apiClient})
+    : _apiClient = apiClient;
 
   final ApiClient _apiClient;
 
@@ -101,10 +102,14 @@ class FilesRemoteDataSource {
     required String expectedHash,
     TransferProgress? onProgress,
   }) async {
-    final hash8 =
-        expectedHash.length >= 8 ? expectedHash.substring(0, 8) : expectedHash;
+    final hash8 = expectedHash.length >= 8
+        ? expectedHash.substring(0, 8)
+        : expectedHash;
     final partPath = '$saveToPath.$hash8.part';
-    await _discardStalePartFiles(saveToPath: saveToPath, keepName: p.basename(partPath));
+    await _discardStalePartFiles(
+      saveToPath: saveToPath,
+      keepName: p.basename(partPath),
+    );
 
     Future<void> attempt({required bool retryOnRangeError}) async {
       final partFile = File(partPath);
@@ -119,8 +124,9 @@ class FilesRemoteDataSource {
             // cual, con el progreso hecho hasta ese punto, en vez de
             // borrarlo -- ahora SÍ hay algo que reanudar la próxima vez.
             deleteOnError: false,
-            fileAccessMode:
-                alreadyHave > 0 ? FileAccessMode.append : FileAccessMode.write,
+            fileAccessMode: alreadyHave > 0
+                ? FileAccessMode.append
+                : FileAccessMode.write,
             options: alreadyHave > 0
                 ? Options(headers: {'range': 'bytes=$alreadyHave-'})
                 : null,
@@ -237,7 +243,11 @@ class FilesRemoteDataSource {
   /// `null` explícito): el servidor interpreta un campo AUSENTE como
   /// "mantener el valor actual" (ver FileService.MoveFile/MoveDirectory,
   /// que distinguen puntero nil de cadena vacía).
-  Future<FileEntry> moveFile(String fileId, {String? newParentPath, String? newName}) async {
+  Future<FileEntry> moveFile(
+    String fileId, {
+    String? newParentPath,
+    String? newName,
+  }) async {
     final response = await _apiClient.request(
       (dio) => dio.patch<Map<String, dynamic>>(
         '/files/$fileId',
@@ -250,7 +260,11 @@ class FilesRemoteDataSource {
     return FileEntryModel.fromJson(response.data!);
   }
 
-  Future<DirectoryEntry> moveDirectory(String directoryId, {String? newParentPath, String? newName}) async {
+  Future<DirectoryEntry> moveDirectory(
+    String directoryId, {
+    String? newParentPath,
+    String? newName,
+  }) async {
     final response = await _apiClient.request(
       (dio) => dio.patch<Map<String, dynamic>>(
         '/directories/$directoryId',
@@ -264,7 +278,9 @@ class FilesRemoteDataSource {
   }
 
   Future<void> restoreFile(String fileId) {
-    return _apiClient.request((dio) => dio.post<void>('/files/$fileId/restore'));
+    return _apiClient.request(
+      (dio) => dio.post<void>('/files/$fileId/restore'),
+    );
   }
 
   Future<void> restoreDirectory(String directoryId) {

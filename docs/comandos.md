@@ -53,12 +53,29 @@ menos de 8 caracteres.
 
 ```
 nexuscloud users list
-nexuscloud users create --username <usuario> [--password '...'] [--role user]
+nexuscloud users create --username <usuario> [--password '...'] [--role user] [--quota <valor>]
 nexuscloud users disable <usuario>
 nexuscloud users enable <usuario>
-nexuscloud users edit <usuario> [--display-name <n>] [--email <e>]
+nexuscloud users edit <usuario> [--display-name <n>] [--email <e>] [--quota <valor>]
 nexuscloud users delete <usuario> --confirm
+nexuscloud users set-role <usuario> <super_admin|administrator|user|read_only>
+nexuscloud users reset-password <usuario> [--password '...']
+nexuscloud users quota [<usuario>] [--detail]
 ```
+
+`set-role` deja a la cuenta con un único rol; nunca deja la instancia sin un
+superadministrador activo ni pasa a `read_only` una cuenta con enlaces o
+comparticiones con subida vigentes. `reset-password` cierra además todas sus
+sesiones y revoca sus tokens de API y WebDAV. Detalles en
+[`administracion.md`](administracion.md#cambiar-el-rol).
+
+`--quota` fija la cuota de almacenamiento propia del usuario: un tamaño
+(`100GB`, `1.5TB`, `500MB` o bytes a secas; binarios, 1 GB = 1 GiB),
+`unlimited` (sin límite aunque el grupo o la global tengan uno) o `inherit`
+(quita la cuota propia y hereda). `users quota` muestra, por usuario, lo que
+ocupa (archivos + papelera + versiones), su cuota efectiva, el porcentaje y de
+dónde sale (`usuario`, `grupo:<nombre>` o `global`); `--detail` desglosa el uso.
+Guía completa en [`administracion.md`](administracion.md#cuotas-de-almacenamiento).
 
 `delete` es **irreversible** y en cascada (sesiones, pertenencia a
 grupos, invitaciones creadas por ese usuario, comparticiones, y los
@@ -87,9 +104,21 @@ Grupos (para poder compartir carpetas/archivos con varias personas a la
 vez en vez de una por una):
 
 ```
-nexuscloud users group create <nombre>
+nexuscloud users group create <nombre> [--quota <valor>]
+nexuscloud users group edit <grupo> --quota <valor>
 nexuscloud users group add-member <usuario> <grupo>
+nexuscloud users group members <grupo>
+nexuscloud users group remove-member <usuario> <grupo>
+nexuscloud users group rename <grupo> <nombre-nuevo>
+nexuscloud users group delete <grupo> --yes
 ```
+
+`group delete` se lleva las comparticiones dirigidas al grupo; sin `--yes`
+dice cuántas son y no borra nada.
+
+La cuota de un grupo es un límite **por miembro** (cada miembro puede usar hasta
+esa cantidad salvo que tenga cuota propia), con los mismos valores que la del
+usuario. Si alguien está en varios grupos con cuota, vale la más generosa.
 
 Doble factor (TOTP, compatible con cualquier app autenticadora estándar —
 Google Authenticator, Aegis, 1Password, etc.). Se hace en dos pasos a
@@ -130,6 +159,17 @@ diferencia de los passkeys, sí se pueden crear por CLI:
 nexuscloud users webdav-token create --username <usuario> [--label "portátil de casa"]   # imprime el token UNA vez
 nexuscloud users webdav-token list --username <usuario>                                   # id, nombre, creado, último uso
 nexuscloud users webdav-token revoke <id-del-token> --username <usuario>                 # lo invalida al instante
+```
+
+Tokens de API (§78, ADR-037) — siempre disponibles, sin opción de config que
+los desactive. El token actúa exactamente como el usuario en cualquier
+endpoint (alcance todo-o-nada); ver
+[`administracion.md`](../docs/administracion.md#tokens-de-api):
+
+```
+nexuscloud users api-token create --username <usuario> [--label "script"] [--expires-in 30d|90d|1y|never]   # imprime el token UNA vez
+nexuscloud users api-token list --username <usuario>                                                          # id, nombre, creado, expira, último uso
+nexuscloud users api-token revoke <id-del-token> --username <usuario>                                       # lo invalida al instante
 ```
 
 ## Archivos de un usuario (`files`)

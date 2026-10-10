@@ -59,6 +59,9 @@ type TokenRepository interface {
 	// defensa en profundidad contra IDOR (§198), mismo criterio que
 	// SessionRepository.RevokeSession.
 	RevokeToken(ctx context.Context, id, userID string) error
+	// RevokeAllForUser borra todos los tokens de userID y devuelve cuántos
+	// había (ADR-042 Decisión 9: tras restablecer la contraseña).
+	RevokeAllForUser(ctx context.Context, userID string) (int64, error)
 }
 
 // TokenService orquesta el ciclo de vida de los tokens de acceso WebDAV.
@@ -113,6 +116,13 @@ func (s *TokenService) List(ctx context.Context, userID string) ([]*Token, error
 
 func (s *TokenService) Revoke(ctx context.Context, id, userID string) error {
 	return s.repo.RevokeToken(ctx, id, userID)
+}
+
+// IsReadOnly indica si el usuario tiene el rol read_only (ADR-044): mismo
+// criterio que users.Service.IsReadOnly (basta con tener el rol), sobre el
+// repositorio que este servicio ya usa para autenticar.
+func (s *TokenService) IsReadOnly(ctx context.Context, userID string) (bool, error) {
+	return s.users.HasRole(ctx, userID, users.RoleReadOnly)
 }
 
 // Authenticate valida las credenciales HTTP Basic de un cliente WebDAV:

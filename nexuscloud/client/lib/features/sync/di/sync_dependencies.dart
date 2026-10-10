@@ -12,6 +12,7 @@ import '../domain/services/auto_sync_scheduler.dart';
 import '../domain/services/local_change_watcher_service.dart';
 import '../domain/services/multi_pair_sync_coordinator.dart';
 import '../domain/services/sync_engine.dart';
+import '../presentation/sync_activity.dart';
 
 void configureSyncDependencies(GetIt sl) {
   sl
@@ -41,6 +42,14 @@ void configureSyncDependencies(GetIt sl) {
         syncEngine: sl<SyncEngine>(),
         configRepository: sl<SyncConfigRepository>(),
         authRepository: sl<AuthRepository>(),
+      ),
+    )
+    ..registerLazySingleton(
+      () => SyncActivity(
+        syncEngine: sl<SyncEngine>(),
+        autoSyncScheduler: sl<AutoSyncScheduler>(),
+        watcherService: sl<LocalChangeWatcherService>(),
+        configRepository: sl<SyncConfigRepository>(),
       ),
     );
 }

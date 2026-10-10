@@ -83,6 +83,14 @@ func (r *SQLTokenRepository) RevokeToken(ctx context.Context, id, userID string)
 	return nil
 }
 
+func (r *SQLTokenRepository) RevokeAllForUser(ctx context.Context, userID string) (int64, error) {
+	res, err := r.conn.ExecContext(ctx, `DELETE FROM webdav_tokens WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("revocando los tokens WebDAV del usuario: %w", err)
+	}
+	return res.RowsAffected()
+}
+
 const tokenSelectColumns = `SELECT id, user_id, token_hash, label, created_at, last_used_at FROM webdav_tokens`
 
 type rowScanner interface {
